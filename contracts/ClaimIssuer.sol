@@ -112,6 +112,7 @@ contract ClaimIssuer is IClaimIssuer, Identity, UUPSUpgradeable {
     function isClaimValid(IIdentity _identity, uint256 claimTopic, bytes memory sig, bytes memory data)
         public
         view
+        virtual
         override(Identity, IClaimIssuer)
         returns (bool claimValid)
     {
