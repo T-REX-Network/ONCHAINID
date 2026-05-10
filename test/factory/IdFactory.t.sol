@@ -748,7 +748,8 @@ contract IdFactoryTest is OnchainIDSetup {
 
         vm.prank(deployer);
         vm.expectRevert(abi.encodeWithSelector(Errors.WalletAlreadyLinkedToIdentity.selector, david));
-        onchainidSetup.idFactory.createIdentityWithManagementKeys(david, "davidSalt", keys, IdentityTypes.INDIVIDUAL, new address[](0));
+        onchainidSetup.idFactory
+            .createIdentityWithManagementKeys(david, "davidSalt", keys, IdentityTypes.INDIVIDUAL, new address[](0));
     }
 
     /// @notice linkWalletWithSignature: unlinked wallet can be re-linked to the same identity
