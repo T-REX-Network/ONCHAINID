@@ -8,6 +8,7 @@ import { Identity } from "contracts/Identity.sol";
 import { IdFactory } from "contracts/factory/IdFactory.sol";
 import { Gateway } from "contracts/gateway/Gateway.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
+import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { Test } from "forge-std/Test.sol";
 import { Vm } from "forge-std/Vm.sol";
@@ -40,12 +41,17 @@ contract GatewayTest is Test {
 
     // ---- helpers ----
 
-    function _signDeploy(uint256 signerPk, address owner, string memory salt, uint256 expiry)
-        internal
-        pure
-        returns (bytes memory)
-    {
-        bytes32 digest = keccak256(abi.encode("Authorize ONCHAINID deployment", owner, salt, expiry));
+    function _signDeploy(
+        uint256 signerPk,
+        address owner,
+        string memory salt,
+        uint256 identityType,
+        address[] memory claimAdders,
+        uint256 expiry
+    ) internal pure returns (bytes memory) {
+        bytes32 digest = keccak256(
+            abi.encode("Authorize ONCHAINID deployment", owner, salt, identityType, claimAdders, expiry)
+        );
         bytes32 ethSignedHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", digest));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerPk, ethSignedHash);
         return abi.encodePacked(r, s, v);
@@ -56,9 +62,13 @@ contract GatewayTest is Test {
         address owner,
         string memory salt,
         bytes32[] memory keys,
+        uint256 identityType,
+        address[] memory claimAdders,
         uint256 expiry
     ) internal pure returns (bytes memory) {
-        bytes32 digest = keccak256(abi.encode("Authorize ONCHAINID deployment", owner, salt, keys, expiry));
+        bytes32 digest = keccak256(
+            abi.encode("Authorize ONCHAINID deployment", owner, salt, keys, identityType, claimAdders, expiry)
+        );
         bytes32 ethSignedHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", digest));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerPk, ethSignedHash);
         return abi.encodePacked(r, s, v);
@@ -95,7 +105,9 @@ contract GatewayTest is Test {
         bytes memory sig = new bytes(65);
 
         vm.expectRevert(Errors.ZeroAddress.selector);
-        gateway.deployIdentityWithSalt(address(0), "saltToUse", block.timestamp + 365 days, sig);
+        gateway.deployIdentityWithSalt(
+            address(0), "saltToUse", IdentityTypes.INDIVIDUAL, new address[](0), block.timestamp + 365 days, sig
+        );
     }
 
     function test_deployIdentityWithSalt_revertInvalidSignature() public {
@@ -103,16 +115,18 @@ contract GatewayTest is Test {
         bytes memory sig = new bytes(65);
 
         vm.expectRevert();
-        gateway.deployIdentityWithSalt(alice, "saltToUse", block.timestamp + 365 days, sig);
+        gateway.deployIdentityWithSalt(
+            alice, "saltToUse", IdentityTypes.INDIVIDUAL, new address[](0), block.timestamp + 365 days, sig
+        );
     }
 
     function test_deployIdentityWithSalt_revertUnapprovedSigner() public {
         Gateway gateway = _deployGatewayWithCarol();
         uint256 expiry = block.timestamp + 365 days;
-        bytes memory sig = _signDeploy(bobPk, alice, "saltToUse", expiry);
+        bytes memory sig = _signDeploy(bobPk, alice, "saltToUse", IdentityTypes.INDIVIDUAL, new address[](0), expiry);
 
         vm.expectRevert(abi.encodeWithSelector(Errors.UnapprovedSigner.selector, bob));
-        gateway.deployIdentityWithSalt(alice, "saltToUse", expiry, sig);
+        gateway.deployIdentityWithSalt(alice, "saltToUse", IdentityTypes.INDIVIDUAL, new address[](0), expiry, sig);
     }
 
     function test_deployIdentityWithSalt_shouldDeploy() public {
@@ -121,12 +135,40 @@ contract GatewayTest is Test {
         setup.idFactory.transferOwnership(address(gateway));
 
         uint256 expiry = block.timestamp + 365 days;
-        bytes memory sig = _signDeploy(carolPk, alice, "saltToUse", expiry);
-        gateway.deployIdentityWithSalt(alice, "saltToUse", expiry, sig);
+        bytes memory sig = _signDeploy(carolPk, alice, "saltToUse", IdentityTypes.INDIVIDUAL, new address[](0), expiry);
+        gateway.deployIdentityWithSalt(alice, "saltToUse", IdentityTypes.INDIVIDUAL, new address[](0), expiry, sig);
 
         address identityAddr = setup.idFactory.getIdentity(alice);
         assertTrue(identityAddr != address(0));
         assertTrue(Identity(identityAddr).keyHasPurpose(ClaimSignerHelper.addressToKey(alice), KeyPurposes.MANAGEMENT));
+    }
+
+    /// @notice deployIdentityWithSalt with claimAdders should set CLAIM_ADDER keys
+    function test_deployIdentityWithSalt_withClaimAdders_shouldSetKeys() public {
+        Gateway gateway = _deployGatewayWithCarol();
+        vm.prank(deployer);
+        setup.idFactory.transferOwnership(address(gateway));
+
+        address claimAdder = makeAddr("gwClaimAdder");
+        address[] memory claimAdders = new address[](1);
+        claimAdders[0] = claimAdder;
+
+        uint256 expiry = block.timestamp + 365 days;
+        bytes memory sig = _signDeploy(carolPk, alice, "saltWithAdders", IdentityTypes.INDIVIDUAL, claimAdders, expiry);
+        gateway.deployIdentityWithSalt(alice, "saltWithAdders", IdentityTypes.INDIVIDUAL, claimAdders, expiry, sig);
+
+        address identityAddr = setup.idFactory.getIdentity(alice);
+        assertTrue(identityAddr != address(0), "Identity should be deployed");
+
+        Identity identity = Identity(identityAddr);
+        assertTrue(
+            identity.keyHasPurpose(ClaimSignerHelper.addressToKey(alice), KeyPurposes.MANAGEMENT),
+            "alice should have MANAGEMENT key"
+        );
+        assertTrue(
+            identity.keyHasPurpose(ClaimSignerHelper.addressToKey(claimAdder), KeyPurposes.CLAIM_ADDER),
+            "claimAdder should have CLAIM_ADDER key"
+        );
     }
 
     function test_deployIdentityWithSalt_noExpiry() public {
@@ -134,8 +176,8 @@ contract GatewayTest is Test {
         vm.prank(deployer);
         setup.idFactory.transferOwnership(address(gateway));
 
-        bytes memory sig = _signDeploy(carolPk, alice, "saltToUse", 0);
-        gateway.deployIdentityWithSalt(alice, "saltToUse", 0, sig);
+        bytes memory sig = _signDeploy(carolPk, alice, "saltToUse", IdentityTypes.INDIVIDUAL, new address[](0), 0);
+        gateway.deployIdentityWithSalt(alice, "saltToUse", IdentityTypes.INDIVIDUAL, new address[](0), 0, sig);
 
         address identityAddr = setup.idFactory.getIdentity(alice);
         assertTrue(identityAddr != address(0));
@@ -147,12 +189,12 @@ contract GatewayTest is Test {
         setup.idFactory.transferOwnership(address(gateway));
 
         uint256 expiry = block.timestamp + 365 days;
-        bytes memory sig = _signDeploy(carolPk, alice, "saltToUse", expiry);
+        bytes memory sig = _signDeploy(carolPk, alice, "saltToUse", IdentityTypes.INDIVIDUAL, new address[](0), expiry);
 
         gateway.revokeSignature(sig);
 
         vm.expectRevert(abi.encodeWithSelector(Errors.RevokedSignature.selector, sig));
-        gateway.deployIdentityWithSalt(alice, "saltToUse", expiry, sig);
+        gateway.deployIdentityWithSalt(alice, "saltToUse", IdentityTypes.INDIVIDUAL, new address[](0), expiry, sig);
     }
 
     function test_deployIdentityWithSalt_revertExpiredSignature() public {
@@ -161,10 +203,10 @@ contract GatewayTest is Test {
         setup.idFactory.transferOwnership(address(gateway));
 
         uint256 expiry = block.timestamp - 2 days;
-        bytes memory sig = _signDeploy(carolPk, alice, "saltToUse", expiry);
+        bytes memory sig = _signDeploy(carolPk, alice, "saltToUse", IdentityTypes.INDIVIDUAL, new address[](0), expiry);
 
         vm.expectRevert(abi.encodeWithSelector(Errors.ExpiredSignature.selector, sig));
-        gateway.deployIdentityWithSalt(alice, "saltToUse", expiry, sig);
+        gateway.deployIdentityWithSalt(alice, "saltToUse", IdentityTypes.INDIVIDUAL, new address[](0), expiry, sig);
     }
 
     // ============ deployIdentityWithSaltAndManagementKeys ============
@@ -175,7 +217,9 @@ contract GatewayTest is Test {
         bytes memory sig = new bytes(65);
 
         vm.expectRevert(Errors.ZeroAddress.selector);
-        gateway.deployIdentityWithSaltAndManagementKeys(address(0), "saltToUse", keys, block.timestamp + 365 days, sig);
+        gateway.deployIdentityWithSaltAndManagementKeys(
+            address(0), "saltToUse", keys, IdentityTypes.INDIVIDUAL, new address[](0), block.timestamp + 365 days, sig
+        );
     }
 
     function test_deployWithKeys_revertUnapprovedSigner() public {
@@ -183,10 +227,13 @@ contract GatewayTest is Test {
         uint256 expiry = block.timestamp + 365 days;
         bytes32[] memory keys = new bytes32[](1);
         keys[0] = ClaimSignerHelper.addressToKey(bob);
-        bytes memory sig = _signDeployWithKeys(bobPk, alice, "saltToUse", keys, expiry);
+        bytes memory sig =
+            _signDeployWithKeys(bobPk, alice, "saltToUse", keys, IdentityTypes.INDIVIDUAL, new address[](0), expiry);
 
         vm.expectRevert(abi.encodeWithSelector(Errors.UnapprovedSigner.selector, bob));
-        gateway.deployIdentityWithSaltAndManagementKeys(alice, "saltToUse", keys, expiry, sig);
+        gateway.deployIdentityWithSaltAndManagementKeys(
+            alice, "saltToUse", keys, IdentityTypes.INDIVIDUAL, new address[](0), expiry, sig
+        );
     }
 
     function test_deployWithKeys_shouldDeploy() public {
@@ -197,9 +244,13 @@ contract GatewayTest is Test {
         uint256 expiry = block.timestamp + 365 days;
         bytes32[] memory keys = new bytes32[](1);
         keys[0] = ClaimSignerHelper.addressToKey(bob);
-        bytes memory sig = _signDeployWithKeys(carolPk, alice, "saltToUse", keys, expiry);
+        bytes memory sig = _signDeployWithKeys(
+            carolPk, alice, "saltToUse", keys, IdentityTypes.INDIVIDUAL, new address[](0), expiry
+        );
 
-        gateway.deployIdentityWithSaltAndManagementKeys(alice, "saltToUse", keys, expiry, sig);
+        gateway.deployIdentityWithSaltAndManagementKeys(
+            alice, "saltToUse", keys, IdentityTypes.INDIVIDUAL, new address[](0), expiry, sig
+        );
 
         address identityAddr = setup.idFactory.getIdentity(alice);
         assertTrue(identityAddr != address(0));
@@ -217,9 +268,12 @@ contract GatewayTest is Test {
 
         bytes32[] memory keys = new bytes32[](1);
         keys[0] = ClaimSignerHelper.addressToKey(bob);
-        bytes memory sig = _signDeployWithKeys(carolPk, alice, "saltToUse", keys, 0);
+        bytes memory sig =
+            _signDeployWithKeys(carolPk, alice, "saltToUse", keys, IdentityTypes.INDIVIDUAL, new address[](0), 0);
 
-        gateway.deployIdentityWithSaltAndManagementKeys(alice, "saltToUse", keys, 0, sig);
+        gateway.deployIdentityWithSaltAndManagementKeys(
+            alice, "saltToUse", keys, IdentityTypes.INDIVIDUAL, new address[](0), 0, sig
+        );
 
         address identityAddr = setup.idFactory.getIdentity(alice);
         Identity identity = Identity(identityAddr);
@@ -235,12 +289,16 @@ contract GatewayTest is Test {
         uint256 expiry = block.timestamp + 365 days;
         bytes32[] memory keys = new bytes32[](1);
         keys[0] = ClaimSignerHelper.addressToKey(bob);
-        bytes memory sig = _signDeployWithKeys(carolPk, alice, "saltToUse", keys, expiry);
+        bytes memory sig = _signDeployWithKeys(
+            carolPk, alice, "saltToUse", keys, IdentityTypes.INDIVIDUAL, new address[](0), expiry
+        );
 
         gateway.revokeSignature(sig);
 
         vm.expectRevert(abi.encodeWithSelector(Errors.RevokedSignature.selector, sig));
-        gateway.deployIdentityWithSaltAndManagementKeys(alice, "saltToUse", keys, expiry, sig);
+        gateway.deployIdentityWithSaltAndManagementKeys(
+            alice, "saltToUse", keys, IdentityTypes.INDIVIDUAL, new address[](0), expiry, sig
+        );
     }
 
     function test_deployWithKeys_revertExpiredSignature() public {
@@ -251,10 +309,14 @@ contract GatewayTest is Test {
         uint256 expiry = block.timestamp - 2 days;
         bytes32[] memory keys = new bytes32[](1);
         keys[0] = ClaimSignerHelper.addressToKey(bob);
-        bytes memory sig = _signDeployWithKeys(carolPk, alice, "saltToUse", keys, expiry);
+        bytes memory sig = _signDeployWithKeys(
+            carolPk, alice, "saltToUse", keys, IdentityTypes.INDIVIDUAL, new address[](0), expiry
+        );
 
         vm.expectRevert(abi.encodeWithSelector(Errors.ExpiredSignature.selector, sig));
-        gateway.deployIdentityWithSaltAndManagementKeys(alice, "saltToUse", keys, expiry, sig);
+        gateway.deployIdentityWithSaltAndManagementKeys(
+            alice, "saltToUse", keys, IdentityTypes.INDIVIDUAL, new address[](0), expiry, sig
+        );
     }
 
     // ============ deployIdentityForWallet ============
@@ -265,7 +327,7 @@ contract GatewayTest is Test {
         setup.idFactory.transferOwnership(address(gateway));
 
         vm.expectRevert(Errors.ZeroAddress.selector);
-        gateway.deployIdentityForWallet(address(0));
+        gateway.deployIdentityForWallet(address(0), IdentityTypes.INDIVIDUAL, new address[](0));
     }
 
     function test_deployForWallet_anotherSender() public {
@@ -274,7 +336,7 @@ contract GatewayTest is Test {
         setup.idFactory.transferOwnership(address(gateway));
 
         vm.prank(bob);
-        gateway.deployIdentityForWallet(alice);
+        gateway.deployIdentityForWallet(alice, IdentityTypes.INDIVIDUAL, new address[](0));
 
         address identityAddr = setup.idFactory.getIdentity(alice);
         assertTrue(identityAddr != address(0));
@@ -287,7 +349,7 @@ contract GatewayTest is Test {
         setup.idFactory.transferOwnership(address(gateway));
 
         vm.prank(alice);
-        gateway.deployIdentityForWallet(alice);
+        gateway.deployIdentityForWallet(alice, IdentityTypes.INDIVIDUAL, new address[](0));
 
         address identityAddr = setup.idFactory.getIdentity(alice);
         assertTrue(identityAddr != address(0));
@@ -299,11 +361,11 @@ contract GatewayTest is Test {
         setup.idFactory.transferOwnership(address(gateway));
 
         vm.prank(alice);
-        gateway.deployIdentityForWallet(alice);
+        gateway.deployIdentityForWallet(alice, IdentityTypes.INDIVIDUAL, new address[](0));
 
         vm.prank(alice);
         vm.expectRevert();
-        gateway.deployIdentityForWallet(alice);
+        gateway.deployIdentityForWallet(alice, IdentityTypes.INDIVIDUAL, new address[](0));
     }
 
     // ============ transferFactoryOwnership ============
@@ -332,7 +394,7 @@ contract GatewayTest is Test {
     function test_revokeSignature_revertNotOwner() public {
         Gateway gateway = _deployGatewayWithCarol();
         uint256 expiry = block.timestamp + 365 days;
-        bytes memory sig = _signDeploy(carolPk, alice, "saltToUse", expiry);
+        bytes memory sig = _signDeploy(carolPk, alice, "saltToUse", IdentityTypes.INDIVIDUAL, new address[](0), expiry);
 
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
@@ -342,7 +404,7 @@ contract GatewayTest is Test {
     function test_revokeSignature_revertAlreadyRevoked() public {
         Gateway gateway = _deployGatewayWithCarol();
         uint256 expiry = block.timestamp + 365 days;
-        bytes memory sig = _signDeploy(carolPk, alice, "saltToUse", expiry);
+        bytes memory sig = _signDeploy(carolPk, alice, "saltToUse", IdentityTypes.INDIVIDUAL, new address[](0), expiry);
 
         gateway.revokeSignature(sig);
 
@@ -355,7 +417,7 @@ contract GatewayTest is Test {
     function test_approveSignature_revertNotOwner() public {
         Gateway gateway = _deployGatewayWithCarol();
         uint256 expiry = block.timestamp + 365 days;
-        bytes memory sig = _signDeploy(carolPk, alice, "saltToUse", expiry);
+        bytes memory sig = _signDeploy(carolPk, alice, "saltToUse", IdentityTypes.INDIVIDUAL, new address[](0), expiry);
 
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
@@ -365,7 +427,7 @@ contract GatewayTest is Test {
     function test_approveSignature_revertNotRevoked() public {
         Gateway gateway = _deployGatewayWithCarol();
         uint256 expiry = block.timestamp + 365 days;
-        bytes memory sig = _signDeploy(carolPk, alice, "saltToUse", expiry);
+        bytes memory sig = _signDeploy(carolPk, alice, "saltToUse", IdentityTypes.INDIVIDUAL, new address[](0), expiry);
 
         vm.expectRevert(abi.encodeWithSelector(Errors.SignatureNotRevoked.selector, sig));
         gateway.approveSignature(sig);
@@ -374,7 +436,7 @@ contract GatewayTest is Test {
     function test_approveSignature_shouldApprove() public {
         Gateway gateway = _deployGatewayWithCarol();
         uint256 expiry = block.timestamp + 365 days;
-        bytes memory sig = _signDeploy(carolPk, alice, "saltToUse", expiry);
+        bytes memory sig = _signDeploy(carolPk, alice, "saltToUse", IdentityTypes.INDIVIDUAL, new address[](0), expiry);
 
         gateway.revokeSignature(sig);
         gateway.approveSignature(sig);
