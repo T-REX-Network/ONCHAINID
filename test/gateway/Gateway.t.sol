@@ -146,7 +146,6 @@ contract GatewayTest is Test {
     /// @notice deployIdentityWithSalt with claimAdders should set CLAIM_ADDER keys
     function test_deployIdentityWithSalt_withClaimAdders_shouldSetKeys() public {
         Gateway gateway = _deployGatewayWithCarol();
-        vm.prank(deployer);
         setup.idFactory.transferOwnership(address(gateway));
 
         address claimAdder = makeAddr("gwClaimAdder");
