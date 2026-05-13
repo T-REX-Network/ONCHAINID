@@ -42,6 +42,27 @@ contract Counter {
 
 }
 
+/// @notice A validator module that always reverts, for testing isValidSignature try-catch
+contract FailingValidator {
+
+    function isModuleType(uint256 moduleTypeId) external pure returns (bool) {
+        return moduleTypeId == 1; // MODULE_TYPE_VALIDATOR
+    }
+
+    function onInstall(bytes calldata) external { }
+
+    function onUninstall(bytes calldata) external { }
+
+    function validateUserOp(PackedUserOperation calldata, bytes32) external pure returns (uint256) {
+        revert("always fails");
+    }
+
+    function isValidSignatureWithSender(address, bytes32, bytes calldata) external pure returns (bytes4) {
+        revert("always fails");
+    }
+
+}
+
 contract SmartAccountTest is OnchainIDSetup {
 
     Counter public counter;
@@ -172,7 +193,7 @@ contract SmartAccountTest is OnchainIDSetup {
         // bob's key is not registered on alice's identity
         bytes32 keyHash = keccak256(abi.encodePacked(bob));
 
-        vm.expectRevert(abi.encodeWithSelector(Errors.KeyNotRegistered.selector, keyHash));
+        vm.expectRevert(Errors.InvalidSignature.selector);
         aliceIdentity.execute(address(counter), 0, callData, keyHash, sig);
     }
 
@@ -588,6 +609,94 @@ contract SmartAccountTest is OnchainIDSetup {
         (bool success,) = address(aliceIdentity).call{ value: 0.5 ether }("");
         assertTrue(success, "Identity should accept ETH");
         assertEq(address(aliceIdentity).balance, 0.5 ether);
+    }
+
+    // ========= validateUserOp — uninstalled module =========
+
+    function test_validateUserOp_uninstalledModule_returnsFailure() public {
+        bytes32 userOpHash = keccak256("test user op hash");
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(davidPk, userOpHash);
+        bytes memory ecdsaSig = abi.encodePacked(r, s, v);
+
+        // Use a random address as the module (not installed)
+        address fakeModule = makeAddr("fakeModule");
+        PackedUserOperation memory userOp =
+            _buildUserOp(address(aliceIdentity), fakeModule, abi.encode(abi.encodePacked(david), ecdsaSig));
+        userOp.callData = abi.encodeCall(aliceIdentity.executeFromEntryPoint, (address(0), 0, ""));
+
+        vm.prank(ENTRY_POINT);
+        uint256 result = aliceIdentity.validateUserOp(userOp, userOpHash, 0);
+        assertEq(result, 1, "Uninstalled module should return SIG_VALIDATION_FAILED");
+    }
+
+    function test_validateUserOp_unregisteredKey_returnsFailure() public {
+        bytes32 userOpHash = keccak256("test user op hash");
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(bobPk, userOpHash);
+        bytes memory ecdsaSig = abi.encodePacked(r, s, v);
+
+        // bob's key is not registered on aliceIdentity
+        PackedUserOperation memory userOp = _buildUserOp(
+            address(aliceIdentity), address(onchainidSetup.ecdsaValidator), abi.encode(abi.encodePacked(bob), ecdsaSig)
+        );
+        userOp.callData = abi.encodeCall(aliceIdentity.executeFromEntryPoint, (address(0), 0, ""));
+
+        vm.prank(ENTRY_POINT);
+        uint256 result = aliceIdentity.validateUserOp(userOp, userOpHash, 0);
+        assertEq(result, 1, "Unregistered key should return SIG_VALIDATION_FAILED");
+    }
+
+    // ========= isValidSignature — edge cases =========
+
+    function test_isValidSignature_shortSignature_returnsFailure() public view {
+        bytes32 hash = keccak256("test message");
+        // Signature shorter than 20 bytes (module address)
+        bytes memory shortSig = hex"deadbeef";
+
+        bytes4 result = aliceIdentity.isValidSignature(hash, shortSig);
+        assertEq(result, bytes4(0xffffffff), "Short signature should return failure");
+    }
+
+    function test_isValidSignature_uninstalledModule_returnsFailure() public view {
+        bytes32 hash = keccak256("test message");
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(davidPk, hash);
+
+        address fakeModule = address(0xdead);
+        bytes memory innerSig = abi.encode(abi.encodePacked(david), abi.encodePacked(r, s, v));
+        bytes memory wrappedSig = abi.encodePacked(fakeModule, innerSig);
+
+        bytes4 result = aliceIdentity.isValidSignature(hash, wrappedSig);
+        assertEq(result, bytes4(0xffffffff), "Uninstalled module should return failure");
+    }
+
+    function test_isValidSignature_moduleReverts_returnsFailure() public {
+        // Deploy a mock module that reverts on isValidSignatureWithSender
+        FailingValidator failingValidator = new FailingValidator();
+
+        // Install the failing validator
+        vm.prank(alice);
+        aliceIdentity.execute(
+            address(aliceIdentity),
+            0,
+            abi.encodeCall(aliceIdentity.installModule, (MODULE_TYPE_VALIDATOR, address(failingValidator), ""))
+        );
+
+        bytes32 hash = keccak256("test message");
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(davidPk, hash);
+        bytes memory innerSig = abi.encode(abi.encodePacked(david), abi.encodePacked(r, s, v));
+        bytes memory wrappedSig = abi.encodePacked(address(failingValidator), innerSig);
+
+        bytes4 result = aliceIdentity.isValidSignature(hash, wrappedSig);
+        assertEq(result, bytes4(0xffffffff), "Reverting module should return failure");
+    }
+
+    // ========= ECDSAValidator onInstall/onUninstall =========
+
+    function test_ecdsaValidator_onInstall() public {
+        onchainidSetup.ecdsaValidator.onInstall("");
+    }
+
+    function test_ecdsaValidator_onUninstall() public {
+        onchainidSetup.ecdsaValidator.onUninstall("");
     }
 
     // ========= Helpers =========

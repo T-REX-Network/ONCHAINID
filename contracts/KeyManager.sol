@@ -487,7 +487,7 @@ contract KeyManager is IERC734 {
      */
     function _getKeyStorage() internal pure returns (KeyStorage storage s) {
         bytes32 slot = _KEY_STORAGE_SLOT;
-        assembly {
+        assembly ("memory-safe") {
             s.slot := slot
         }
     }

@@ -45,6 +45,10 @@ contract InitTest is OnchainIDSetup {
         libraryImpl.addKey(keccak256(abi.encodePacked(alice)), 1, 1);
     }
 
+    function test_accountId_returnsExpectedValue() public view {
+        assertEq(aliceIdentity.accountId(), "trex.onchainid.identity.v3.0.0");
+    }
+
     function test_supportsERC165InterfaceDetection() public {
         // ERC165 interface ID
         assertTrue(aliceIdentity.supportsInterface(0x01ffc9a7));

@@ -432,6 +432,28 @@ contract IdFactoryTest is OnchainIDSetup {
         assertEq(identity.getIdentityType(), IdentityTypes.PUBLIC_AUTHORITY, "Identity type should be PUBLIC_AUTHORITY");
     }
 
+    // ============ createIdentity with module installation ============
+
+    /// @notice createIdentity with modules should install the ERC-7579 validator module
+    function test_createIdentity_withModules_shouldInstallValidator() public {
+        Structs.ModuleInstall[] memory modules = new Structs.ModuleInstall[](1);
+        modules[0] = Structs.ModuleInstall({
+            moduleType: 1, // MODULE_TYPE_VALIDATOR
+            module: address(onchainidSetup.ecdsaValidator),
+            initData: ""
+        });
+
+        vm.prank(deployer);
+        address identityAddr = onchainidSetup.idFactory
+            .createIdentity(david, IdentityTypes.INDIVIDUAL, "saltWithModules", _makeSingleMgmtKeys(david), modules);
+
+        Identity identity = Identity(payable(identityAddr));
+        assertTrue(
+            identity.isModuleInstalled(1, address(onchainidSetup.ecdsaValidator), ""),
+            "ECDSA validator should be installed"
+        );
+    }
+
     // ============ _deploy CREATE2 failure ============
 
     /// @notice CREATE2 failure triggers assembly revert when proxy constructor reverts

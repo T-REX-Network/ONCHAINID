@@ -71,7 +71,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         returns (uint256 executionId)
     {
         bytes32 opHash = getOperationHash(_to, _value, _callData, _getKeyStorage().executionNonce);
-        _checkSignature(_keyHash, opHash, _signature);
+        require(_isValidSignature(_keyHash, opHash, _signature), Errors.InvalidSignature());
         return _execute(_keyHash, _to, _value, _callData);
     }
 
@@ -86,7 +86,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         returns (bool success)
     {
         bytes32 opHash = _hashTypedDataV4(keccak256(abi.encode(_APPROVE_TYPEHASH, _id, _shouldApprove)));
-        _checkSignature(_keyHash, opHash, _signature);
+        require(_isValidSignature(_keyHash, opHash, _signature), Errors.InvalidSignature());
         return _approveExecution(_keyHash, _id, _shouldApprove);
     }
 
@@ -222,27 +222,15 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
     }
 
     /**
-     * @dev Verify a signature using OZ SignatureChecker (ERC-7913 aware). Reverts on failure.
+     * @dev Verify a signature using OZ SignatureChecker (ERC-7913 aware).
+     * Returns false instead of reverting, allowing callers to decide error handling.
      * Used by application-level paths (execute-with-sig, approve-with-sig).
-     */
-    function _checkSignature(bytes32 _keyHash, bytes32 _hash, bytes memory _signature) internal view virtual {
-        KeyStorage storage ks = _getKeyStorage();
-        require(ks.keys[_keyHash].key != bytes32(0), Errors.KeyNotRegistered(_keyHash));
-
-        bytes memory signer = ks.keys[_keyHash].signerData;
-        require(signer.length >= 20, Errors.InvalidSignerData());
-        require(SignatureChecker.isValidSignatureNow(signer, _hash, _signature), Errors.InvalidSignature());
-    }
-
-    /**
-     * @dev Check if a signature is valid. Returns false instead of reverting.
-     * Used internally where non-reverting behavior is preferred.
      */
     function _isValidSignature(bytes32 _keyHash, bytes32 _hash, bytes memory _signature)
         internal
         view
         virtual
-        returns (bool valid)
+        returns (bool)
     {
         KeyStorage storage ks = _getKeyStorage();
         if (ks.keys[_keyHash].key == bytes32(0)) return false;

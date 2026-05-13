@@ -376,7 +376,7 @@ contract Identity is Initializable, IIdentity, SmartAccount, MulticallUpgradeabl
      */
     function _getClaimStorage() internal pure returns (ClaimStorage storage s) {
         bytes32 slot = _CLAIM_STORAGE_SLOT;
-        assembly {
+        assembly ("memory-safe") {
             s.slot := slot
         }
     }

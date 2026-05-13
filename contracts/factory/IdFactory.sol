@@ -233,7 +233,7 @@ contract IdFactory is IIdFactory, Ownable {
         bytes32 saltBytes = bytes32(keccak256(abi.encodePacked(salt)));
         address addr;
         // solhint-disable-next-line no-inline-assembly
-        assembly {
+        assembly ("memory-safe") {
             let encoded_data := add(0x20, bytecode) // load initialization code.
             let encoded_size := mload(bytecode) // load init code's length.
             addr := create2(0, encoded_data, encoded_size, saltBytes)

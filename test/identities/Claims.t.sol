@@ -488,6 +488,30 @@ contract ClaimsTest is OnchainIDSetup {
         aliceIdentity.removeClaim(aliceClaim666.id);
     }
 
+    // ============ updateClaim (ClaimChanged event) ============
+
+    /// @notice Updating an existing claim should emit ClaimChanged (not ClaimAdded)
+    function test_updateClaim_shouldEmitClaimChanged() public {
+        // aliceClaim666 already added in setUp. Update it with new data.
+        bytes memory newData = hex"0099";
+        string memory newUri = "https://example.com/updated";
+        bytes memory newSignature = ClaimSignerHelper.signClaim(
+            claimIssuerOwnerPk,
+            claimIssuerOwner,
+            address(claimIssuer),
+            address(aliceIdentity),
+            aliceClaim666.topic,
+            newData
+        );
+
+        vm.prank(alice);
+        vm.expectEmit(true, false, false, true, address(aliceIdentity));
+        emit IERC735.ClaimChanged(
+            aliceClaim666.id, aliceClaim666.topic, 1, address(claimIssuer), newSignature, newData, newUri
+        );
+        aliceIdentity.addClaim(aliceClaim666.topic, 1, address(claimIssuer), newSignature, newData, newUri);
+    }
+
     // ============ getClaimIdsByTopic ============
 
     /// @notice When no claims exist for topic, should return empty array

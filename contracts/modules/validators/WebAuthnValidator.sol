@@ -37,7 +37,7 @@ contract WebAuthnValidator is ERC7579Validator {
         bytes32 qx;
         bytes32 qy;
         // solhint-disable-next-line no-inline-assembly
-        assembly {
+        assembly ("memory-safe") {
             qx := mload(add(signer, 52))
             qy := mload(add(signer, 84))
         }
