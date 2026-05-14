@@ -12,6 +12,7 @@ import { IdentityUtilities } from "contracts/IdentityUtilities.sol";
 import { ClaimIssuerFactory } from "contracts/factory/ClaimIssuerFactory.sol";
 import { IdFactory } from "contracts/factory/IdFactory.sol";
 import { Gateway } from "contracts/gateway/Gateway.sol";
+import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
 import { ECDSAValidator } from "contracts/modules/validators/ECDSAValidator.sol";
 import { WebAuthnValidator } from "contracts/modules/validators/WebAuthnValidator.sol";
 import { IdentityUtilitiesProxy } from "contracts/proxy/IdentityUtilitiesProxy.sol";
@@ -77,8 +78,13 @@ contract DeployOnchainID is Script {
         ImplementationAuthority authority = new ImplementationAuthority(address(identityImpl));
         console.log("ImplementationAuthority:", address(authority));
 
+        // 4b. KeyApprovalModule singleton (ERC-7579 fallback handler + executor for the
+        //     legacy ERC-734 execute/approve queue, auto-installed on every identity).
+        KeyApprovalModule keyApprovalModule = new KeyApprovalModule();
+        console.log("KeyApprovalModule:", address(keyApprovalModule));
+
         // 5. IdFactory
-        IdFactory idFactory = new IdFactory(address(authority));
+        IdFactory idFactory = new IdFactory(address(authority), address(keyApprovalModule));
         console.log("IdFactory:", address(idFactory));
 
         // 6. ClaimIssuerFactory

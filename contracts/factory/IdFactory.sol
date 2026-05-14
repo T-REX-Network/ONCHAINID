@@ -2,10 +2,11 @@
 pragma solidity ^0.8.27;
 
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
-import { IERC7579ModuleConfig } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import { MODULE_TYPE_EXECUTOR, MODULE_TYPE_FALLBACK } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 
 import { KeyManager } from "../KeyManager.sol";
-import { IERC734 } from "../interface/IERC734.sol";
+import { SmartAccount } from "../SmartAccount.sol";
+import { IKeyExecutor } from "../interface/IKeyExecutor.sol";
 import { Errors } from "../libraries/Errors.sol";
 import { IdentityTypes } from "../libraries/IdentityTypes.sol";
 import { KeyPurposes } from "../libraries/KeyPurposes.sol";
@@ -18,6 +19,10 @@ contract IdFactory is IIdFactory, Ownable {
 
     // address of the _implementationAuthority contract making the link to the implementation contract
     address public immutable implementationAuthority;
+
+    /// @notice The KeyApprovalModule singleton auto-installed on every identity at creation.
+    /// @dev Provides the ERC-734 `execute`/`approve` ABI via ERC-7579 fallback + executor.
+    address public immutable keyApprovalModule;
 
     mapping(address => bool) private _tokenFactories;
 
@@ -38,9 +43,11 @@ contract IdFactory is IIdFactory, Ownable {
     mapping(address => address) private _tokenAddress;
 
     // setting
-    constructor(address implementationAuthorityAddress) Ownable(msg.sender) {
+    constructor(address implementationAuthorityAddress, address keyApprovalModuleAddress) Ownable(msg.sender) {
         require(implementationAuthorityAddress != address(0), Errors.ZeroAddress());
+        require(keyApprovalModuleAddress != address(0), Errors.ZeroAddress());
         implementationAuthority = implementationAuthorityAddress;
+        keyApprovalModule = keyApprovalModuleAddress;
     }
 
     /**
@@ -91,12 +98,18 @@ contract IdFactory is IIdFactory, Ownable {
         require(hasManagementKey, Errors.NoManagementKeyInKeys());
 
         address identity = _deployIdentity(oidSalt, _identityType);
-        _setupIdentity(identity, _keys, _modules);
 
+        // Checks-effects-interactions: commit storage BEFORE any user-controlled `onInstall`
+        // runs in `_setupIdentity`. A malicious module re-entering `createIdentity` for the
+        // same wallet now hits `_userIdentity[_wallet] != 0` and reverts before a second
+        // deployment can occur.
         _saltTaken[oidSalt] = true;
         _userIdentity[_wallet] = identity;
         _wallets[identity].push(_wallet);
         emit WalletLinked(_wallet, identity);
+
+        _setupIdentity(identity, _keys, _modules);
+
         return identity;
     }
 
@@ -109,7 +122,7 @@ contract IdFactory is IIdFactory, Ownable {
         Structs.KeyParam[] memory _keys,
         Structs.ModuleInstall[] memory _modules
     ) external override returns (address) {
-        require(isTokenFactory(msg.sender) || msg.sender == owner(), OwnableUnauthorizedAccount(msg.sender));
+        require(isTokenFactory(msg.sender) || msg.sender == owner(), Ownable.OwnableUnauthorizedAccount(msg.sender));
         require(_token != address(0), Errors.ZeroAddress());
         require(keccak256(abi.encode(_salt)) != keccak256(abi.encode("")), Errors.EmptyString());
         require(_keys.length > 0, Errors.EmptyListOfKeys());
@@ -118,12 +131,15 @@ contract IdFactory is IIdFactory, Ownable {
         require(_tokenIdentity[_token] == address(0), Errors.TokenAlreadyLinked(_token));
 
         address identity = _deployIdentity(tokenIdSalt, IdentityTypes.ASSET);
-        _setupIdentity(identity, _keys, _modules);
 
+        // Checks-effects-interactions: commit storage BEFORE `_setupIdentity` runs user-controlled `onInstall`.
         _saltTaken[tokenIdSalt] = true;
         _tokenIdentity[_token] = identity;
         _tokenAddress[identity] = _token;
         emit TokenLinked(_token, identity);
+
+        _setupIdentity(identity, _keys, _modules);
+
         return identity;
     }
 
@@ -201,10 +217,20 @@ contract IdFactory is IIdFactory, Ownable {
         return _tokenFactories[_factory];
     }
 
-    /// @dev Bootstraps an identity: adds keys, installs validator modules (if any), then removes factory key.
+    /// @dev Bootstraps a freshly-deployed identity:
+    ///      1. Adds user-supplied keys (factory holds bootstrap MANAGEMENT).
+    ///      2. Auto-installs {KeyApprovalModule} so the legacy ERC-734 `execute`/`approve` ABI
+    ///         keeps resolving on the identity (option (b) on the IIdentity ABI question).
+    ///      3. Installs any caller-supplied modules.
+    ///      4. Removes the factory's bootstrap MANAGEMENT key.
+    ///
+    ///      Module installation goes through {SmartAccount.installModule}, which is
+    ///      gated by `onlyManager` — the factory still holds MANAGEMENT at this point. This
+    ///      avoids the OZ default `onlyEntryPointOrSelf` chicken-and-egg at deployment time.
     function _setupIdentity(address _identity, Structs.KeyParam[] memory _keys, Structs.ModuleInstall[] memory _modules)
         private
     {
+        // 1. User keys.
         for (uint256 i = 0; i < _keys.length; i++) {
             KeyManager(_identity)
                 .addKeyWithData(
@@ -212,19 +238,26 @@ contract IdFactory is IIdFactory, Ownable {
                 );
         }
 
+        // 2. Auto-install the queue module as EXECUTOR (so `executeFromExecutor` accepts it)
+        //    and as FALLBACK for the two legacy ERC-734 selectors that previously lived on
+        //    the account itself. ERC-7579 fallback initData is `(bytes4 selector ++ payload)`.
+        address mod = keyApprovalModule;
+        SmartAccount(payable(_identity)).installModule(MODULE_TYPE_EXECUTOR, mod, "");
+        SmartAccount(payable(_identity))
+            .installModule(MODULE_TYPE_FALLBACK, mod, abi.encodePacked(IKeyExecutor.execute.selector));
+        SmartAccount(payable(_identity))
+            .installModule(MODULE_TYPE_FALLBACK, mod, abi.encodePacked(IKeyExecutor.approve.selector));
+        SmartAccount(payable(_identity))
+            .installModule(MODULE_TYPE_FALLBACK, mod, abi.encodePacked(IKeyExecutor.getCurrentNonce.selector));
+
+        // 3. Caller-supplied modules.
         for (uint256 i = 0; i < _modules.length; i++) {
-            IERC734(_identity)
-                .execute(
-                    _identity,
-                    0,
-                    abi.encodeCall(
-                        IERC7579ModuleConfig.installModule,
-                        (_modules[i].moduleType, _modules[i].module, _modules[i].initData)
-                    )
-                );
+            SmartAccount(payable(_identity))
+                .installModule(_modules[i].moduleType, _modules[i].module, _modules[i].initData);
         }
 
-        IERC734(_identity).removeKey(keccak256(abi.encodePacked(address(this))), KeyPurposes.MANAGEMENT);
+        // 4. Drop the bootstrap key. Direct call: factory still holds MANAGEMENT.
+        KeyManager(_identity).removeKey(keccak256(abi.encodePacked(address(this))), KeyPurposes.MANAGEMENT);
     }
 
     // deploy function with create2 opcode call

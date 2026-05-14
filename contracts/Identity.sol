@@ -10,7 +10,6 @@ import { Errors } from "./libraries/Errors.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
 import { Structs } from "./storage/Structs.sol";
 import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import { MulticallUpgradeable } from "@openzeppelin/contracts-upgradeable/utils/MulticallUpgradeable.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import { SignatureChecker } from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 import { IERC165 } from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
@@ -35,7 +34,7 @@ import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableS
  * @custom:security This contract uses ERC-7201 storage slots to prevent storage collision attacks
  * in upgradeable contracts.
  */
-contract Identity is Initializable, IIdentity, SmartAccount, MulticallUpgradeable {
+contract Identity is Initializable, IIdentity, SmartAccount {
 
     using EnumerableSet for EnumerableSet.Bytes32Set;
 
@@ -95,16 +94,18 @@ contract Identity is Initializable, IIdentity, SmartAccount, MulticallUpgradeabl
     // ========= Constructor =========
 
     /**
-     * @notice constructor of the Identity contract
-     * @param initialManagementKey the address of the management key at deployment
-     * @param _isLibrary boolean value stating if the contract is library or not
-     * calls __Identity_init if contract is not library
+     * @notice Constructor of the Identity contract.
+     * @param initialManagementKey The management key address at deployment.
+     * @param _isLibrary True when deploying the implementation contract behind a proxy. In that
+     *        case we lock the OZ `Initializable` slot via `_disableInitializers()` so the
+     *        implementation can never be initialized directly; only proxies (which run the
+     *        constructor in their own context with `_isLibrary == false`) can initialize.
      */
     constructor(address initialManagementKey, bool _isLibrary) EIP712("OnchainID", "1") {
-        if (!_isLibrary) {
-            __Identity_init(initialManagementKey);
+        if (_isLibrary) {
+            _disableInitializers();
         } else {
-            _getKeyStorage().initialized = true;
+            __Identity_init(initialManagementKey);
         }
     }
 
@@ -191,12 +192,15 @@ contract Identity is Initializable, IIdentity, SmartAccount, MulticallUpgradeabl
         bytes memory _signature,
         bytes memory _data,
         string memory _uri
-    ) public delegatedOnly onlyClaimKey returns (bytes32 claimRequestId) {
-        // 1. Validate claim if issuer is not self
-        require(
-            IClaimIssuer(_issuer).isClaimValid(IIdentity(address(this)), _topic, _signature, _data),
-            Errors.InvalidClaim()
-        );
+    ) public override(IERC735) delegatedOnly onlyClaimKey returns (bytes32 claimRequestId) {
+        // 1. Self-issued claims are accepted as-is — the `onlyClaimKey` modifier already gates
+        //    the caller. External issuers must vouch for the claim via `isClaimValid`.
+        if (_issuer != address(this)) {
+            require(
+                IClaimIssuer(_issuer).isClaimValid(IIdentity(address(this)), _topic, _signature, _data),
+                Errors.InvalidClaim()
+            );
+        }
 
         ClaimStorage storage cs = _getClaimStorage();
         bytes32 claimId = keccak256(abi.encode(_issuer, _topic));

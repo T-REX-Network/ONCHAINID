@@ -33,9 +33,6 @@ library Errors {
     /// @notice Reverts if the only linked wallet tries to unlink
     error OnlyLinkedWalletCanUnlink();
 
-    /// @notice Reverts if the account is not authorized to call the function
-    error OwnableUnauthorizedAccount(address account); // TODO: OZ
-
     /// @notice Reverts if the salt is taken
     error SaltTaken(string salt);
 
@@ -153,6 +150,21 @@ library Errors {
 
     /// @notice The signer data is invalid or too short.
     error InvalidSignerData();
+
+    /// @notice The last MANAGEMENT key cannot be removed (would render the identity unrecoverable).
+    error CannotRemoveLastManagementKey();
+
+    /// @notice Reverts when a ClaimIssuer attempts to revoke a claim that was not issued by itself.
+    error NotOwnIssuance();
+
+    /// @notice The validator module specified in a UserOp/signature is not installed.
+    error ValidatorModuleNotInstalled(address module);
+
+    /// @notice The signer key does not have the required purpose for the requested execution.
+    error PurposeNotAuthorizedForCall(bytes32 keyHash, address target);
+
+    /// @notice The execution mode requested is not supported by the account's purpose check.
+    error UnsupportedExecutionMode(bytes32 mode);
 
     /* ----- IdentityUtilities ----- */
 

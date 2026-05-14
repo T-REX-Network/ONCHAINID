@@ -58,6 +58,10 @@ contract ClaimIssuer is IClaimIssuer, Identity, UUPSUpgradeable {
 
     /**
      *  @dev See {IClaimIssuer-revokeClaim}.
+     *
+     *  @notice An issuer must not be able to revoke a claim it never issued. We pull the
+     *  issuer out of the stored claim and require it to match `address(this)` before marking
+     *  the signature as revoked.
      */
     function revokeClaim(bytes32 _claimId, address _identity)
         external
@@ -74,6 +78,7 @@ contract ClaimIssuer is IClaimIssuer, Identity, UUPSUpgradeable {
 
         (foundClaimTopic, scheme, issuer, sig, data,) = Identity(payable(_identity)).getClaim(_claimId);
 
+        require(issuer == address(this), Errors.NotOwnIssuance());
         require(!revokedClaims[sig], Errors.ClaimAlreadyRevoked());
 
         revokedClaims[sig] = true;
@@ -83,6 +88,10 @@ contract ClaimIssuer is IClaimIssuer, Identity, UUPSUpgradeable {
 
     /**
      *  @dev See {IClaimIssuer-addClaimTo}.
+     *
+     *  @notice Calls `addClaim` on the target identity directly. The target's `onlyClaimKey`
+     *  modifier requires this issuer to be registered as a CLAIM_SIGNER key on it — if it
+     *  isn't, the call reverts and `addClaimTo` reverts with it.
      */
     function addClaimTo(
         uint256 _topic,
@@ -94,14 +103,8 @@ contract ClaimIssuer is IClaimIssuer, Identity, UUPSUpgradeable {
     ) external delegatedOnly onlyManager {
         require(isClaimValid(_identity, _topic, _signature, _data), Errors.InvalidClaim());
 
-        bytes memory addClaimData = abi.encodeWithSelector(
-            _identity.addClaim.selector, _topic, _scheme, address(this), _signature, _data, _uri
-        );
+        _identity.addClaim(_topic, _scheme, address(this), _signature, _data, _uri);
 
-        try _identity.execute(address(_identity), 0, addClaimData) { }
-        catch {
-            revert Errors.CallFailed();
-        }
         emit ClaimAddedTo(address(_identity), _topic, _signature, _data);
     }
 

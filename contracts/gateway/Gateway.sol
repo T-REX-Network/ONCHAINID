@@ -175,7 +175,14 @@ contract Gateway is Ownable {
     }
 
     /**
-     * @notice Call a function on the factory. Only the owner of the Gateway can call this method.
+     * @notice Call any function on the factory. Owner-only escape hatch.
+     *
+     * @dev WARNING: this is a raw, unrestricted passthrough to the underlying `IdFactory`. The
+     *      Gateway owner can invoke any factory function with arbitrary calldata, bypassing
+     *      every Gateway-level check (signer approval, signature expiry, signature revocation).
+     *      Intended for operational recovery and migrations only. Anyone auditing Gateway
+     *      permissions should treat the Gateway owner as having full factory authority.
+     *
      * @param data the calldata to forward to the factory.
      */
     function callFactory(bytes memory data) external onlyOwner {

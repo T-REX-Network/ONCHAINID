@@ -4,6 +4,7 @@ pragma solidity ^0.8.27;
 import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 import { Constants } from "../utils/Constants.sol";
+import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IdFactory } from "contracts/factory/IdFactory.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
@@ -38,12 +39,17 @@ contract IdFactoryTest is OnchainIDSetup {
 
     function test_revertBecauseAuthorityIsZeroAddress() public {
         vm.expectRevert(Errors.ZeroAddress.selector);
-        new IdFactory(address(0));
+        new IdFactory(address(0), address(onchainidSetup.keyApprovalModule));
+    }
+
+    function test_revertBecauseKeyApprovalModuleIsZeroAddress() public {
+        vm.expectRevert(Errors.ZeroAddress.selector);
+        new IdFactory(address(onchainidSetup.implementationAuthority), address(0));
     }
 
     function test_revertBecauseSenderNotAllowedToCreateIdentities() public {
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(Errors.OwnableUnauthorizedAccount.selector, alice));
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
         onchainidSetup.idFactory
             .createIdentity(
                 address(0),
@@ -461,7 +467,7 @@ contract IdFactoryTest is OnchainIDSetup {
         // Deploy a factory with a reverting implementation
         RevertingIdentity revertingImpl = new RevertingIdentity();
         ImplementationAuthority badAuthority = new ImplementationAuthority(address(revertingImpl));
-        IdFactory badFactory = new IdFactory(address(badAuthority));
+        IdFactory badFactory = new IdFactory(address(badAuthority), address(onchainidSetup.keyApprovalModule));
 
         // createIdentity will try CREATE2 with IdentityProxy whose constructor
         // delegatecalls initialize() on RevertingIdentity, which reverts,

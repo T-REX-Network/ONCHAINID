@@ -16,8 +16,11 @@ contract InitTest is OnchainIDSetup {
     }
 
     function test_revert_whenInitializingWithZeroAddress() public {
+        // The library implementation is constructed with `_disableInitializers()`, so any
+        // call to `initialize` on it reverts via OZ's `Initializable` slot — before the
+        // zero-address check even runs.
         Identity libraryImpl = new Identity(deployer, true);
-        vm.expectRevert(Errors.ZeroAddress.selector);
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
         libraryImpl.initialize(address(0), IdentityTypes.INDIVIDUAL);
     }
 
@@ -32,8 +35,10 @@ contract InitTest is OnchainIDSetup {
     }
 
     function test_revert_whenInitializingLibraryWithValidAddress() public {
+        // Library implementations are locked at construction time via `_disableInitializers()`,
+        // so `initialize` reverts with OZ's standard `InvalidInitialization` regardless of args.
         Identity libraryImpl = new Identity(deployer, true);
-        vm.expectRevert(Errors.InitialKeyAlreadySetup.selector);
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
         libraryImpl.initialize(deployer, IdentityTypes.INDIVIDUAL);
     }
 

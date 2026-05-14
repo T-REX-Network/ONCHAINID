@@ -4,6 +4,7 @@ pragma solidity ^0.8.27;
 import { Identity } from "contracts/Identity.sol";
 import { IdFactory } from "contracts/factory/IdFactory.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
+import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
 import { ECDSAValidator } from "contracts/modules/validators/ECDSAValidator.sol";
 import { WebAuthnValidator } from "contracts/modules/validators/WebAuthnValidator.sol";
 import { IdentityProxy } from "contracts/proxy/IdentityProxy.sol";
@@ -16,6 +17,7 @@ library IdentityHelper {
         Identity identityImplementation;
         ImplementationAuthority implementationAuthority;
         IdFactory idFactory;
+        KeyApprovalModule keyApprovalModule;
         ECDSAValidator ecdsaValidator;
         WebAuthnValidator webauthnValidator;
     }
@@ -27,10 +29,11 @@ library IdentityHelper {
         // Deploy validator module singletons
         setup.ecdsaValidator = new ECDSAValidator();
         setup.webauthnValidator = new WebAuthnValidator();
+        setup.keyApprovalModule = new KeyApprovalModule();
 
         setup.identityImplementation = new Identity(managementKey, false);
         setup.implementationAuthority = new ImplementationAuthority(address(setup.identityImplementation));
-        setup.idFactory = new IdFactory(address(setup.implementationAuthority));
+        setup.idFactory = new IdFactory(address(setup.implementationAuthority), address(setup.keyApprovalModule));
         // Modules are installed per-identity via createIdentity's _modules parameter
     }
 

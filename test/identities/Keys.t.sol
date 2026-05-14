@@ -118,6 +118,11 @@ contract KeysTest is OnchainIDSetup {
     // ============ Remove key methods - Management key ============
 
     function test_RemovePurposeFromExistingKey() public {
+        // Removing the only MANAGEMENT key is forbidden. Add a second one first so the
+        // invariant holds.
+        vm.prank(alice);
+        aliceIdentity.addKey(bobKeyHash, KeyPurposes.MANAGEMENT, KeyTypes.ECDSA);
+
         vm.prank(alice);
         aliceIdentity.removeKey(aliceKeyHash, KeyPurposes.MANAGEMENT);
 
