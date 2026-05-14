@@ -7,19 +7,33 @@ import { Structs } from "../storage/Structs.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { Strings } from "@openzeppelin/contracts/utils/Strings.sol";
 import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 
 /**
  * @title Gateway
  * @notice Signature-gated entry point for the OnchainID Factory.
  * @dev Validates signed deployment requests from approved signers with optional expiry.
- * The frontend builds the full key list (any purposes, any key types, including WebAuthn)
- * and ERC-7579 modules, then submits them through the Gateway.
+ *      Signatures follow EIP-712: signers use `eth_signTypedData_v4`, wallets render a
+ *      structured prompt instead of an opaque hash.
  */
-contract Gateway is Ownable {
+contract Gateway is Ownable, EIP712 {
 
     using ECDSA for bytes32;
-    using MessageHashUtils for bytes32;
+
+    /// @dev EIP-712 typehash for a deployment authorization. Mirrors `deployIdentityWithSalt`'s
+    ///      signed fields. The `keys` and `modules` arrays are encoded by hashing each element
+    ///      under its own typehash and concatenating those hashes, per the EIP-712 array rule.
+    bytes32 private constant _DEPLOY_TYPEHASH = keccak256(
+        "Deploy(address identityOwner,uint256 identityType,string salt,KeyParam[] keys,ModuleInstall[] modules,uint256 signatureExpiry)KeyParam(bytes32 keyHash,uint256 purpose,uint256 keyType,bytes signerData,bytes clientData)ModuleInstall(uint256 moduleType,address module,bytes initData)"
+    );
+
+    bytes32 private constant _KEY_PARAM_TYPEHASH = keccak256(
+        "KeyParam(bytes32 keyHash,uint256 purpose,uint256 keyType,bytes signerData,bytes clientData)"
+    );
+
+    bytes32 private constant _MODULE_INSTALL_TYPEHASH = keccak256(
+        "ModuleInstall(uint256 moduleType,address module,bytes initData)"
+    );
 
     /// @notice The IdFactory contract this Gateway operates.
     IdFactory public immutable idFactory;
@@ -47,7 +61,10 @@ contract Gateway is Ownable {
      * @param idFactoryAddress the address of the factory to operate (the Gateway must be owner of the Factory).
      * @param signersToApprove initial list of approved signers (max 10).
      */
-    constructor(address idFactoryAddress, address[] memory signersToApprove) Ownable(msg.sender) {
+    constructor(address idFactoryAddress, address[] memory signersToApprove)
+        Ownable(msg.sender)
+        EIP712("OnchainIDGateway", "1")
+    {
         require(idFactoryAddress != address(0), Errors.ZeroAddress());
         require(signersToApprove.length <= 10, Errors.TooManySigners());
 
@@ -107,23 +124,67 @@ contract Gateway is Ownable {
         require(signatureExpiry == 0 || block.timestamp <= signatureExpiry, Errors.ExpiredSignature(signature));
 
         {
-            address signer = keccak256(
+            bytes32 digest = _hashTypedDataV4(
+                keccak256(
                     abi.encode(
-                        "Authorize ONCHAINID deployment",
+                        _DEPLOY_TYPEHASH,
                         identityOwner,
                         identityType,
-                        salt,
-                        keys,
-                        modules,
+                        keccak256(bytes(salt)),
+                        _hashKeyParams(keys),
+                        _hashModuleInstalls(modules),
                         signatureExpiry
                     )
-                ).toEthSignedMessageHash().recover(signature);
+                )
+            );
+            address signer = digest.recover(signature);
 
             require(approvedSigners[signer], Errors.UnapprovedSigner(signer));
             require(!revokedSignatures[signature], Errors.RevokedSignature(signature));
         }
 
         return idFactory.createIdentity(identityOwner, identityType, salt, keys, modules);
+    }
+
+    /// @notice The EIP-712 domain separator used by `deployIdentityWithSalt`. Off-chain signers
+    ///         can fetch this directly instead of recomputing the domain themselves.
+    function domainSeparator() external view returns (bytes32) {
+        return _domainSeparatorV4();
+    }
+
+    /// @dev Hashes a `KeyParam[]` per EIP-712's array encoding: keccak256 of the concatenation
+    ///      of each element's struct hash.
+    function _hashKeyParams(Structs.KeyParam[] calldata keys) private pure returns (bytes32) {
+        bytes32[] memory hashes = new bytes32[](keys.length);
+        for (uint256 i = 0; i < keys.length; i++) {
+            hashes[i] = keccak256(
+                abi.encode(
+                    _KEY_PARAM_TYPEHASH,
+                    keys[i].keyHash,
+                    keys[i].purpose,
+                    keys[i].keyType,
+                    keccak256(keys[i].signerData),
+                    keccak256(keys[i].clientData)
+                )
+            );
+        }
+        return keccak256(abi.encodePacked(hashes));
+    }
+
+    /// @dev Hashes a `ModuleInstall[]` per EIP-712's array encoding.
+    function _hashModuleInstalls(Structs.ModuleInstall[] calldata modules) private pure returns (bytes32) {
+        bytes32[] memory hashes = new bytes32[](modules.length);
+        for (uint256 i = 0; i < modules.length; i++) {
+            hashes[i] = keccak256(
+                abi.encode(
+                    _MODULE_INSTALL_TYPEHASH,
+                    modules[i].moduleType,
+                    modules[i].module,
+                    keccak256(modules[i].initData)
+                )
+            );
+        }
+        return keccak256(abi.encodePacked(hashes));
     }
 
     /**
