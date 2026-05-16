@@ -16,13 +16,10 @@ library IdentityHelper {
         IdFactory idFactory;
     }
 
-    function deployFactory(address managementKey, address createx, address owner)
-        internal
-        returns (OnchainIDSetup memory setup)
-    {
+    function deployFactory(address managementKey, address owner) internal returns (OnchainIDSetup memory setup) {
         setup.identityImplementation = new Identity(managementKey, false);
         setup.implementationAuthority = new ImplementationAuthority(address(setup.identityImplementation), owner);
-        setup.idFactory = new IdFactory(address(setup.implementationAuthority), createx, owner);
+        setup.idFactory = new IdFactory(address(setup.implementationAuthority), owner);
     }
 
     /// @notice Deploys an Identity through the custom IdentityProxy pattern (defaults to INDIVIDUAL type)

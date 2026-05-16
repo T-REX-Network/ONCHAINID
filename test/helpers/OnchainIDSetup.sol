@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
-import { CreateX } from "@createx/CreateX.sol";
 import { Test } from "@forge-std/Test.sol";
 
 import { ClaimIssuer } from "contracts/ClaimIssuer.sol";
@@ -22,7 +21,6 @@ contract OnchainIDSetup is Test {
 
     // Infrastructure
     IdentityHelper.OnchainIDSetup public onchainidSetup;
-    CreateX public createx = new CreateX();
 
     // Standard test addresses with private keys
     address public deployer;
@@ -66,7 +64,7 @@ contract OnchainIDSetup is Test {
 
         // Deploy factory infrastructure (as deployer)
         vm.startPrank(deployer);
-        onchainidSetup = IdentityHelper.deployFactory(deployer, address(createx), deployer);
+        onchainidSetup = IdentityHelper.deployFactory(deployer, deployer);
         vm.stopPrank();
 
         // Deploy ClaimIssuer with proxy

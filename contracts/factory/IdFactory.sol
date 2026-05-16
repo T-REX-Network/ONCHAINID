@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
-import { ICreateX } from "@createx/ICreateX.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 
 import { IERC734 } from "../interface/IERC734.sol";
@@ -10,14 +9,13 @@ import { IdentityTypes } from "../libraries/IdentityTypes.sol";
 import { KeyPurposes } from "../libraries/KeyPurposes.sol";
 import { KeyTypes } from "../libraries/KeyTypes.sol";
 import { IdentityProxy } from "../proxy/IdentityProxy.sol";
+import { Create3 } from "../vendor/utils/Create3.sol";
 import { IIdFactory } from "./IIdFactory.sol";
 
 contract IdFactory is IIdFactory, Ownable {
 
     // address of the _implementationAuthority contract making the link to the implementation contract
     address public immutable implementationAuthority;
-
-    address public immutable deployer;
 
     mapping(address => bool) private _tokenFactories;
 
@@ -38,12 +36,10 @@ contract IdFactory is IIdFactory, Ownable {
     mapping(address => address) private _tokenAddress;
 
     // setting
-    constructor(address implementationAuthorityAddress, address deployerAddress, address owner) Ownable(owner) {
+    constructor(address implementationAuthorityAddress, address owner) Ownable(owner) {
         require(implementationAuthorityAddress != address(0), Errors.ZeroAddress());
-        require(deployerAddress != address(0), Errors.ZeroAddress());
 
         implementationAuthority = implementationAuthorityAddress;
-        deployer = deployerAddress;
     }
 
     /**
@@ -246,13 +242,15 @@ contract IdFactory is IIdFactory, Ownable {
         IERC734(_identity).removeKey(keccak256(abi.encode(address(this))), KeyPurposes.MANAGEMENT);
     }
 
-    // function used to deploy an identity using CREATE2
+    // function used to deploy an identity using CREATE3.
+    // The deployed address depends only on (address(this), salt), so the same salt yields the
+    // same Identity address on every canonical-EVM chain when this factory shares the same address.
     function _deployIdentity(string memory _salt, address _wallet, uint256 _identityType) private returns (address) {
         bytes memory _code = type(IdentityProxy).creationCode;
         bytes memory _constructData = abi.encode(implementationAuthority, _wallet, _identityType);
         bytes memory bytecode = abi.encodePacked(_code, _constructData);
 
-        return ICreateX(deployer).deployCreate3(keccak256(abi.encodePacked(_salt)), bytecode);
+        return Create3.deploy(0, keccak256(abi.encodePacked(_salt)), bytecode);
     }
 
 }

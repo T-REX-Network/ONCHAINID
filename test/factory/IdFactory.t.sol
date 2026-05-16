@@ -18,12 +18,7 @@ contract IdFactoryTest is OnchainIDSetup {
 
     function test_revertBecauseAuthorityIsZeroAddress() public {
         vm.expectRevert(Errors.ZeroAddress.selector);
-        new IdFactory(address(0), address(createx), address(this));
-    }
-
-    function test_revertWhenDeployerIsZeroAddress() public {
-        vm.expectRevert(Errors.ZeroAddress.selector);
-        new IdFactory(address(0x1), address(0), address(this));
+        new IdFactory(address(0), address(this));
     }
 
     function test_revertBecauseSenderNotAllowedToCreateIdentities() public {
@@ -378,16 +373,17 @@ contract IdFactoryTest is OnchainIDSetup {
 
     // ============ _deploy CREATE2 failure ============
 
-    /// @notice CREATE2 failure triggers assembly revert when proxy constructor reverts
-    function test_createIdentity_revertWhenCreate2Fails() public {
+    /// @notice CREATE3 deployment failure bubbles up when the IdentityProxy constructor reverts
+    function test_createIdentity_revertWhenDeploymentFails() public {
         // Deploy a factory with a reverting implementation
         RevertingIdentity revertingImpl = new RevertingIdentity();
         ImplementationAuthority badAuthority = new ImplementationAuthority(address(revertingImpl), address(this));
-        IdFactory badFactory = new IdFactory(address(badAuthority), address(createx), address(this));
+        IdFactory badFactory = new IdFactory(address(badAuthority), address(this));
 
-        // createIdentity will try CREATE2 with IdentityProxy whose constructor
-        // delegatecalls initialize() on RevertingIdentity, which reverts,
-        // causing CREATE2 to return address(0) and triggering assembly revert
+        // createIdentity uses CREATE3: a CREATE2 proxy is deployed first, then the proxy
+        // performs CREATE of IdentityProxy. IdentityProxy's constructor delegatecalls
+        // initialize() on RevertingIdentity which reverts, so the inner CREATE fails and
+        // Create3.deploy bubbles the revert.
         vm.expectRevert();
         badFactory.createIdentity(david, "salt1", IdentityTypes.INDIVIDUAL, new address[](0));
     }

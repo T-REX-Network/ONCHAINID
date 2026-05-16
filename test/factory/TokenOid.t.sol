@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
-import { CreateX } from "@createx/CreateX.sol";
 import { Test } from "@forge-std/Test.sol";
 
 import { Identity } from "contracts/Identity.sol";
@@ -26,7 +25,7 @@ contract TokenOidTest is Test {
         bob = makeAddr("tokenOidBob");
 
         vm.startPrank(deployer);
-        setup = IdentityHelper.deployFactory(deployer, address(new CreateX()), address(this));
+        setup = IdentityHelper.deployFactory(deployer, address(this));
         vm.stopPrank();
     }
 

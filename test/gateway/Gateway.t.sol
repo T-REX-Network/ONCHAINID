@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
-import { CreateX } from "@createx/CreateX.sol";
 import { Test, Vm } from "@forge-std/Test.sol";
 
 import { Identity } from "contracts/Identity.sol";
@@ -36,7 +35,7 @@ contract GatewayTest is Test {
         vm.warp(365 days);
 
         vm.startPrank(deployer);
-        setup = IdentityHelper.deployFactory(deployer, address(new CreateX()), address(this));
+        setup = IdentityHelper.deployFactory(deployer, address(this));
         vm.stopPrank();
     }
 
