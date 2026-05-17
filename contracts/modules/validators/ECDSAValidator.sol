@@ -9,8 +9,9 @@ import { ERC7579Validator } from "./ERC7579Validator.sol";
  * @title ECDSAValidator
  * @dev ERC-7579 validator module for ECDSA signature verification.
  *
- * Stateless module — no signer storage, no callbacks. Uses the same signature format
- * as isClaimValid: `abi.encode(bytes signer, bytes actualSignature)`.
+ * Stateless module — no signer storage, no callbacks. Signature shape:
+ *   `abi.encode(bytes signer, bytes actualSignature)`
+ *   where `signer` is the packed 20 bytes of an address.
  *
  * Recovers the ECDSA signer via ecrecover and verifies the recovered address matches
  * the declared signer. The account separately verifies the signer is a registered key.
@@ -27,14 +28,16 @@ contract ECDSAValidator is ERC7579Validator {
         override
         returns (bool)
     {
-        // Same format as isClaimValid: abi.encode(bytes signer, bytes actualSignature)
+        // Signature shape: abi.encode(bytes signer, bytes actualSignature). The signer is
+        // expected to be the packed 20 bytes of an address.
         (bytes memory signer, bytes memory actualSig) = abi.decode(signature, (bytes, bytes));
+
+        if (signer.length != 20) return false;
 
         (address recovered, ECDSA.RecoverError err,) = ECDSA.tryRecover(hash, actualSig);
         if (err != ECDSA.RecoverError.NoError) return false;
 
-        // Verify the recovered address matches the declared signer
-        return keccak256(abi.encodePacked(recovered)) == keccak256(signer);
+        return recovered == address(bytes20(signer));
     }
 
     /// @dev No-op: stateless module, nothing to initialize.

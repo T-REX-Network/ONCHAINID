@@ -166,6 +166,12 @@ library Errors {
     /// @notice The execution mode requested is not supported by the account's purpose check.
     error UnsupportedExecutionMode(bytes32 mode);
 
+    /// @notice An installed executor or fallback handler tried to dispatch a call whose target
+    ///         is not authorized by the purpose registered for that module at install time.
+    ///         Also raised at install time if the module's initData does not begin with a
+    ///         non-zero `uint256 purpose`.
+    error ExecutorPurposeNotAuthorized();
+
     /* ----- IdentityUtilities ----- */
 
     /// @notice 0 is not a valid topic.

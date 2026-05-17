@@ -64,9 +64,8 @@ contract GatewayTest is Test {
         "Deploy(address identityOwner,uint256 identityType,string salt,KeyParam[] keys,ModuleInstall[] modules,uint256 signatureExpiry)KeyParam(bytes32 keyHash,uint256 purpose,uint256 keyType,bytes signerData,bytes clientData)ModuleInstall(uint256 moduleType,address module,bytes initData)"
     );
 
-    bytes32 internal constant _KEY_PARAM_TYPEHASH = keccak256(
-        "KeyParam(bytes32 keyHash,uint256 purpose,uint256 keyType,bytes signerData,bytes clientData)"
-    );
+    bytes32 internal constant _KEY_PARAM_TYPEHASH =
+        keccak256("KeyParam(bytes32 keyHash,uint256 purpose,uint256 keyType,bytes signerData,bytes clientData)");
 
     function _signDeploy(
         Gateway gateway_,

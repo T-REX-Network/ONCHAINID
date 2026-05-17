@@ -27,13 +27,11 @@ contract Gateway is Ownable, EIP712 {
         "Deploy(address identityOwner,uint256 identityType,string salt,KeyParam[] keys,ModuleInstall[] modules,uint256 signatureExpiry)KeyParam(bytes32 keyHash,uint256 purpose,uint256 keyType,bytes signerData,bytes clientData)ModuleInstall(uint256 moduleType,address module,bytes initData)"
     );
 
-    bytes32 private constant _KEY_PARAM_TYPEHASH = keccak256(
-        "KeyParam(bytes32 keyHash,uint256 purpose,uint256 keyType,bytes signerData,bytes clientData)"
-    );
+    bytes32 private constant _KEY_PARAM_TYPEHASH =
+        keccak256("KeyParam(bytes32 keyHash,uint256 purpose,uint256 keyType,bytes signerData,bytes clientData)");
 
-    bytes32 private constant _MODULE_INSTALL_TYPEHASH = keccak256(
-        "ModuleInstall(uint256 moduleType,address module,bytes initData)"
-    );
+    bytes32 private constant _MODULE_INSTALL_TYPEHASH =
+        keccak256("ModuleInstall(uint256 moduleType,address module,bytes initData)");
 
     /// @notice The IdFactory contract this Gateway operates.
     IdFactory public immutable idFactory;
@@ -177,10 +175,7 @@ contract Gateway is Ownable, EIP712 {
         for (uint256 i = 0; i < modules.length; i++) {
             hashes[i] = keccak256(
                 abi.encode(
-                    _MODULE_INSTALL_TYPEHASH,
-                    modules[i].moduleType,
-                    modules[i].module,
-                    keccak256(modules[i].initData)
+                    _MODULE_INSTALL_TYPEHASH, modules[i].moduleType, modules[i].module, keccak256(modules[i].initData)
                 )
             );
         }

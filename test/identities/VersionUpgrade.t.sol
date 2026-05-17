@@ -29,7 +29,13 @@ contract VersionUpgradeTest is OnchainIDSetup {
 
         // Sign claim properly
         bytes memory signature = ClaimSignerHelper.signClaim(
-            alicePk, alice, address(aliceIdentity), address(aliceIdentity), claimTopic, claimData
+            alicePk,
+            alice,
+            address(onchainidSetup.ecdsaValidator),
+            address(aliceIdentity),
+            address(aliceIdentity),
+            claimTopic,
+            claimData
         );
 
         // Add self-issued claim with valid signature

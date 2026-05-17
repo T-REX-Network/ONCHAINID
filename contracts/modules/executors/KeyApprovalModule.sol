@@ -85,29 +85,21 @@ contract KeyApprovalModule is IERC7579Module {
 
     /// @notice Queue an execution for the calling identity. Auto-runs if the caller's key
     ///         purpose authorizes it; otherwise waits for {approve}.
-    function execute(address _to, uint256 _value, bytes calldata _data)
-        external
-        payable
-        returns (uint256 executionId)
-    {
-        // `msg.sender` is the identity (we were reached through its fallback handler).
-        // `_msgSender()` recovers the original off-chain caller appended by ERC-2771.
+    function execute(address _to, uint256 _value, bytes calldata _data) external payable returns (uint256 executionId) {
+        // 1. Identify the account and the off-chain caller. `msg.sender` is the identity (we were
+        //    reached through its fallback). `_msgSender()` recovers the user via ERC-2771 trailer.
         address account = msg.sender;
         bytes32 callerKeyHash = keccak256(abi.encodePacked(_msgSender()));
 
+        // 2. Allocate the next execution id and persist the request.
         AccountState storage state = _state[account];
         executionId = state.executionNonce++;
-
-        state.executions[executionId] = Execution({
-            to: _to,
-            value: _value,
-            data: _data,
-            approved: false,
-            executed: false
-        });
+        state.executions[executionId] =
+            Execution({ to: _to, value: _value, data: _data, approved: false, executed: false });
 
         emit ExecutionRequested(account, executionId, _to, _value, _data);
 
+        // 3. If the caller's purpose covers this call, run it now; otherwise leave it pending.
         if (_canAutoApprove(account, callerKeyHash, _to, _data)) {
             _runApproved(account, executionId);
         }
@@ -116,16 +108,17 @@ contract KeyApprovalModule is IERC7579Module {
     /// @notice Approve (or reject) a queued execution. Self-targeted calls require MANAGEMENT;
     ///         external targets require ACTION.
     function approve(uint256 _id, bool _shouldApprove) external returns (bool success) {
+        // 1. Resolve account + ERC-2771 caller, fetch the queued request.
         address account = msg.sender;
         bytes32 callerKeyHash = keccak256(abi.encodePacked(_msgSender()));
-
         AccountState storage state = _state[account];
         Execution storage execution = state.executions[_id];
 
+        // 2. Sanity-check the request id and that it isn't already executed.
         require(_id < state.executionNonce, Errors.InvalidRequestId());
         require(!execution.executed, Errors.RequestAlreadyExecuted());
 
-        // Self-call ⇒ MANAGEMENT (administrative). External target ⇒ ACTION (operational).
+        // 3. Authorize the approver. Self-call ⇒ MANAGEMENT; external target ⇒ ACTION.
         if (execution.to == account) {
             require(
                 IERC734(account).keyHasPurpose(callerKeyHash, KeyPurposes.MANAGEMENT),
@@ -133,17 +126,16 @@ contract KeyApprovalModule is IERC7579Module {
             );
         } else {
             require(
-                IERC734(account).keyHasPurpose(callerKeyHash, KeyPurposes.ACTION),
-                Errors.SenderDoesNotHaveActionKey()
+                IERC734(account).keyHasPurpose(callerKeyHash, KeyPurposes.ACTION), Errors.SenderDoesNotHaveActionKey()
             );
         }
 
         emit Approved(account, _id, _shouldApprove);
 
+        // 4. Approval ⇒ dispatch now. Rejection ⇒ mark closed and exit.
         if (_shouldApprove) {
             return _runApproved(account, _id);
         }
-
         execution.executed = true;
         execution.approved = false;
         return false;

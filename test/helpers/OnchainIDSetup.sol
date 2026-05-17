@@ -67,7 +67,7 @@ contract OnchainIDSetup is Test {
         vm.stopPrank();
 
         // Deploy ClaimIssuer with proxy
-        claimIssuer = ClaimIssuerHelper.deployWithProxy(claimIssuerOwner);
+        claimIssuer = ClaimIssuerHelper.deployWithProxy(claimIssuerOwner, address(onchainidSetup.ecdsaValidator));
 
         // Add CLAIM_SIGNER key to ClaimIssuer (register under unified key hash)
         vm.prank(claimIssuerOwner);
@@ -84,7 +84,13 @@ contract OnchainIDSetup is Test {
             clientData: ""
         });
         address aliceIdentityAddr = onchainidSetup.idFactory
-            .createIdentity(alice, IdentityTypes.INDIVIDUAL, "alice", aliceKeys, new Structs.ModuleInstall[](0));
+            .createIdentity(
+                alice,
+                IdentityTypes.INDIVIDUAL,
+                "alice",
+                aliceKeys,
+                IdentityHelper.legacyQueueModules(address(onchainidSetup.keyApprovalModule))
+            );
         aliceIdentity = Identity(payable(aliceIdentityAddr));
 
         // Add carol as CLAIM_SIGNER and david as ACTION key on alice's identity
@@ -101,6 +107,7 @@ contract OnchainIDSetup is Test {
         aliceClaim666 = ClaimSignerHelper.buildClaim(
             claimIssuerOwnerPk,
             claimIssuerOwner,
+            address(onchainidSetup.ecdsaValidator),
             address(aliceIdentity),
             address(claimIssuer),
             Constants.CLAIM_TOPIC_666,
@@ -129,7 +136,13 @@ contract OnchainIDSetup is Test {
             clientData: ""
         });
         address bobIdentityAddr = onchainidSetup.idFactory
-            .createIdentity(bob, IdentityTypes.INDIVIDUAL, "bob", bobKeys, new Structs.ModuleInstall[](0));
+            .createIdentity(
+                bob,
+                IdentityTypes.INDIVIDUAL,
+                "bob",
+                bobKeys,
+                IdentityHelper.legacyQueueModules(address(onchainidSetup.keyApprovalModule))
+            );
         bobIdentity = Identity(payable(bobIdentityAddr));
 
         // Create token identity
@@ -143,7 +156,12 @@ contract OnchainIDSetup is Test {
             clientData: ""
         });
         onchainidSetup.idFactory
-            .createTokenIdentity(Constants.TOKEN_ADDRESS, "tokenOwner", tokenKeys, new Structs.ModuleInstall[](0));
+            .createTokenIdentity(
+                Constants.TOKEN_ADDRESS,
+                "tokenOwner",
+                tokenKeys,
+                IdentityHelper.legacyQueueModules(address(onchainidSetup.keyApprovalModule))
+            );
     }
 
     // ---- Convenience getters ----

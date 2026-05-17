@@ -31,19 +31,24 @@ library ClaimSignerHelper {
         return keccak256(abi.encodePacked(addr));
     }
 
-    /// @notice Signs a claim using the issuer contract's EIP-712 domain and wraps in ERC-7913 format
-    /// @dev The signer signs the EIP-712 typed data hash from `issuerContract.getClaimHash()`.
-    ///      The returned signature is `abi.encode(signer, rawSig)` where signer = abi.encodePacked(signerAddr).
+    /// @notice Signs a claim using the issuer contract's EIP-712 domain. Returns the new
+    ///         module-prefixed wire format: `address validatorModule (20) || abi.encode(signer, sig)`.
+    /// @dev The signer signs the EIP-712 typed-data hash from `issuerContract.getClaimHash()`.
+    ///      The validator module must be installed on the issuer; the issuer's `isClaimValid`
+    ///      reads the prefix, dispatches the signature math through that module, and runs the
+    ///      CLAIM_SIGNER purpose check via the same `_isValidSignature` core that backs ERC-1271.
     /// @param signerPk The private key of the signer
-    /// @param signerAddr The address of the signer (used as the ERC-7913 signer bytes)
+    /// @param signerAddr The address of the signer
+    /// @param validatorModule The installed validator module on the issuer that verifies the sig
     /// @param issuerContract The issuer contract address (provides the EIP-712 domain)
     /// @param identity The identity address the claim is for
     /// @param topic The claim topic
     /// @param data The claim data
-    /// @return signature The wrapped signature: abi.encode(signer, rawSig)
+    /// @return signature module(20) || abi.encode(bytes signer, bytes rawSig)
     function signClaim(
         uint256 signerPk,
         address signerAddr,
+        address validatorModule,
         address issuerContract,
         address identity,
         uint256 topic,
@@ -53,13 +58,14 @@ library ClaimSignerHelper {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerPk, digest);
         bytes memory rawSig = abi.encodePacked(r, s, v);
         bytes memory signer = abi.encodePacked(signerAddr);
-        return abi.encode(signer, rawSig);
+        return abi.encodePacked(validatorModule, abi.encode(signer, rawSig));
     }
 
-    /// @notice Builds a complete Claim struct with computed id and EIP-712 signature
+    /// @notice Builds a complete Claim struct with computed id and EIP-712 signature.
     function buildClaim(
         uint256 signerPk,
         address signerAddr,
+        address validatorModule,
         address identityAddr,
         address issuerAddr,
         uint256 topic,
@@ -73,7 +79,7 @@ library ClaimSignerHelper {
         claim.data = data;
         claim.uri = uri;
         claim.id = computeClaimId(issuerAddr, topic);
-        claim.signature = signClaim(signerPk, signerAddr, issuerAddr, identityAddr, topic, data);
+        claim.signature = signClaim(signerPk, signerAddr, validatorModule, issuerAddr, identityAddr, topic, data);
     }
 
 }

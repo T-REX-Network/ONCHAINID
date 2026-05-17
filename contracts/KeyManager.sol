@@ -35,13 +35,6 @@ contract KeyManager is IERC734 {
     using EnumerableSet for EnumerableSet.UintSet;
     using EnumerableSet for EnumerableSet.Bytes32Set;
 
-    /// @dev Emitted when ERC-7913 signer bytes are stored for a key.
-    event KeyDataSet(bytes32 indexed key);
-
-    /// @dev Emitted when non-cryptographic client metadata is stored for a key
-    ///      (e.g. WebAuthn credentialId).
-    event ClientDataSet(bytes32 indexed key);
-
     /**
      * @dev Storage struct for the key registry.
      * @custom:storage-location erc7201:onchainid.keymanager.storage
@@ -179,6 +172,7 @@ contract KeyManager is IERC734 {
         require(k.key == _key, Errors.KeyNotRegistered(_key));
 
         if (_purpose == KeyPurposes.MANAGEMENT) {
+            // Removing the last MANAGEMENT key would leave the identity unrecoverable.
             require(ks.keysByPurpose[KeyPurposes.MANAGEMENT].length() > 1, Errors.CannotRemoveLastManagementKey());
         }
 
@@ -205,14 +199,16 @@ contract KeyManager is IERC734 {
         bytes memory _signerData,
         bytes memory _clientData
     ) external virtual delegatedOnly onlyManager {
+        // The keyHash MUST commit to the signer bytes stored alongside it. Without this guard a
+        // caller could register one keyHash while attaching a different signer's bytes, which
+        // would silently corrupt any downstream lookup of `signerData`.
+        require(_key == keccak256(_signerData), Errors.InvalidSignerData());
+
         addKey(_key, _purpose, _type);
 
         KeyStorage storage ks = _getKeyStorage();
         ks.keys[_key].signerData = _signerData;
-        emit KeyDataSet(_key);
-
         ks.keys[_key].clientData = _clientData;
-        emit ClientDataSet(_key);
     }
 
     // -----------------------------------------------------------------------

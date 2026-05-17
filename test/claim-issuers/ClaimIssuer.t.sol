@@ -145,7 +145,13 @@ contract ClaimIssuerTest is OnchainIDSetup {
         uint256 topic = 999;
         bytes memory data = hex"0099";
         bytes memory signature = ClaimSignerHelper.signClaim(
-            claimAdderPk, claimAdderAddr, address(claimIssuer), address(aliceIdentity), topic, data
+            claimAdderPk,
+            claimAdderAddr,
+            address(onchainidSetup.ecdsaValidator),
+            address(claimIssuer),
+            address(aliceIdentity),
+            topic,
+            data
         );
 
         // isClaimValid should return false because CLAIM_ADDER cannot sign claims

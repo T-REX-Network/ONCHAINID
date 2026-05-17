@@ -79,12 +79,13 @@ contract DeployOnchainID is Script {
         console.log("ImplementationAuthority:", address(authority));
 
         // 4b. KeyApprovalModule singleton (ERC-7579 fallback handler + executor for the
-        //     legacy ERC-734 execute/approve queue, auto-installed on every identity).
+        //     legacy ERC-734 execute/approve queue). Callers include this in their
+        //     `_modules` array when creating an identity if they want the legacy ABI.
         KeyApprovalModule keyApprovalModule = new KeyApprovalModule();
         console.log("KeyApprovalModule:", address(keyApprovalModule));
 
         // 5. IdFactory
-        IdFactory idFactory = new IdFactory(address(authority), address(keyApprovalModule));
+        IdFactory idFactory = new IdFactory(address(authority));
         console.log("IdFactory:", address(idFactory));
 
         // 6. ClaimIssuerFactory

@@ -9,10 +9,10 @@ import { ERC7579Validator } from "./ERC7579Validator.sol";
  * @title WebAuthnValidator
  * @dev ERC-7579 validator module for WebAuthn/P256 signature verification.
  *
- * Stateless module — no signer storage, no callbacks. Uses the same signature format
- * as isClaimValid: `abi.encode(bytes signer, bytes actualSignature)`.
+ * Stateless module — no signer storage, no callbacks. Signature shape:
+ *   `abi.encode(bytes signer, bytes actualSignature)`
+ *   where `signer = abi.encodePacked(address verifier, bytes32 qx, bytes32 qy)` (84 bytes).
  *
- * The signer bytes contain the P256 public key: `abi.encodePacked(address verifier, bytes32 qx, bytes32 qy)`.
  * The module extracts qx/qy from signer and verifies the WebAuthn assertion against them.
  * The account separately verifies `keccak256(signer)` is a registered key.
  *
@@ -28,7 +28,7 @@ contract WebAuthnValidator is ERC7579Validator {
         override
         returns (bool)
     {
-        // Same format as isClaimValid: abi.encode(bytes signer, bytes actualSignature)
+        // Signature shape: abi.encode(bytes signer, bytes actualSignature).
         (bytes memory signer, bytes memory actualSig) = abi.decode(signature, (bytes, bytes));
 
         // signer = abi.encodePacked(address verifier, bytes32 qx, bytes32 qy) — 84 bytes

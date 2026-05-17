@@ -76,11 +76,15 @@ contract ClaimIssuer is IClaimIssuer, Identity, UUPSUpgradeable {
         bytes memory sig;
         bytes memory data;
 
+        // 1. Pull the claim out of the target identity's storage to inspect its issuer + signature.
         (foundClaimTopic, scheme, issuer, sig, data,) = Identity(payable(_identity)).getClaim(_claimId);
 
+        // 2. Only the original issuer may revoke.
         require(issuer == address(this), Errors.NotOwnIssuance());
+        // 3. Idempotency guard — never re-emit on an already-revoked signature.
         require(!revokedClaims[sig], Errors.ClaimAlreadyRevoked());
 
+        // 4. Mark and emit.
         revokedClaims[sig] = true;
         emit ClaimRevoked(sig);
         return true;
@@ -101,8 +105,10 @@ contract ClaimIssuer is IClaimIssuer, Identity, UUPSUpgradeable {
         string calldata _uri,
         IIdentity _identity
     ) external delegatedOnly onlyManager {
+        // 1. Verify the signature ourselves before forwarding (cheap fail before the cross-contract call).
         require(isClaimValid(_identity, _topic, _signature, _data), Errors.InvalidClaim());
 
+        // 2. Direct call — no queue. If we're not a CLAIM_SIGNER on `_identity`, this reverts.
         _identity.addClaim(_topic, _scheme, address(this), _signature, _data, _uri);
 
         emit ClaimAddedTo(address(_identity), _topic, _signature, _data);
@@ -112,7 +118,7 @@ contract ClaimIssuer is IClaimIssuer, Identity, UUPSUpgradeable {
      *  @dev See {IClaimIssuer-isClaimValid}.
      *  @notice Extends Identity's isClaimValid with claim revocation check.
      */
-    function isClaimValid(IIdentity _identity, uint256 claimTopic, bytes memory sig, bytes memory data)
+    function isClaimValid(IIdentity _identity, uint256 claimTopic, bytes calldata sig, bytes calldata data)
         public
         view
         virtual
@@ -122,7 +128,7 @@ contract ClaimIssuer is IClaimIssuer, Identity, UUPSUpgradeable {
         // 1. Check if the claim signature has been revoked by this issuer.
         if (isClaimRevoked(sig)) return false;
 
-        // 2. Delegate to Identity.isClaimValid for EIP-712 digest + SignatureChecker verification.
+        // 2. Delegate to Identity.isClaimValid for the module-dispatched verification.
         return super.isClaimValid(_identity, claimTopic, sig, data);
     }
 

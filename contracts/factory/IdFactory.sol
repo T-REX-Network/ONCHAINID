@@ -2,11 +2,9 @@
 pragma solidity ^0.8.27;
 
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
-import { MODULE_TYPE_EXECUTOR, MODULE_TYPE_FALLBACK } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 
 import { KeyManager } from "../KeyManager.sol";
 import { SmartAccount } from "../SmartAccount.sol";
-import { IKeyExecutor } from "../interface/IKeyExecutor.sol";
 import { Errors } from "../libraries/Errors.sol";
 import { IdentityTypes } from "../libraries/IdentityTypes.sol";
 import { KeyPurposes } from "../libraries/KeyPurposes.sol";
@@ -19,10 +17,6 @@ contract IdFactory is IIdFactory, Ownable {
 
     // address of the _implementationAuthority contract making the link to the implementation contract
     address public immutable implementationAuthority;
-
-    /// @notice The KeyApprovalModule singleton auto-installed on every identity at creation.
-    /// @dev Provides the ERC-734 `execute`/`approve` ABI via ERC-7579 fallback + executor.
-    address public immutable keyApprovalModule;
 
     mapping(address => bool) private _tokenFactories;
 
@@ -43,11 +37,9 @@ contract IdFactory is IIdFactory, Ownable {
     mapping(address => address) private _tokenAddress;
 
     // setting
-    constructor(address implementationAuthorityAddress, address keyApprovalModuleAddress) Ownable(msg.sender) {
+    constructor(address implementationAuthorityAddress) Ownable(msg.sender) {
         require(implementationAuthorityAddress != address(0), Errors.ZeroAddress());
-        require(keyApprovalModuleAddress != address(0), Errors.ZeroAddress());
         implementationAuthority = implementationAuthorityAddress;
-        keyApprovalModule = keyApprovalModuleAddress;
     }
 
     /**
@@ -238,25 +230,21 @@ contract IdFactory is IIdFactory, Ownable {
                 );
         }
 
-        // 2. Auto-install the queue module as EXECUTOR (so `executeFromExecutor` accepts it)
-        //    and as FALLBACK for the two legacy ERC-734 selectors that previously lived on
-        //    the account itself. ERC-7579 fallback initData is `(bytes4 selector ++ payload)`.
-        address mod = keyApprovalModule;
-        SmartAccount(payable(_identity)).installModule(MODULE_TYPE_EXECUTOR, mod, "");
-        SmartAccount(payable(_identity))
-            .installModule(MODULE_TYPE_FALLBACK, mod, abi.encodePacked(IKeyExecutor.execute.selector));
-        SmartAccount(payable(_identity))
-            .installModule(MODULE_TYPE_FALLBACK, mod, abi.encodePacked(IKeyExecutor.approve.selector));
-        SmartAccount(payable(_identity))
-            .installModule(MODULE_TYPE_FALLBACK, mod, abi.encodePacked(IKeyExecutor.getCurrentNonce.selector));
-
-        // 3. Caller-supplied modules.
+        // 2. Caller-supplied modules. The factory takes no opinion on which modules belong
+        //    on the identity — including the queue module that powers the legacy ERC-734
+        //    `execute`/`approve` ABI. Callers who want that ABI include the four install
+        //    entries (1 executor + 3 fallbacks for execute/approve/getCurrentNonce) and
+        //    grant the queue module MANAGEMENT purpose via `purpose` on the install entry.
         for (uint256 i = 0; i < _modules.length; i++) {
             SmartAccount(payable(_identity))
                 .installModule(_modules[i].moduleType, _modules[i].module, _modules[i].initData);
+            if (_modules[i].purpose != 0) {
+                KeyManager(_identity)
+                    .addKey(keccak256(abi.encodePacked(_modules[i].module)), _modules[i].purpose, KeyTypes.ECDSA);
+            }
         }
 
-        // 4. Drop the bootstrap key. Direct call: factory still holds MANAGEMENT.
+        // 3. Drop the bootstrap key. Direct call: factory still holds MANAGEMENT.
         KeyManager(_identity).removeKey(keccak256(abi.encodePacked(address(this))), KeyPurposes.MANAGEMENT);
     }
 

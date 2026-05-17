@@ -11,7 +11,6 @@ import { KeyPurposes } from "./libraries/KeyPurposes.sol";
 import { Structs } from "./storage/Structs.sol";
 import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
-import { SignatureChecker } from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 import { IERC165 } from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
@@ -293,48 +292,36 @@ contract Identity is Initializable, IIdentity, SmartAccount {
     }
 
     /**
-     * @dev Checks if a claim is valid via unified ERC-7913 signature verification.
+     * @dev Verifies a claim signature against this issuer's installed validator modules.
      *
-     * All signature schemes (ECDSA, WebAuthn, RSA, etc.) use the same format:
-     * `sig = abi.encode(signer, actualSignature)`
+     * Signature wire format (matches the account's ERC-1271 shape):
+     *   `address validatorModule (20 bytes) || abi.encode(bytes signer, bytes actualSig)`
      *
-     * The claim digest is an EIP-712 typed data hash, allowing EOA wallets to use
-     * `signTypedData` (readable prompts) and WebAuthn/passkey signers to use the
-     * digest as an opaque challenge — both verify against the same hash.
+     * The issuer is the single authoritative source for "is this signature valid for me."
+     * `isClaimValid` runs the CLAIM_SIGNER purpose check through the shared
+     * {SmartAccount._isValidSignature} core that backs ERC-1271. The crypto math is
+     * delegated to the validator module named in the prefix (ECDSA, WebAuthn, or any
+     * other registered scheme).
      *
      * @param _identity the identity contract related to the claim
      * @param claimTopic the claim topic of the claim
-     * @param sig the signature: abi.encode(signer, actualSignature)
+     * @param sig signature with the wire format above
      * @param data the data field of the claim
      * @return claimValid true if the claim is valid, false otherwise
      */
-    function isClaimValid(IIdentity _identity, uint256 claimTopic, bytes memory sig, bytes memory data)
+    function isClaimValid(IIdentity _identity, uint256 claimTopic, bytes calldata sig, bytes calldata data)
         public
         view
         virtual
         override
         returns (bool claimValid)
     {
-        // 1. Build the EIP-712 struct hash. `data` is dynamic, so it must be hashed
-        //    per EIP-712 encodeData rules.
+        // 1. Build the EIP-712 struct hash. `data` is dynamic, so hash it per encodeData rules.
         bytes32 structHash = keccak256(abi.encode(_CLAIM_TYPEHASH, address(_identity), claimTopic, keccak256(data)));
-
-        // 2. Wrap with this contract's domain separator to produce the digest the
-        //    issuer actually signed (matches eth_signTypedData_v4 output).
+        // 2. Wrap with this contract's domain separator (matches eth_signTypedData_v4 output).
         bytes32 digest = _hashTypedDataV4(structHash);
-
-        // 3. Decode the unified ERC-7913 signature format.
-        (bytes memory signer, bytes memory actualSig) = abi.decode(sig, (bytes, bytes));
-
-        // 4. Verify the signer is registered as a CLAIM_SIGNER on this identity.
-        if (!keyHasPurpose(keccak256(signer), KeyPurposes.CLAIM_SIGNER)) {
-            return false;
-        }
-
-        // 5. Dispatch through SignatureChecker:
-        //    - 20-byte signer -> ECDSA recover (EIP-712 prompt in MetaMask) or ERC-1271
-        //    - >20-byte signer -> ERC-7913 verifier (WebAuthn / RSA / etc.)
-        return SignatureChecker.isValidSignatureNow(signer, digest, actualSig);
+        // 3. Delegate to the shared core — CLAIM_SIGNER purpose check + module dispatch.
+        return _isValidSignature(digest, sig, KeyPurposes.CLAIM_SIGNER);
     }
 
     /**
