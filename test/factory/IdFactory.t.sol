@@ -371,7 +371,7 @@ contract IdFactoryTest is OnchainIDSetup {
         assertEq(identity.getIdentityType(), IdentityTypes.PUBLIC_AUTHORITY, "Identity type should be PUBLIC_AUTHORITY");
     }
 
-    // ============ _deploy CREATE2 failure ============
+    // ============ _deploy CREATE3 failure ============
 
     /// @notice CREATE3 deployment failure bubbles up when the IdentityProxy constructor reverts
     function test_createIdentity_revertWhenDeploymentFails() public {
