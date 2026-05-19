@@ -3,6 +3,7 @@ pragma solidity ^0.8.27;
 
 import { PackedUserOperation } from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import {
+    Execution,
     IERC7579Execution,
     IERC7579Module,
     MODULE_TYPE_EXECUTOR,
@@ -248,6 +249,237 @@ contract SmartAccountTest is OnchainIDSetup {
         assertTrue(
             aliceIdentity.isModuleInstalled(MODULE_TYPE_VALIDATOR, address(v2), ""), "new validator should be installed"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Selector-aware authorization — `_isKeyAuthorizedToCallTarget`.
+    //
+    // The helper is shared by `_validateUserOp` (AA path) and `executeFromExecutor`
+    // (executor path), so every executor-as-key test below also covers the AA-path
+    // rule for the same caller. The rule table mirrors `KeyApprovalModule._canAutoApprove`:
+    //   MANAGEMENT: anything; ACTION: external only; CLAIM_SIGNER on self: addClaim
+    //   / removeClaim; CLAIM_ADDER on self: addClaim.
+    // -----------------------------------------------------------------------
+
+    /// @notice An executor whose key holds CLAIM_SIGNER can dispatch `addClaim` on self.
+    function test_executeFromExecutor_claimSignerExecutor_canAddClaimOnSelf() public {
+        TestExecutor testExec = new TestExecutor();
+        vm.startPrank(alice);
+        aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
+        aliceIdentity
+            .addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+        vm.stopPrank();
+
+        bytes memory addClaimData = abi.encodeWithSignature(
+            "addClaim(uint256,uint256,address,bytes,bytes,string)",
+            uint256(42),
+            uint256(1),
+            address(aliceIdentity), // self-issued claim — no external isClaimValid round trip
+            bytes(""),
+            bytes("payload"),
+            string("")
+        );
+        bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity), uint256(0), addClaimData);
+
+        testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
+    }
+
+    /// @notice An executor whose key holds CLAIM_SIGNER can dispatch `removeClaim` on self.
+    function test_executeFromExecutor_claimSignerExecutor_canRemoveClaimOnSelf() public {
+        TestExecutor testExec = new TestExecutor();
+        vm.startPrank(alice);
+        aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
+        aliceIdentity
+            .addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+        vm.stopPrank();
+
+        // aliceClaim666 already exists in the fixture. Use its claimId.
+        bytes32 claimId = keccak256(abi.encode(address(claimIssuer), aliceClaim666.topic));
+        bytes memory removeClaimData = abi.encodeWithSignature("removeClaim(bytes32)", claimId);
+        bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity), uint256(0), removeClaimData);
+
+        testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
+    }
+
+    /// @notice A CLAIM_SIGNER executor MUST NOT escalate to other self-selectors like `addKey`.
+    function test_executeFromExecutor_claimSignerExecutor_cannotAddKeyOnSelf() public {
+        TestExecutor testExec = new TestExecutor();
+        vm.startPrank(alice);
+        aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
+        aliceIdentity
+            .addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+        vm.stopPrank();
+
+        bytes32 evilKey = keccak256("evil-mgmt-key");
+        bytes memory addKeyData = abi.encodeWithSignature(
+            "addKey(bytes32,uint256,uint256)", evilKey, KeyPurposes.MANAGEMENT, KeyTypes.ECDSA
+        );
+        bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity), uint256(0), addKeyData);
+
+        vm.expectRevert(Errors.ExecutorPurposeNotAuthorized.selector);
+        testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
+    }
+
+    /// @notice An executor whose key holds CLAIM_ADDER can dispatch `addClaim` on self.
+    function test_executeFromExecutor_claimAdderExecutor_canAddClaimOnSelf() public {
+        TestExecutor testExec = new TestExecutor();
+        vm.startPrank(alice);
+        aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
+        aliceIdentity
+            .addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_ADDER, KeyTypes.ECDSA);
+        vm.stopPrank();
+
+        bytes memory addClaimData = abi.encodeWithSignature(
+            "addClaim(uint256,uint256,address,bytes,bytes,string)",
+            uint256(43),
+            uint256(1),
+            address(aliceIdentity),
+            bytes(""),
+            bytes("payload"),
+            string("")
+        );
+        bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity), uint256(0), addClaimData);
+
+        testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
+    }
+
+    /// @notice A CLAIM_ADDER executor MUST NOT be able to dispatch `removeClaim` on self.
+    function test_executeFromExecutor_claimAdderExecutor_cannotRemoveClaimOnSelf() public {
+        TestExecutor testExec = new TestExecutor();
+        vm.startPrank(alice);
+        aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
+        aliceIdentity
+            .addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_ADDER, KeyTypes.ECDSA);
+        vm.stopPrank();
+
+        bytes32 claimId = keccak256(abi.encode(address(claimIssuer), aliceClaim666.topic));
+        bytes memory removeClaimData = abi.encodeWithSignature("removeClaim(bytes32)", claimId);
+        bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity), uint256(0), removeClaimData);
+
+        vm.expectRevert(Errors.ExecutorPurposeNotAuthorized.selector);
+        testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
+    }
+
+    /// @notice Ernest's r3230643398 shape: a CLAIM_ADDER-only key must not be able to dispatch
+    ///         an arbitrary external call. The executor-as-key path mirrors what `_validateUserOp`
+    ///         would do for a UserOp signer with the same purpose.
+    function test_executeFromExecutor_claimAdderExecutor_cannotCallExternal() public {
+        TestExecutor testExec = new TestExecutor();
+        vm.startPrank(alice);
+        aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
+        aliceIdentity
+            .addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_ADDER, KeyTypes.ECDSA);
+        vm.stopPrank();
+
+        Counter counter = new Counter();
+        bytes memory call = abi.encodeCall(Counter.increment, ());
+        bytes memory executionCalldata = abi.encodePacked(address(counter), uint256(0), call);
+
+        vm.expectRevert(Errors.ExecutorPurposeNotAuthorized.selector);
+        testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
+    }
+
+    /// @notice BATCH path: a CLAIM_SIGNER executor can dispatch `[addClaim, removeClaim]` on self.
+    function test_executeFromExecutor_claimSignerExecutor_batchAddRemoveOnSelf() public {
+        TestExecutor testExec = new TestExecutor();
+        vm.startPrank(alice);
+        aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
+        aliceIdentity
+            .addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+        vm.stopPrank();
+
+        Execution[] memory batch = new Execution[](2);
+        batch[0] = Execution({
+            target: address(aliceIdentity),
+            value: 0,
+            callData: abi.encodeWithSignature(
+                "addClaim(uint256,uint256,address,bytes,bytes,string)",
+                uint256(99),
+                uint256(1),
+                address(aliceIdentity),
+                bytes(""),
+                bytes("payload"),
+                string("")
+            )
+        });
+        batch[1] = Execution({
+            target: address(aliceIdentity),
+            value: 0,
+            callData: abi.encodeWithSignature(
+                "removeClaim(bytes32)", keccak256(abi.encode(address(claimIssuer), aliceClaim666.topic))
+            )
+        });
+
+        bytes32 batchMode = bytes32(uint256(0x01) << 248); // CALLTYPE_BATCH in mode byte
+        testExec.callExecuteFromExecutor(address(aliceIdentity), batchMode, abi.encode(batch));
+    }
+
+    /// @notice BATCH path: any non-claim selector in a CLAIM_SIGNER's batch poisons the whole batch.
+    function test_executeFromExecutor_claimSignerExecutor_batchMixedSelectors_reverts() public {
+        TestExecutor testExec = new TestExecutor();
+        vm.startPrank(alice);
+        aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
+        aliceIdentity
+            .addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+        vm.stopPrank();
+
+        Execution[] memory batch = new Execution[](2);
+        batch[0] = Execution({
+            target: address(aliceIdentity),
+            value: 0,
+            callData: abi.encodeWithSignature(
+                "addClaim(uint256,uint256,address,bytes,bytes,string)",
+                uint256(100),
+                uint256(1),
+                address(aliceIdentity),
+                bytes(""),
+                bytes("payload"),
+                string("")
+            )
+        });
+        batch[1] = Execution({
+            target: address(aliceIdentity),
+            value: 0,
+            callData: abi.encodeWithSignature(
+                "addKey(bytes32,uint256,uint256)", keccak256("evil"), KeyPurposes.MANAGEMENT, KeyTypes.ECDSA
+            )
+        });
+
+        bytes32 batchMode = bytes32(uint256(0x01) << 248);
+        vm.expectRevert(Errors.ExecutorPurposeNotAuthorized.selector);
+        testExec.callExecuteFromExecutor(address(aliceIdentity), batchMode, abi.encode(batch));
+    }
+
+    /// @notice Short calldata guard: a self-targeted SINGLE payload with no selector is rejected.
+    function test_executeFromExecutor_selfTarget_calldataTooShort_reverts() public {
+        TestExecutor testExec = new TestExecutor();
+        vm.startPrank(alice);
+        aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
+        aliceIdentity
+            .addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+        vm.stopPrank();
+
+        // SINGLE layout: target(20) + value(32) — exactly 52 bytes, no inner data at all.
+        bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity), uint256(0));
+
+        vm.expectRevert(Errors.ExecutorPurposeNotAuthorized.selector);
+        testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
+    }
+
+    /// @notice Malformed SINGLE payload (length < 52) is rejected at the layout guard.
+    function test_executeFromExecutor_singleCalldata_lengthBelow52_reverts() public {
+        TestExecutor testExec = new TestExecutor();
+        vm.startPrank(alice);
+        aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
+        aliceIdentity
+            .addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.MANAGEMENT, KeyTypes.ECDSA);
+        vm.stopPrank();
+
+        // Truncated payload — only the 20-byte target, no value field.
+        bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity));
+
+        vm.expectRevert(Errors.ExecutorPurposeNotAuthorized.selector);
+        testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
     }
 
 }

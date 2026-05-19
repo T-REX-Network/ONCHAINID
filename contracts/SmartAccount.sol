@@ -20,6 +20,7 @@ import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 import { KeyManager } from "./KeyManager.sol";
+import { IERC735 } from "./interface/IERC735.sol";
 import { Errors } from "./libraries/Errors.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
 
@@ -290,15 +291,20 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         (CallType callType,,,) = ERC7579Utils.decodeMode(Mode.wrap(modeWord));
 
         if (callType == ERC7579Utils.CALLTYPE_SINGLE) {
-            // SINGLE layout: target(20) || value(32) || data(var). Read the first 20 bytes as the target.
-            if (executionCalldata.length < 20) return false;
-            return _isKeyAuthorizedToCallTarget(keyHash, address(bytes20(executionCalldata[:20])));
+            // SINGLE executionCalldata layout:
+            //   - bytes [0 .. 20)  → target — an Ethereum address is 20 bytes.
+            //   - bytes [20 .. 52) → value  — a uint256 is 32 bytes.
+            //   - bytes [52 ..   ) → data   — the inner ABI-encoded call (selector + args).
+            // A well-formed payload is therefore at least 52 bytes; anything shorter is malformed.
+            if (executionCalldata.length < 52) return false;
+            address target = address(bytes20(executionCalldata[:20]));
+            return _isKeyAuthorizedToCallTarget(keyHash, target, executionCalldata[52:]);
         }
 
         if (callType == ERC7579Utils.CALLTYPE_BATCH) {
             Execution[] calldata batch = ERC7579Utils.decodeBatch(executionCalldata);
             for (uint256 i = 0; i < batch.length; i++) {
-                if (!_isKeyAuthorizedToCallTarget(keyHash, batch[i].target)) {
+                if (!_isKeyAuthorizedToCallTarget(keyHash, batch[i].target, batch[i].callData)) {
                     return false;
                 }
             }
@@ -308,10 +314,41 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         return false;
     }
 
-    /// @dev Self-target ⇒ MANAGEMENT required; external target ⇒ ACTION required.
-    function _isKeyAuthorizedToCallTarget(bytes32 keyHash, address target) private view returns (bool) {
-        uint256 requiredPurpose = target == address(this) ? KeyPurposes.MANAGEMENT : KeyPurposes.ACTION;
-        return keyHasPurpose(keyHash, requiredPurpose);
+    /// @dev Single authorization rule shared by `_validateUserOp` (per-target check against the
+    ///      recovered signer key) and `executeFromExecutor` (per-target check against the
+    ///      executor's address-as-key). Mirrors {KeyApprovalModule._canAutoApprove} so the AA /
+    ///      executor path and the direct ERC-734 queue path enforce identical semantics:
+    ///        - MANAGEMENT: anything.
+    ///        - ACTION:     external targets only.
+    ///        - CLAIM_SIGNER on self: only `addClaim` / `removeClaim`.
+    ///        - CLAIM_ADDER on self:  only `addClaim`.
+    function _isKeyAuthorizedToCallTarget(bytes32 keyHash, address target, bytes calldata data)
+        private
+        view
+        returns (bool)
+    {
+        // MANAGEMENT: always allow.
+        if (keyHasPurpose(keyHash, KeyPurposes.MANAGEMENT)) return true;
+
+        if (target == address(this)) {
+            // Self-target: only claim selectors are allowed for claim keys.
+            if (data.length < 4) return false;
+            bytes4 selector = bytes4(data[:4]);
+
+            bool isAddClaim = selector == IERC735.addClaim.selector;
+            bool isRemoveClaim = selector == IERC735.removeClaim.selector;
+
+            if (isAddClaim && keyHasPurpose(keyHash, KeyPurposes.CLAIM_ADDER)) {
+                return true;
+            }
+            if ((isAddClaim || isRemoveClaim) && keyHasPurpose(keyHash, KeyPurposes.CLAIM_SIGNER)) {
+                return true;
+            }
+            return false;
+        }
+
+        // External target: ACTION required.
+        return keyHasPurpose(keyHash, KeyPurposes.ACTION);
     }
 
 }
