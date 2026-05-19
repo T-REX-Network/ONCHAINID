@@ -9,6 +9,7 @@ import { IdentityTypes } from "../libraries/IdentityTypes.sol";
 import { KeyPurposes } from "../libraries/KeyPurposes.sol";
 import { KeyTypes } from "../libraries/KeyTypes.sol";
 import { IdentityProxy } from "../proxy/IdentityProxy.sol";
+import { Create3 } from "../vendor/utils/Create3.sol";
 import { IIdFactory } from "./IIdFactory.sol";
 
 contract IdFactory is IIdFactory, Ownable {
@@ -35,8 +36,9 @@ contract IdFactory is IIdFactory, Ownable {
     mapping(address => address) private _tokenAddress;
 
     // setting
-    constructor(address implementationAuthorityAddress) Ownable(msg.sender) {
+    constructor(address implementationAuthorityAddress, address owner) Ownable(owner) {
         require(implementationAuthorityAddress != address(0), Errors.ZeroAddress());
+
         implementationAuthority = implementationAuthorityAddress;
     }
 
@@ -240,30 +242,15 @@ contract IdFactory is IIdFactory, Ownable {
         IERC734(_identity).removeKey(keccak256(abi.encode(address(this))), KeyPurposes.MANAGEMENT);
     }
 
-    // deploy function with create2 opcode call
-    // returns the address of the contract created
-    function _deploy(string memory salt, bytes memory bytecode) private returns (address) {
-        bytes32 saltBytes = bytes32(keccak256(abi.encodePacked(salt)));
-        address addr;
-        // solhint-disable-next-line no-inline-assembly
-        assembly {
-            let encoded_data := add(0x20, bytecode) // load initialization code.
-            let encoded_size := mload(bytecode) // load init code's length.
-            addr := create2(0, encoded_data, encoded_size, saltBytes)
-            if iszero(extcodesize(addr)) {
-                revert(0, 0)
-            }
-        }
-        emit Deployed(addr);
-        return addr;
-    }
-
-    // function used to deploy an identity using CREATE2
+    // function used to deploy an identity using CREATE3.
+    // The deployed address depends only on (address(this), salt), so the same salt yields the
+    // same Identity address on every canonical-EVM chain when this factory shares the same address.
     function _deployIdentity(string memory _salt, address _wallet, uint256 _identityType) private returns (address) {
         bytes memory _code = type(IdentityProxy).creationCode;
         bytes memory _constructData = abi.encode(implementationAuthority, _wallet, _identityType);
         bytes memory bytecode = abi.encodePacked(_code, _constructData);
-        return _deploy(_salt, bytecode);
+
+        return Create3.deploy(0, keccak256(abi.encodePacked(_salt)), bytecode);
     }
 
 }

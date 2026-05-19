@@ -29,7 +29,7 @@ interface IIdFactory {
     /**
      *  @dev function used to create a new Identity proxy from the factory
      *  @param _wallet the wallet address of the primary owner of this ONCHAINID contract
-     *  @param _salt the salt used by create2 to issue the contract
+     *  @param _salt the salt used by CREATE3 to issue the contract
      *  @param _identityType the type of the identity (see IdentityTypes library)
      *  @param _claimAdders the list of addresses to add as CLAIM_ADDER keys on the identity
      *  requires a new salt for each deployment
@@ -46,7 +46,7 @@ interface IIdFactory {
      *  @dev function used to create a new Identity proxy from the factory, setting the wallet and listed keys as
      * MANAGEMENT keys.
      *  @param _wallet the wallet address of the primary owner of this ONCHAINID contract
-     *  @param _salt the salt used by create2 to issue the contract
+     *  @param _salt the salt used by CREATE3 to issue the contract
      *  @param _managementKeys A list of keys hash (keccak256(abiEncoded())) to add as MANAGEMENT keys.
      *  @param _identityType the type of the identity (see IdentityTypes library)
      *  @param _claimAdders the list of addresses to add as CLAIM_ADDER keys on the identity
@@ -68,7 +68,7 @@ interface IIdFactory {
      *  @dev function used to create a new Token Identity proxy from the factory
      *  @param _token the address of the token contract
      *  @param _tokenOwner the owner address of the token
-     *  @param _salt the salt used by create2 to issue the contract
+     *  @param _salt the salt used by CREATE3 to issue the contract
      *  @param _claimAdders the list of addresses to add as CLAIM_ADDER keys on the identity
      *  requires a new salt for each deployment
      *  _token cannot be linked to another ONCHAINID
@@ -148,7 +148,7 @@ interface IIdFactory {
     function isTokenFactory(address _factory) external view returns (bool);
 
     /**
-     *  @dev getter to know if a salt is taken for the create2 deployment
+     *  @dev getter to know if a salt is taken for the CREATE3 deployment
      *  @param _salt the salt used for deployment
      */
     function isSaltTaken(string calldata _salt) external view returns (bool);
