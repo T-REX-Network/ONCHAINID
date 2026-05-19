@@ -26,6 +26,7 @@ import { LowLevelCall } from "./LowLevelCall.sol";
  * See {Create2} for counterfactual deployments that include the bytecodehash in the computation of the address.
  */
 library Create3 {
+
     /// @dev The proxy initialization code.
     bytes29 private constant PROXY_INITCODE = 0x74365F5F37365F34f03D5F5F3E5F3D91601357FD5bf35F526015600Bf3;
 
@@ -72,4 +73,5 @@ library Create3 {
             addr := and(keccak256(0x1e, 0x17), 0xffffffffffffffffffffffffffffffffffffffff)
         }
     }
+
 }

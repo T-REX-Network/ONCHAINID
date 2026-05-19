@@ -103,7 +103,9 @@ contract ClaimIssuerFactory is Ownable {
 
         bytes memory initCode = abi.encodePacked(
             type(ERC1967Proxy).creationCode,
-            abi.encode(_implementation, abi.encodeCall(Identity.initialize, (managementKey, IdentityTypes.CLAIM_ISSUER)))
+            abi.encode(
+                _implementation, abi.encodeCall(Identity.initialize, (managementKey, IdentityTypes.CLAIM_ISSUER))
+            )
         );
         address claimIssuerAddress = Create3.deploy(0, bytes32(uint256(uint160(managementKey))), initCode);
 

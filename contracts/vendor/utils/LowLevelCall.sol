@@ -12,6 +12,7 @@ pragma solidity ^0.8.20;
  * to use the {Address} library instead.
  */
 library LowLevelCall {
+
     /// @dev Performs a Solidity function call using a low level `call` and ignoring the return data.
     function callNoReturn(address target, bytes memory data) internal returns (bool success) {
         return callNoReturn(target, 0, data);
@@ -29,19 +30,18 @@ library LowLevelCall {
     ///
     /// WARNING: Do not assume that the results are zero if `success` is false. Memory can be already allocated
     /// and this function doesn't zero it out.
-    function callReturn64Bytes(
-        address target,
-        bytes memory data
-    ) internal returns (bool success, bytes32 result1, bytes32 result2) {
+    function callReturn64Bytes(address target, bytes memory data)
+        internal
+        returns (bool success, bytes32 result1, bytes32 result2)
+    {
         return callReturn64Bytes(target, 0, data);
     }
 
     /// @dev Same as {callReturn64Bytes-address-bytes}, but allows specifying the value to be sent in the call.
-    function callReturn64Bytes(
-        address target,
-        uint256 value,
-        bytes memory data
-    ) internal returns (bool success, bytes32 result1, bytes32 result2) {
+    function callReturn64Bytes(address target, uint256 value, bytes memory data)
+        internal
+        returns (bool success, bytes32 result1, bytes32 result2)
+    {
         assembly ("memory-safe") {
             success := call(gas(), target, value, add(data, 0x20), mload(data), 0x00, 0x40)
             result1 := mload(0x00)
@@ -61,10 +61,11 @@ library LowLevelCall {
     ///
     /// WARNING: Do not assume that the results are zero if `success` is false. Memory can be already allocated
     /// and this function doesn't zero it out.
-    function staticcallReturn64Bytes(
-        address target,
-        bytes memory data
-    ) internal view returns (bool success, bytes32 result1, bytes32 result2) {
+    function staticcallReturn64Bytes(address target, bytes memory data)
+        internal
+        view
+        returns (bool success, bytes32 result1, bytes32 result2)
+    {
         assembly ("memory-safe") {
             success := staticcall(gas(), target, add(data, 0x20), mload(data), 0x00, 0x40)
             result1 := mload(0x00)
@@ -84,10 +85,10 @@ library LowLevelCall {
     ///
     /// WARNING: Do not assume that the results are zero if `success` is false. Memory can be already allocated
     /// and this function doesn't zero it out.
-    function delegatecallReturn64Bytes(
-        address target,
-        bytes memory data
-    ) internal returns (bool success, bytes32 result1, bytes32 result2) {
+    function delegatecallReturn64Bytes(address target, bytes memory data)
+        internal
+        returns (bool success, bytes32 result1, bytes32 result2)
+    {
         assembly ("memory-safe") {
             success := delegatecall(gas(), target, add(data, 0x20), mload(data), 0x00, 0x40)
             result1 := mload(0x00)
@@ -126,4 +127,5 @@ library LowLevelCall {
             revert(add(returndata, 0x20), mload(returndata))
         }
     }
+
 }
