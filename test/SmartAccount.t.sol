@@ -6,6 +6,7 @@ import {
     IERC7579Execution,
     IERC7579Module,
     MODULE_TYPE_EXECUTOR,
+    MODULE_TYPE_FALLBACK,
     MODULE_TYPE_VALIDATOR
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { Identity } from "contracts/Identity.sol";
@@ -14,6 +15,7 @@ import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
+import { ECDSAValidator } from "contracts/modules/validators/ECDSAValidator.sol";
 
 import { ClaimSignerHelper } from "./helpers/ClaimSignerHelper.sol";
 import { OnchainIDSetup } from "./helpers/OnchainIDSetup.sol";
@@ -48,11 +50,14 @@ contract SmartAccountTest is OnchainIDSetup {
         assertEq(storedKey, bytes32(0), "CLAIM_SIGNER must not escalate to MANAGEMENT via execute/addKey");
     }
 
-    /// @notice Removing the only MANAGEMENT key on an identity must revert — otherwise the
-    ///         identity becomes unrecoverable (no caller would satisfy `onlyManager`).
-    /// @dev The auto-installed KeyApprovalModule also registers itself as a MANAGEMENT key
-    ///      (so it can dispatch self-targeted calls through `executeFromExecutor`). To get
-    ///      down to a single MANAGEMENT key we first remove the module's registration.
+    /// You can't remove the last MANAGEMENT key. If you could, nothing would satisfy
+    /// `onlyManager` anymore and the identity would be stuck.
+    ///
+    /// The fixture (`OnchainIDSetup`) installs `KeyApprovalModule` and gives it
+    /// MANAGEMENT so it can dispatch self targeted calls. The protocol doesn't pin
+    /// it there. Every identity just gets whatever module list the caller hands the
+    /// factory. We strip that registration first so alice is the only MANAGEMENT key
+    /// left, then we check that the guard fires.
     function test_removeKey_lastManagementKey_reverts() public {
         bytes32 aliceKey = keccak256(abi.encodePacked(alice));
         bytes32 moduleKey = keccak256(abi.encodePacked(address(onchainidSetup.keyApprovalModule)));
@@ -139,6 +144,110 @@ contract SmartAccountTest is OnchainIDSetup {
 
         (,, bytes32 storedKey) = aliceIdentity.getKey(newKey);
         assertEq(storedKey, newKey, "MANAGEMENT executor should register a new key");
+    }
+
+    // Module uninstall tests. We don't pin any module on the account. The promise we
+    // care about is: taking a module off can only drop rights, never add new ones.
+    // The tests below check that.
+
+    /// MANAGEMENT can uninstall a module the same way it can install one, and the
+    /// module's ERC 734 entry is cleaned up on the way out.
+    function test_uninstallModule_byManagement_succeeds() public {
+        // The fixture only installs the queue module, so we add a fresh validator here
+        // and own its lifecycle for this test.
+        ECDSAValidator validator = new ECDSAValidator();
+        vm.startPrank(alice);
+        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), "");
+        // Validators don't need an ERC 734 purpose. We add one anyway so we can check
+        // that uninstall cleans it up.
+        aliceIdentity.addKey(keccak256(abi.encodePacked(address(validator))), KeyPurposes.ACTION, KeyTypes.ECDSA);
+        vm.stopPrank();
+
+        assertTrue(
+            aliceIdentity.isModuleInstalled(MODULE_TYPE_VALIDATOR, address(validator), ""),
+            "precondition: validator installed"
+        );
+
+        vm.prank(alice);
+        aliceIdentity.uninstallModule(MODULE_TYPE_VALIDATOR, address(validator), "");
+
+        assertFalse(
+            aliceIdentity.isModuleInstalled(MODULE_TYPE_VALIDATOR, address(validator), ""),
+            "validator should be uninstalled"
+        );
+        (,, bytes32 storedKey) = aliceIdentity.getKey(keccak256(abi.encodePacked(address(validator))));
+        assertEq(storedKey, bytes32(0), "auto revoke should clear the module's key entry");
+    }
+
+    /// An ACTION key shouldn't be able to uninstall a module — uninstall is MANAGEMENT only.
+    function test_uninstallModule_byActionKey_reverts() public {
+        ECDSAValidator validator = new ECDSAValidator();
+        vm.prank(alice);
+        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), "");
+
+        // david is ACTION on alice's identity (set up in OnchainIDSetup), not MANAGEMENT.
+        vm.prank(david);
+        vm.expectRevert(Errors.SenderDoesNotHaveManagementKey.selector);
+        aliceIdentity.uninstallModule(MODULE_TYPE_VALIDATOR, address(validator), "");
+    }
+
+    /// The important one. Once we uninstall KeyApprovalModule (the executor and its three
+    /// fallback handlers) the legacy ERC 734 execute / approve ABI on the identity stops
+    /// working. What MUST NOT happen is that the remaining keys suddenly gain new powers.
+    function test_uninstallModule_keyApprovalModule_noPermissionBypass() public {
+        address kam = address(onchainidSetup.keyApprovalModule);
+
+        // The executor side first. For executors, deInitData is empty.
+        vm.startPrank(alice);
+        aliceIdentity.uninstallModule(MODULE_TYPE_EXECUTOR, kam, "");
+        // Then the three fallback entries. deInitData here is the selector.
+        aliceIdentity.uninstallModule(MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.execute.selector));
+        aliceIdentity.uninstallModule(MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.approve.selector));
+        aliceIdentity.uninstallModule(
+            MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.getCurrentNonce.selector)
+        );
+        vm.stopPrank();
+
+        // The MANAGEMENT entry that was registered against the module's address is gone.
+        (,, bytes32 moduleStoredKey) = aliceIdentity.getKey(keccak256(abi.encodePacked(kam)));
+        assertEq(moduleStoredKey, bytes32(0), "queue module's MANAGEMENT key should be revoked");
+
+        // Calling the legacy ABI on the identity now reverts. No fallback handler is wired up.
+        vm.prank(david);
+        vm.expectRevert();
+        IKeyExecutor(address(aliceIdentity)).execute(address(0), 0, "");
+
+        // david (ACTION) can't reach addKey on the identity directly. He didn't get any new
+        // power from the uninstall.
+        bytes32 newKey = keccak256("post-uninstall-action-key");
+        vm.prank(david);
+        vm.expectRevert(Errors.SenderDoesNotHaveManagementKey.selector);
+        aliceIdentity.addKey(newKey, KeyPurposes.ACTION, KeyTypes.ECDSA);
+
+        // Same story for carol (CLAIM_SIGNER). Self targeted privileged ops still need MANAGEMENT.
+        vm.prank(carol);
+        vm.expectRevert(Errors.SenderDoesNotHaveManagementKey.selector);
+        aliceIdentity.addKey(newKey, KeyPurposes.MANAGEMENT, KeyTypes.ECDSA);
+    }
+
+    /// How you upgrade a module with ERC 7579. Uninstall the old one, install the new one.
+    function test_uninstallModule_then_reinstall_upgradePath() public {
+        ECDSAValidator v1 = new ECDSAValidator();
+        ECDSAValidator v2 = new ECDSAValidator();
+
+        vm.startPrank(alice);
+        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(v1), "");
+        aliceIdentity.uninstallModule(MODULE_TYPE_VALIDATOR, address(v1), "");
+        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(v2), "");
+        vm.stopPrank();
+
+        assertFalse(
+            aliceIdentity.isModuleInstalled(MODULE_TYPE_VALIDATOR, address(v1), ""),
+            "old validator should be uninstalled"
+        );
+        assertTrue(
+            aliceIdentity.isModuleInstalled(MODULE_TYPE_VALIDATOR, address(v2), ""), "new validator should be installed"
+        );
     }
 
 }

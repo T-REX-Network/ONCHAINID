@@ -6,7 +6,6 @@ import {
     MODULE_TYPE_FALLBACK,
     MODULE_TYPE_VALIDATOR
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
-import { Vm } from "forge-std/Vm.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IdFactory } from "contracts/factory/IdFactory.sol";
 import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
@@ -18,6 +17,7 @@ import { WebAuthnValidator } from "contracts/modules/validators/WebAuthnValidato
 import { IdentityProxy } from "contracts/proxy/IdentityProxy.sol";
 import { ImplementationAuthority } from "contracts/proxy/ImplementationAuthority.sol";
 import { Structs } from "contracts/storage/Structs.sol";
+import { Vm } from "forge-std/Vm.sol";
 
 /// @notice Helper library for deploying OnchainID Identity Factory infrastructure
 library IdentityHelper {

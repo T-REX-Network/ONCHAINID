@@ -103,10 +103,11 @@ contract Structs {
      *  moduleType: ERC-7579 module type (1=VALIDATOR, 2=EXECUTOR, 3=FALLBACK, 4=HOOK)
      *  module: Address of the module singleton
      *  initData: Module-specific initialization data (e.g. signer address for ECDSA, keyHash+qx+qy for WebAuthn)
-     *  purpose: When non-zero, the factory grants this ERC-734 purpose to the module's address
-     *           (registered as `keccak256(abi.encodePacked(module))` in the key registry).
-     *           Required for executor modules that need to dispatch through `executeFromExecutor`
-     *           and for fallback handlers that need to invoke privileged self-targeted operations.
+     *  purpose: If non zero, the factory registers `keccak256(abi.encodePacked(module))` in the
+     *           key registry with this purpose. Executor modules need this to dispatch through
+     *           `executeFromExecutor`, and so do fallback handlers that call privileged
+     *           self targeted functions. On uninstall the purpose is removed automatically,
+     *           so you don't need to follow up with `removeKey`.
      */
     struct ModuleInstall {
         uint256 moduleType;

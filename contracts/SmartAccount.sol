@@ -17,6 +17,7 @@ import {
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { Calldata } from "@openzeppelin/contracts/utils/Calldata.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
+import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 import { KeyManager } from "./KeyManager.sol";
 import { Errors } from "./libraries/Errors.sol";
@@ -43,6 +44,8 @@ import { KeyPurposes } from "./libraries/KeyPurposes.sol";
  */
 abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 {
 
+    using EnumerableSet for EnumerableSet.UintSet;
+
     /// @dev ERC-1271 failure sentinel.
     bytes4 internal constant _SIG_INVALID = 0xffffffff;
 
@@ -65,6 +68,44 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
     {
         // `onlyManager` replaces OZ's `onlyEntryPointOrSelf` — lets the factory install at bootstrap.
         _installModule(moduleTypeId, module, initData);
+    }
+
+    /// @notice Uninstall an ERC-7579 module. Same gate as {installModule}: only MANAGEMENT
+    ///         can call it. A user with MANAGEMENT can swap modules directly, without
+    ///         going through the EntryPoint.
+    /// @dev Modules are not pinned. Removing a module can only take away rights, never add
+    ///      new ones. If you ever need to block removal of a specific module, do it here
+    ///      by overriding {_uninstallModule} not inside the module itself, because the
+    ///      account, not the module, controls uninstall. Upgrade = uninstall old + install new.
+    function uninstallModule(uint256 moduleTypeId, address module, bytes calldata deInitData)
+        public
+        virtual
+        override
+        delegatedOnly
+        onlyManager
+    {
+        _uninstallModule(moduleTypeId, module, deInitData);
+    }
+
+    /// @dev Runs the base uninstall first (calls the module's `onUninstall`), then removes
+    ///      every ERC-734 purpose held by the module's address. This is the opposite of the
+    ///      purpose grant done at install time in `IdFactory._setupIdentity`. Without it, a
+    ///      reinstalled module address would keep its old rights. Uninstalling the last
+    ///      MANAGEMENT key still reverts same guard as a direct {removeKey}.
+    function _uninstallModule(uint256 moduleTypeId, address module, bytes memory deInitData) internal virtual override {
+        super._uninstallModule(moduleTypeId, module, deInitData);
+
+        bytes32 moduleKey = keccak256(abi.encodePacked(module));
+        KeyStorage storage ks = _getKeyStorage();
+        // Modules installed without a purpose (purpose == 0 on the ModuleInstall entry)
+        // have no key entry, so nothing to clean up.
+        if (ks.keys[moduleKey].key == bytes32(0)) return;
+
+        // Snapshot the purposes before iterating: `_removeKeyPurpose` mutates the set.
+        uint256[] memory purposes = ks.keys[moduleKey].purposes.values();
+        for (uint256 i = 0; i < purposes.length; i++) {
+            _removeKeyPurpose(moduleKey, purposes[i]);
+        }
     }
 
     /**

@@ -166,6 +166,14 @@ contract KeyManager is IERC734 {
         onlyManager
         returns (bool success)
     {
+        return _removeKeyPurpose(_key, _purpose);
+    }
+
+    /// Shared remove logic. The public {removeKey} uses it, and so does
+    /// {SmartAccount._uninstallModule} when it strips purposes off an uninstalled
+    /// module. We keep the "can't remove the last MANAGEMENT key" check in here so
+    /// both paths get it for free. Callers are responsible for their own access checks.
+    function _removeKeyPurpose(bytes32 _key, uint256 _purpose) internal returns (bool success) {
         KeyStorage storage ks = _getKeyStorage();
         Structs.Key storage k = ks.keys[_key];
 

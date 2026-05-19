@@ -8,10 +8,10 @@ import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy
 import { ClaimIssuer } from "contracts/ClaimIssuer.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IdentityUtilities } from "contracts/IdentityUtilities.sol";
-import { ECDSAValidator } from "contracts/modules/validators/ECDSAValidator.sol";
 import { IIdentityUtilities } from "contracts/interface/IIdentityUtilities.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
+import { ECDSAValidator } from "contracts/modules/validators/ECDSAValidator.sol";
 import { IdentityUtilitiesProxy } from "contracts/proxy/IdentityUtilitiesProxy.sol";
 import { Test } from "forge-std/Test.sol";
 import { Test as TestContract } from "test/mocks/Test.sol";
