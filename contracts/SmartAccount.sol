@@ -20,9 +20,10 @@ import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 import { KeyManager } from "./KeyManager.sol";
-import { IERC735 } from "./interface/IERC735.sol";
+import { IKeyExecutor } from "./interface/IKeyExecutor.sol";
 import { Errors } from "./libraries/Errors.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
+import { KeyApprovalModule } from "./modules/executors/KeyApprovalModule.sol";
 
 /**
  * @title SmartAccount
@@ -314,41 +315,30 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         return false;
     }
 
-    /// @dev Single authorization rule shared by `_validateUserOp` (per-target check against the
-    ///      recovered signer key) and `executeFromExecutor` (per-target check against the
-    ///      executor's address-as-key). Mirrors {KeyApprovalModule._canAutoApprove} so the AA /
-    ///      executor path and the direct ERC-734 queue path enforce identical semantics:
-    ///        - MANAGEMENT: anything.
-    ///        - ACTION:     external targets only.
-    ///        - CLAIM_SIGNER on self: only `addClaim` / `removeClaim`.
-    ///        - CLAIM_ADDER on self:  only `addClaim`.
+    /// @dev Per-target authorization check. Delegates to the installed policy module see
+    ///      {KeyApprovalModule.canAutoApprove} so the rule table lives in one place.
+    ///      When no policy is installed or its call reverts, falls back to a strict default:
+    ///      self → MANAGEMENT, else → ACTION.
     function _isKeyAuthorizedToCallTarget(bytes32 keyHash, address target, bytes calldata data)
         private
         view
         returns (bool)
     {
-        // MANAGEMENT: always allow.
-        if (keyHasPurpose(keyHash, KeyPurposes.MANAGEMENT)) return true;
+        // The policy module is whichever handler is wired for the legacy `execute` selector.
+        address policy = _fallbackHandler(IKeyExecutor.execute.selector);
 
-        if (target == address(this)) {
-            // Self-target: only claim selectors are allowed for claim keys.
-            if (data.length < 4) return false;
-            bytes4 selector = bytes4(data[:4]);
-
-            bool isAddClaim = selector == IERC735.addClaim.selector;
-            bool isRemoveClaim = selector == IERC735.removeClaim.selector;
-
-            if (isAddClaim && keyHasPurpose(keyHash, KeyPurposes.CLAIM_ADDER)) {
-                return true;
+        if (policy != address(0)) {
+            // try/catch so a broken policy can't brick the account we fall through on revert.
+            try KeyApprovalModule(policy).canAutoApprove(address(this), keyHash, target, data) returns (bool ok) {
+                return ok;
+            } catch {
+                // intentional fall-through
             }
-            if ((isAddClaim || isRemoveClaim) && keyHasPurpose(keyHash, KeyPurposes.CLAIM_SIGNER)) {
-                return true;
-            }
-            return false;
         }
 
-        // External target: ACTION required.
-        return keyHasPurpose(keyHash, KeyPurposes.ACTION);
+        // No policy installed or it reverted, apply the strict default.
+        uint256 requiredPurpose = target == address(this) ? KeyPurposes.MANAGEMENT : KeyPurposes.ACTION;
+        return keyHasPurpose(keyHash, requiredPurpose);
     }
 
 }

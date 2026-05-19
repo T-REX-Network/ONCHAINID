@@ -172,6 +172,11 @@ library Errors {
     ///         non-zero `uint256 purpose`.
     error ExecutorPurposeNotAuthorized();
 
+    /// @notice `KeyApprovalModule.canAutoApprove` was queried for an `account` that does not
+    ///         match `msg.sender`. The module only answers about the calling identity's own
+    ///         authorization table; cross-identity queries are rejected.
+    error UnauthorizedPolicyQuery();
+
     /* ----- IdentityUtilities ----- */
 
     /// @notice 0 is not a valid topic.

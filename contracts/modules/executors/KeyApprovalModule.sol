@@ -151,6 +151,18 @@ contract KeyApprovalModule is IERC7579Module {
         return _state[account].executions[executionId];
     }
 
+    /// @notice External view of the auto-approval rule. Lets the calling account reuse this
+    ///         table see {SmartAccount._isKeyAuthorizedToCallTarget}.
+    /// @dev    `account` must equal `msg.sender`: only an identity can ask about its own rule.
+    function canAutoApprove(address account, bytes32 keyHash, address target, bytes calldata data)
+        external
+        view
+        returns (bool)
+    {
+        require(account == msg.sender, Errors.UnauthorizedPolicyQuery());
+        return _canAutoApprove(account, keyHash, target, data);
+    }
+
     // -----------------------------------------------------------------------
     // Internals
     // -----------------------------------------------------------------------
@@ -162,7 +174,9 @@ contract KeyApprovalModule is IERC7579Module {
         returns (bool)
     {
         // MANAGEMENT keys pass any check.
-        if (IERC734(account).keyHasPurpose(keyHash, KeyPurposes.MANAGEMENT)) return true;
+        if (IERC734(account).keyHasPurpose(keyHash, KeyPurposes.MANAGEMENT)) {
+            return true;
+        }
 
         // Self-targeted calls: only claim-related selectors auto-approve for claim keys.
         if (to == account && data.length >= 4) {
