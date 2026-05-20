@@ -162,34 +162,25 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
 
     /**
      * @dev Shared signature-validation core used by {isValidSignature} and {Identity.isClaimValid}.
-     *      Single source of truth for "is this signature valid for this account given a required
-     *      purpose."
-     *
-     *      Routes through the installed ERC-7579 validator module named in the first 20 bytes
-     *      of the signature. The recovered signer must hold `requiredPurpose` on this account.
-     *      Wrapped against reverts so it returns `false` instead of bubbling.
+     *      Routes through the installed ERC-7579 validator module named in the first 20 bytes of
+     *      the signature; the recovered signer must hold `requiredPurpose` on this account.
+     *      Malformed signatures revert on the inline `abi.decode`.
      */
     function _isValidSignature(bytes32 hash, bytes calldata sig, uint256 requiredPurpose) internal view returns (bool) {
-        // 1. Length guard — the module address prefix is 20 bytes.
+        // Length guard — the module address prefix is 20 bytes.
         if (sig.length < 20) return false;
 
-        // 2. Split prefix and inner signature; the prefix names the validator module to dispatch through.
+        // Split prefix and inner signature; the prefix names the validator module to dispatch through.
         (address module, bytes calldata moduleSignature) = _extractSignatureValidator(sig);
-        // 3. Reject signatures that name an unknown / uninstalled validator.
         if (!isModuleInstalled(MODULE_TYPE_VALIDATOR, module, Calldata.emptyBytes())) return false;
 
-        // 4. Recover the declared signer key. Wrapped via a self-staticcall so a malformed
-        //    `abi.encode(bytes signer, bytes sig)` yields false instead of reverting.
-        bytes32 signerKeyHash;
-        try this._extractKeyHash(moduleSignature) returns (bytes32 keyHash) {
-            signerKeyHash = keyHash;
-        } catch {
-            return false;
-        }
-        // 5. Enforce the caller-requested purpose (CLAIM_SIGNER for claims, ACTION for 1271).
-        if (!keyHasPurpose(signerKeyHash, requiredPurpose)) return false;
+        // Wire format: `abi.encode(bytes signer, bytes sig)`. `keccak256(signer)` is the keyHash
+        // registered in the ERC-734 registry.
+        (bytes memory signerBytes,) = abi.decode(moduleSignature, (bytes, bytes));
+        if (!keyHasPurpose(keccak256(signerBytes), requiredPurpose)) return false;
 
-        // 6. Delegate the crypto check to the validator module. Try-wrapped — any revert ⇒ false.
+        // Delegate the crypto check to the validator module. try/catch so a misbehaving module
+        // can't bubble a revert out of an ERC-1271 path.
         try IERC7579Validator(module).isValidSignatureWithSender(msg.sender, hash, moduleSignature) returns (
             bytes4 magicValue
         ) {
@@ -197,13 +188,6 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         } catch {
             return false;
         }
-    }
-
-    /// @dev External-only because it's invoked via `this.` from {_isValidSignature} to wrap
-    ///      `abi.decode` in a try/catch. Solidity does not allow try/catch on internal calls.
-    function _extractKeyHash(bytes calldata moduleSignature) external pure returns (bytes32) {
-        (bytes memory signerBytes,) = abi.decode(moduleSignature, (bytes, bytes));
-        return keccak256(signerBytes);
     }
 
     /**

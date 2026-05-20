@@ -41,7 +41,8 @@ library IdentityHelper {
         setup.keyApprovalModule = new KeyApprovalModule();
 
         setup.identityImplementation = new Identity(managementKey, false);
-        setup.implementationAuthority = new ImplementationAuthority(address(setup.identityImplementation), managementKey);
+        setup.implementationAuthority =
+            new ImplementationAuthority(address(setup.identityImplementation), managementKey);
         setup.idFactory = new IdFactory(address(setup.implementationAuthority), managementKey);
     }
 
