@@ -116,6 +116,16 @@ contract KeysTest is OnchainIDSetup {
         aliceIdentity.addKey(aliceKeyHash, KeyPurposes.MANAGEMENT, KeyTypes.ECDSA);
     }
 
+    /// @notice Re-purposing an existing key with a different `_type` is rejected.
+    function test_RevertAddKey_WhenKeyTypeDoesNotMatchExisting() public {
+        // aliceKeyHash already exists with keyType = ECDSA. Attempt to add a new purpose with RSA.
+        vm.expectRevert(
+            abi.encodeWithSelector(Errors.KeyTypeMismatch.selector, aliceKeyHash, KeyTypes.ECDSA, KeyTypes.RSA)
+        );
+        vm.prank(alice);
+        aliceIdentity.addKey(aliceKeyHash, KeyPurposes.ACTION, KeyTypes.RSA);
+    }
+
     // ============ Remove key methods - Non-Management key ============
 
     function test_RevertRemoveKey_WhenCallerIsNotManagementKey() public {

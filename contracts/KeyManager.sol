@@ -144,6 +144,10 @@ contract KeyManager is IERC734 {
         if (k.key == bytes32(0)) {
             k.key = _key;
             k.keyType = _type;
+        } else {
+            // The stored type wins on re-purpose. Reject a mismatched `_type` so the emitted
+            // `KeyAdded` event can't surface a type that storage doesn't actually hold.
+            require(k.keyType == _type, Errors.KeyTypeMismatch(_key, k.keyType, _type));
         }
 
         require(k.purposes.add(_purpose), Errors.KeyAlreadyHasPurpose(_key, _purpose));

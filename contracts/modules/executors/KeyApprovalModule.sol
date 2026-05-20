@@ -85,11 +85,17 @@ contract KeyApprovalModule is IERC7579Module {
 
     /// @notice Queue an execution for the calling identity. Auto-runs if the caller's key
     ///         purpose authorizes it; otherwise waits for {approve}.
+    /// @dev    Treasury model: any `msg.value` is pushed back to the identity; `_value` is
+    ///         dispatched from the identity's balance when the request runs.
     function execute(address _to, uint256 _value, bytes calldata _data) external payable returns (uint256 executionId) {
-        // 1. Identify the account and the off-chain caller. `msg.sender` is the identity (we were
-        //    reached through its fallback). `_msgSender()` recovers the user via ERC-2771 trailer.
         address account = msg.sender;
         bytes32 callerKeyHash = keccak256(abi.encodePacked(_msgSender()));
+
+        // 1. Push any msg.value back to the identity so the module never holds ETH.
+        if (msg.value > 0) {
+            (bool returned,) = account.call{ value: msg.value }("");
+            require(returned, Errors.ReturnToAccountFailed());
+        }
 
         // 2. Allocate the next execution id and persist the request.
         AccountState storage state = _state[account];
@@ -99,7 +105,7 @@ contract KeyApprovalModule is IERC7579Module {
 
         emit ExecutionRequested(account, executionId, _to, _value, _data);
 
-        // 3. If the caller's purpose covers this call, run it now; otherwise leave it pending.
+        // 3. Auto-approve dispatches now; otherwise the request stays pending for {approve}.
         if (_canAutoApprove(account, callerKeyHash, _to, _data)) {
             _runApproved(account, executionId);
         }
@@ -199,8 +205,9 @@ contract KeyApprovalModule is IERC7579Module {
         return false;
     }
 
-    /// @dev Marks the execution executed, then dispatches via `executeFromExecutor`. Wrapped in
-    ///      try/catch so a failed dispatch emits `ExecutionFailed` rather than reverting the queue.
+    /// @dev Dispatches via `executeFromExecutor`, which spends `execution.value` from the
+    ///      identity's balance. try/catch so a failed dispatch emits `ExecutionFailed`
+    ///      instead of reverting.
     function _runApproved(address account, uint256 executionId) internal returns (bool success) {
         Execution storage execution = _state[account].executions[executionId];
 

@@ -177,6 +177,12 @@ library Errors {
     ///         authorization table; cross-identity queries are rejected.
     error UnauthorizedPolicyQuery();
 
+    /// @notice ETH push from `KeyApprovalModule` back to the identity failed.
+    error ReturnToAccountFailed();
+
+    /// @notice `addKey` `_type` doesn't match the existing key's stored type.
+    error KeyTypeMismatch(bytes32 key, uint256 storedType, uint256 providedType);
+
     /* ----- IdentityUtilities ----- */
 
     /// @notice 0 is not a valid topic.

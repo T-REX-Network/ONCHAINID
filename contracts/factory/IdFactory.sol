@@ -81,16 +81,6 @@ contract IdFactory is IIdFactory, Ownable {
         require(_userIdentity[_wallet] == address(0), Errors.WalletAlreadyLinkedToIdentity(_wallet));
         require(_keys.length > 0, Errors.EmptyListOfKeys());
 
-        // Validate at least one management key exists
-        bool hasManagementKey = false;
-        for (uint256 i = 0; i < _keys.length; i++) {
-            if (_keys[i].purpose == KeyPurposes.MANAGEMENT) {
-                hasManagementKey = true;
-                break;
-            }
-        }
-        require(hasManagementKey, Errors.NoManagementKeyInKeys());
-
         address identity = _deployIdentity(oidSalt, _wallet, _identityType);
 
         // Checks-effects-interactions: commit storage BEFORE any user-controlled `onInstall`
@@ -241,12 +231,19 @@ contract IdFactory is IIdFactory, Ownable {
             SmartAccount(payable(_identity))
                 .installModule(_modules[i].moduleType, _modules[i].module, _modules[i].initData);
             if (_modules[i].purpose != 0) {
+                // Register the module address as a key under `MODULE` keyType.
                 KeyManager(_identity)
-                    .addKey(keccak256(abi.encodePacked(_modules[i].module)), _modules[i].purpose, KeyTypes.ECDSA);
+                    .addKey(keccak256(abi.encodePacked(_modules[i].module)), _modules[i].purpose, KeyTypes.MODULE);
             }
         }
 
-        // 3. Drop the bootstrap key. Direct call: factory still holds MANAGEMENT.
+        // 3. Require at least one MANAGEMENT key besides the factory's bootstrap; otherwise
+        //    dropping the bootstrap below would leave the identity unrecoverable.
+        require(
+            KeyManager(_identity).getKeysByPurpose(KeyPurposes.MANAGEMENT).length > 1, Errors.NoManagementKeyInKeys()
+        );
+
+        // 4. Drop the bootstrap key. Direct call: factory still holds MANAGEMENT.
         KeyManager(_identity).removeKey(keccak256(abi.encodePacked(address(this))), KeyPurposes.MANAGEMENT);
     }
 

@@ -133,6 +133,16 @@ contract TokenOidTest is Test {
         setup.idFactory.createTokenIdentity(alice, "TST", new Structs.KeyParam[](0), _emptyModules);
     }
 
+    /// @notice At least one MANAGEMENT key must be supplied.
+    function test_createTokenIdentity_revertNoManagementKey() public {
+        Structs.KeyParam[] memory actionOnly = new Structs.KeyParam[](1);
+        actionOnly[0] = _makeECDSAKey(bob, KeyPurposes.ACTION);
+
+        vm.prank(deployer);
+        vm.expectRevert(Errors.NoManagementKeyInKeys.selector);
+        setup.idFactory.createTokenIdentity(alice, "TST", actionOnly, _emptyModules);
+    }
+
     /// @notice Token factory should be able to create token identity
     function test_createTokenIdentity_viaTokenFactory_shouldCreate() public {
         vm.prank(deployer);
