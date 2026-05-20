@@ -75,7 +75,7 @@ contract DeployOnchainID is Script {
         // ===== Phase 2: Infrastructure =====
 
         // 4. ImplementationAuthority (beacon for identity proxies)
-        ImplementationAuthority authority = new ImplementationAuthority(address(identityImpl));
+        ImplementationAuthority authority = new ImplementationAuthority(address(identityImpl), deployer);
         console.log("ImplementationAuthority:", address(authority));
 
         // 4b. KeyApprovalModule singleton (ERC-7579 fallback handler + executor for the
@@ -85,15 +85,15 @@ contract DeployOnchainID is Script {
         console.log("KeyApprovalModule:", address(keyApprovalModule));
 
         // 5. IdFactory
-        IdFactory idFactory = new IdFactory(address(authority));
+        IdFactory idFactory = new IdFactory(address(authority), deployer);
         console.log("IdFactory:", address(idFactory));
 
         // 6. ClaimIssuerFactory
-        ClaimIssuerFactory claimIssuerFactory = new ClaimIssuerFactory(address(claimIssuerImpl));
+        ClaimIssuerFactory claimIssuerFactory = new ClaimIssuerFactory(address(claimIssuerImpl), deployer);
         console.log("ClaimIssuerFactory:", address(claimIssuerFactory));
 
         // 7. Gateway
-        Gateway gateway = new Gateway(address(idFactory), gatewaySigners);
+        Gateway gateway = new Gateway(address(idFactory), gatewaySigners, deployer);
         console.log("Gateway:", address(gateway));
 
         // 8. ERC-7913 WebAuthn Verifier (stateless — verifies P-256 WebAuthn assertions on-chain)

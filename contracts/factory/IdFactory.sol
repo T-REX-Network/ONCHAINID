@@ -11,6 +11,7 @@ import { KeyPurposes } from "../libraries/KeyPurposes.sol";
 import { KeyTypes } from "../libraries/KeyTypes.sol";
 import { IdentityProxy } from "../proxy/IdentityProxy.sol";
 import { Structs } from "../storage/Structs.sol";
+import { Create3 } from "../vendor/utils/Create3.sol";
 import { IIdFactory } from "./IIdFactory.sol";
 
 contract IdFactory is IIdFactory, Ownable {
@@ -37,8 +38,9 @@ contract IdFactory is IIdFactory, Ownable {
     mapping(address => address) private _tokenAddress;
 
     // setting
-    constructor(address implementationAuthorityAddress) Ownable(msg.sender) {
+    constructor(address implementationAuthorityAddress, address owner) Ownable(owner) {
         require(implementationAuthorityAddress != address(0), Errors.ZeroAddress());
+
         implementationAuthority = implementationAuthorityAddress;
     }
 
@@ -89,7 +91,7 @@ contract IdFactory is IIdFactory, Ownable {
         }
         require(hasManagementKey, Errors.NoManagementKeyInKeys());
 
-        address identity = _deployIdentity(oidSalt, _identityType);
+        address identity = _deployIdentity(oidSalt, _wallet, _identityType);
 
         // Checks-effects-interactions: commit storage BEFORE any user-controlled `onInstall`
         // runs in `_setupIdentity`. A malicious module re-entering `createIdentity` for the
@@ -122,7 +124,7 @@ contract IdFactory is IIdFactory, Ownable {
         require(!_saltTaken[tokenIdSalt], Errors.SaltTaken(tokenIdSalt));
         require(_tokenIdentity[_token] == address(0), Errors.TokenAlreadyLinked(_token));
 
-        address identity = _deployIdentity(tokenIdSalt, IdentityTypes.ASSET);
+        address identity = _deployIdentity(tokenIdSalt, _token, IdentityTypes.ASSET);
 
         // Checks-effects-interactions: commit storage BEFORE `_setupIdentity` runs user-controlled `onInstall`.
         _saltTaken[tokenIdSalt] = true;
@@ -248,30 +250,15 @@ contract IdFactory is IIdFactory, Ownable {
         KeyManager(_identity).removeKey(keccak256(abi.encodePacked(address(this))), KeyPurposes.MANAGEMENT);
     }
 
-    // deploy function with create2 opcode call
-    // returns the address of the contract created
-    function _deploy(string memory salt, bytes memory bytecode) private returns (address) {
-        bytes32 saltBytes = bytes32(keccak256(abi.encodePacked(salt)));
-        address addr;
-        // solhint-disable-next-line no-inline-assembly
-        assembly ("memory-safe") {
-            let encoded_data := add(0x20, bytecode) // load initialization code.
-            let encoded_size := mload(bytecode) // load init code's length.
-            addr := create2(0, encoded_data, encoded_size, saltBytes)
-            if iszero(extcodesize(addr)) {
-                revert(0, 0)
-            }
-        }
-        emit Deployed(addr);
-        return addr;
-    }
-
-    // function used to deploy an identity using CREATE2
-    function _deployIdentity(string memory _salt, uint256 _identityType) private returns (address) {
+    // function used to deploy an identity using CREATE3.
+    // The deployed address depends only on (address(this), salt), so the same salt yields the
+    // same Identity address on every canonical-EVM chain when this factory shares the same address.
+    function _deployIdentity(string memory _salt, address _wallet, uint256 _identityType) private returns (address) {
         bytes memory _code = type(IdentityProxy).creationCode;
         bytes memory _constructData = abi.encode(implementationAuthority, address(this), _identityType);
         bytes memory bytecode = abi.encodePacked(_code, _constructData);
-        return _deploy(_salt, bytecode);
+
+        return Create3.deploy(0, keccak256(abi.encodePacked(_salt)), bytecode);
     }
 
 }

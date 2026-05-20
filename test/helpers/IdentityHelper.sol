@@ -41,8 +41,8 @@ library IdentityHelper {
         setup.keyApprovalModule = new KeyApprovalModule();
 
         setup.identityImplementation = new Identity(managementKey, false);
-        setup.implementationAuthority = new ImplementationAuthority(address(setup.identityImplementation));
-        setup.idFactory = new IdFactory(address(setup.implementationAuthority));
+        setup.implementationAuthority = new ImplementationAuthority(address(setup.identityImplementation), managementKey);
+        setup.idFactory = new IdFactory(address(setup.implementationAuthority), managementKey);
     }
 
     /// @notice Builds the four `ModuleInstall` entries that enable the legacy ERC-734
@@ -94,7 +94,7 @@ library IdentityHelper {
         returns (Identity identity, ECDSAValidator ecdsaValidator)
     {
         Identity impl = new Identity(initialManagementKey, false);
-        ImplementationAuthority ia = new ImplementationAuthority(address(impl));
+        ImplementationAuthority ia = new ImplementationAuthority(address(impl), initialManagementKey);
         IdentityProxy proxy = new IdentityProxy(address(ia), initialManagementKey, identityType);
         identity = Identity(payable(address(proxy)));
 

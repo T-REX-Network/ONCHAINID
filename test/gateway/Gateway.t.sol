@@ -110,7 +110,9 @@ contract GatewayTest is Test {
     }
 
     function _deployGateway(address[] memory signers) internal returns (Gateway) {
-        return new Gateway(address(setup.idFactory), signers);
+        // The test contract is the owner so owner-gated functions can be invoked directly
+        // by the test body without `vm.prank(...)` boilerplate.
+        return new Gateway(address(setup.idFactory), signers, address(this));
     }
 
     function _deployGatewayWithCarol() internal returns (Gateway) {
@@ -124,13 +126,13 @@ contract GatewayTest is Test {
     function test_constructor_revertZeroFactory() public {
         address[] memory signers = new address[](0);
         vm.expectRevert(Errors.ZeroAddress.selector);
-        new Gateway(address(0), signers);
+        new Gateway(address(0), signers, deployer);
     }
 
     function test_constructor_revertTooManySigners() public {
         address[] memory signers = new address[](11);
         vm.expectRevert(Errors.TooManySigners.selector);
-        new Gateway(address(setup.idFactory), signers);
+        new Gateway(address(setup.idFactory), signers, deployer);
     }
 
     // ============ deployIdentityWithSalt ============

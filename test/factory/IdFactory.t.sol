@@ -39,7 +39,7 @@ contract IdFactoryTest is OnchainIDSetup {
 
     function test_revertBecauseAuthorityIsZeroAddress() public {
         vm.expectRevert(Errors.ZeroAddress.selector);
-        new IdFactory(address(0));
+        new IdFactory(address(0), deployer);
     }
 
     function test_revertBecauseSenderNotAllowedToCreateIdentities() public {
@@ -462,8 +462,8 @@ contract IdFactoryTest is OnchainIDSetup {
     function test_createIdentity_revertWhenCreate2Fails() public {
         // Deploy a factory with a reverting implementation
         RevertingIdentity revertingImpl = new RevertingIdentity();
-        ImplementationAuthority badAuthority = new ImplementationAuthority(address(revertingImpl));
-        IdFactory badFactory = new IdFactory(address(badAuthority));
+        ImplementationAuthority badAuthority = new ImplementationAuthority(address(revertingImpl), deployer);
+        IdFactory badFactory = new IdFactory(address(badAuthority), deployer);
 
         // createIdentity will try CREATE2 with IdentityProxy whose constructor
         // delegatecalls initialize() on RevertingIdentity, which reverts,

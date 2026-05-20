@@ -17,10 +17,3 @@ name = "forge-std"
 version = "v1.14.0"
 git = "https://github.com/foundry-rs/forge-std.git"
 rev = "1801b0541f4fda118a10798fd3486bb7051c5dd6"
-
-[[dependencies]]
-name = "solady"
-version = "0.1.15"
-url = "https://soldeer-revisions.s3.amazonaws.com/solady/0_1_15_22-04-2025_09:51:54_solady.zip"
-checksum = "beb9d62c10e0539f57e3f4bff3ceab6e139d4811e1cff0f1589b19baa91a3c11"
-integrity = "79a37db5b6982436ccb66c3838a5d8197670820b12f35b7596fcdd08f56add80"

@@ -59,8 +59,8 @@ contract Gateway is Ownable, EIP712 {
      * @param idFactoryAddress the address of the factory to operate (the Gateway must be owner of the Factory).
      * @param signersToApprove initial list of approved signers (max 10).
      */
-    constructor(address idFactoryAddress, address[] memory signersToApprove)
-        Ownable(msg.sender)
+    constructor(address idFactoryAddress, address[] memory signersToApprove, address owner)
+        Ownable(owner)
         EIP712("OnchainIDGateway", "1")
     {
         require(idFactoryAddress != address(0), Errors.ZeroAddress());
