@@ -110,11 +110,11 @@ contract IdFactoryTest is OnchainIDSetup {
     }
 
     function test_revertBecauseNoManagementKey() public {
-        // Only an ACTION key, no MANAGEMENT key
+        // Only an ACTION key, no MANAGEMENT — bootstrap removal at the end of _setupIdentity reverts.
         Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
         keys[0] = _makeECDSAKey(david, KeyPurposes.ACTION);
         vm.prank(deployer);
-        vm.expectRevert(Errors.NoManagementKeyInKeys.selector);
+        vm.expectRevert(Errors.CannotRemoveLastManagementKey.selector);
         onchainidSetup.idFactory
             .createIdentity(david, IdentityTypes.INDIVIDUAL, "salt1", keys, new Structs.ModuleInstall[](0));
     }

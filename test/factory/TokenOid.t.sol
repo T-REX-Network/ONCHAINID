@@ -133,13 +133,13 @@ contract TokenOidTest is Test {
         setup.idFactory.createTokenIdentity(alice, "TST", new Structs.KeyParam[](0), _emptyModules);
     }
 
-    /// @notice At least one MANAGEMENT key must be supplied.
+    /// @notice At least one MANAGEMENT key must be supplied — bootstrap removal rejects it otherwise.
     function test_createTokenIdentity_revertNoManagementKey() public {
         Structs.KeyParam[] memory actionOnly = new Structs.KeyParam[](1);
         actionOnly[0] = _makeECDSAKey(bob, KeyPurposes.ACTION);
 
         vm.prank(deployer);
-        vm.expectRevert(Errors.NoManagementKeyInKeys.selector);
+        vm.expectRevert(Errors.CannotRemoveLastManagementKey.selector);
         setup.idFactory.createTokenIdentity(alice, "TST", actionOnly, _emptyModules);
     }
 

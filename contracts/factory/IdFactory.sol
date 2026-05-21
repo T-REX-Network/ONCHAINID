@@ -237,14 +237,13 @@ contract IdFactory is IIdFactory, Ownable {
             }
         }
 
-        // 3. Require at least one MANAGEMENT key besides the factory's bootstrap; otherwise
-        //    dropping the bootstrap below would leave the identity unrecoverable.
-        require(
-            KeyManager(_identity).getKeysByPurpose(KeyPurposes.MANAGEMENT).length > 1, Errors.NoManagementKeyInKeys()
-        );
-
-        // 4. Drop the bootstrap key. Direct call: factory still holds MANAGEMENT.
+        // 3. Drop the bootstrap key.
         KeyManager(_identity).removeKey(keccak256(abi.encodePacked(address(this))), KeyPurposes.MANAGEMENT);
+
+        // 4. Assert the post-setup invariant: the identity owns at least one MANAGEMENT key.
+        require(
+            KeyManager(_identity).getKeysByPurpose(KeyPurposes.MANAGEMENT).length >= 1, Errors.NoManagementKeyInKeys()
+        );
     }
 
     // function used to deploy an identity using CREATE3.
