@@ -14,14 +14,6 @@ integrity = "2f539b6241258fc3c127c97225b3cb1b5e9225e422d2c1cb233c52a6f5c29002"
 
 [[dependencies]]
 name = "forge-std"
-version = "1.15.0"
-url = "https://soldeer-revisions.s3.amazonaws.com/forge-std/1_15_0_27-02-2026_08:26:17_forge-std-1.15.zip"
-checksum = "40d9b3b3d786eec4cd05fb9d818616015cbe7b8866643a9f0854495c938588c4"
-integrity = "92accf4f7850eb9f5832f0ea77d633d36ebe993efc6d6c9f32369d31befc8a75"
-
-[[dependencies]]
-name = "solady"
-version = "0.1.15"
-url = "https://soldeer-revisions.s3.amazonaws.com/solady/0_1_15_22-04-2025_09:51:54_solady.zip"
-checksum = "beb9d62c10e0539f57e3f4bff3ceab6e139d4811e1cff0f1589b19baa91a3c11"
-integrity = "79a37db5b6982436ccb66c3838a5d8197670820b12f35b7596fcdd08f56add80"
+version = "v1.14.0"
+git = "https://github.com/foundry-rs/forge-std.git"
+rev = "1801b0541f4fda118a10798fd3486bb7051c5dd6"

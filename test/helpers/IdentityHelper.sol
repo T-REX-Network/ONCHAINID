@@ -16,16 +16,13 @@ library IdentityHelper {
         IdFactory idFactory;
     }
 
-    /// @notice Deploys complete Identity Factory infrastructure
-    /// @param managementKey The initial management key address
-    /// @return setup Struct containing all deployed contracts
-    function deployFactory(address managementKey) internal returns (OnchainIDSetup memory setup) {
+    function deployFactory(address managementKey, address owner) internal returns (OnchainIDSetup memory setup) {
         setup.identityImplementation = new Identity(managementKey, false);
-        setup.implementationAuthority = new ImplementationAuthority(address(setup.identityImplementation));
-        setup.idFactory = new IdFactory(address(setup.implementationAuthority));
+        setup.implementationAuthority = new ImplementationAuthority(address(setup.identityImplementation), owner);
+        setup.idFactory = new IdFactory(address(setup.implementationAuthority), owner);
     }
 
-    /// @notice Deploys an Identity through the custom IdentityProxy pattern
+    /// @notice Deploys an Identity through the custom IdentityProxy pattern (defaults to INDIVIDUAL type)
     /// @param initialManagementKey The management key for the identity
     /// @return identity The Identity contract at the proxy address
     function deployIdentityWithProxy(address initialManagementKey) internal returns (Identity) {
@@ -34,7 +31,7 @@ library IdentityHelper {
 
     function deployIdentityWithProxy(address initialManagementKey, uint256 identityType) internal returns (Identity) {
         Identity impl = new Identity(initialManagementKey, false);
-        ImplementationAuthority ia = new ImplementationAuthority(address(impl));
+        ImplementationAuthority ia = new ImplementationAuthority(address(impl), initialManagementKey);
         IdentityProxy proxy = new IdentityProxy(address(ia), initialManagementKey, identityType);
         return Identity(address(proxy));
     }

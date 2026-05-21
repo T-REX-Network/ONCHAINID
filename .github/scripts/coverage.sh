@@ -3,7 +3,7 @@
 FAIL=0
 
 echo "Generating coverage report..."
-COVERAGE_OUTPUT=$(forge coverage --no-match-coverage "(test|script|dependencies|FormatResolver)" --report summary)
+COVERAGE_OUTPUT=$(forge coverage --no-match-coverage "(test|script|dependencies|FormatResolver|vendor)" --report summary)
 
 # Display the coverage report
 echo "=== Coverage Report ==="

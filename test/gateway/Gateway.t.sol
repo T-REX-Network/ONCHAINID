@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
-import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
-import { IdentityHelper } from "../helpers/IdentityHelper.sol";
+import { Test } from "@forge-std/Test.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
+
 import { Identity } from "contracts/Identity.sol";
 import { IdFactory } from "contracts/factory/IdFactory.sol";
 import { Gateway } from "contracts/gateway/Gateway.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
-import { Test } from "forge-std/Test.sol";
-import { Vm } from "forge-std/Vm.sol";
+
+import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
+import { IdentityHelper } from "../helpers/IdentityHelper.sol";
 
 contract GatewayTest is Test {
 
@@ -35,7 +36,7 @@ contract GatewayTest is Test {
         vm.warp(365 days);
 
         vm.startPrank(deployer);
-        setup = IdentityHelper.deployFactory(deployer);
+        setup = IdentityHelper.deployFactory(deployer, address(this));
         vm.stopPrank();
     }
 
@@ -75,7 +76,7 @@ contract GatewayTest is Test {
     }
 
     function _deployGateway(address[] memory signers) internal returns (Gateway) {
-        return new Gateway(address(setup.idFactory), signers);
+        return new Gateway(address(setup.idFactory), signers, address(this));
     }
 
     function _deployGatewayWithCarol() internal returns (Gateway) {
@@ -89,13 +90,13 @@ contract GatewayTest is Test {
     function test_constructor_revertZeroFactory() public {
         address[] memory signers = new address[](0);
         vm.expectRevert(Errors.ZeroAddress.selector);
-        new Gateway(address(0), signers);
+        new Gateway(address(0), signers, address(this));
     }
 
     function test_constructor_revertTooManySigners() public {
         address[] memory signers = new address[](11);
         vm.expectRevert(Errors.TooManySigners.selector);
-        new Gateway(address(setup.idFactory), signers);
+        new Gateway(address(setup.idFactory), signers, address(this));
     }
 
     // ============ deployIdentityWithSalt ============
@@ -131,7 +132,6 @@ contract GatewayTest is Test {
 
     function test_deployIdentityWithSalt_shouldDeploy() public {
         Gateway gateway = _deployGatewayWithCarol();
-        vm.prank(deployer);
         setup.idFactory.transferOwnership(address(gateway));
 
         uint256 expiry = block.timestamp + 365 days;
@@ -146,7 +146,6 @@ contract GatewayTest is Test {
     /// @notice deployIdentityWithSalt with claimAdders should set CLAIM_ADDER keys
     function test_deployIdentityWithSalt_withClaimAdders_shouldSetKeys() public {
         Gateway gateway = _deployGatewayWithCarol();
-        vm.prank(deployer);
         setup.idFactory.transferOwnership(address(gateway));
 
         address claimAdder = makeAddr("gwClaimAdder");
@@ -173,7 +172,6 @@ contract GatewayTest is Test {
 
     function test_deployIdentityWithSalt_noExpiry() public {
         Gateway gateway = _deployGatewayWithCarol();
-        vm.prank(deployer);
         setup.idFactory.transferOwnership(address(gateway));
 
         bytes memory sig = _signDeploy(carolPk, alice, "saltToUse", IdentityTypes.INDIVIDUAL, new address[](0), 0);
@@ -185,7 +183,6 @@ contract GatewayTest is Test {
 
     function test_deployIdentityWithSalt_revertRevokedSignature() public {
         Gateway gateway = _deployGatewayWithCarol();
-        vm.prank(deployer);
         setup.idFactory.transferOwnership(address(gateway));
 
         uint256 expiry = block.timestamp + 365 days;
@@ -199,7 +196,6 @@ contract GatewayTest is Test {
 
     function test_deployIdentityWithSalt_revertExpiredSignature() public {
         Gateway gateway = _deployGatewayWithCarol();
-        vm.prank(deployer);
         setup.idFactory.transferOwnership(address(gateway));
 
         uint256 expiry = block.timestamp - 2 days;
@@ -238,7 +234,6 @@ contract GatewayTest is Test {
 
     function test_deployWithKeys_shouldDeploy() public {
         Gateway gateway = _deployGatewayWithCarol();
-        vm.prank(deployer);
         setup.idFactory.transferOwnership(address(gateway));
 
         uint256 expiry = block.timestamp + 365 days;
@@ -263,7 +258,6 @@ contract GatewayTest is Test {
 
     function test_deployWithKeys_noExpiry() public {
         Gateway gateway = _deployGatewayWithCarol();
-        vm.prank(deployer);
         setup.idFactory.transferOwnership(address(gateway));
 
         bytes32[] memory keys = new bytes32[](1);
@@ -283,7 +277,6 @@ contract GatewayTest is Test {
 
     function test_deployWithKeys_revertRevokedSignature() public {
         Gateway gateway = _deployGatewayWithCarol();
-        vm.prank(deployer);
         setup.idFactory.transferOwnership(address(gateway));
 
         uint256 expiry = block.timestamp + 365 days;
@@ -303,7 +296,6 @@ contract GatewayTest is Test {
 
     function test_deployWithKeys_revertExpiredSignature() public {
         Gateway gateway = _deployGatewayWithCarol();
-        vm.prank(deployer);
         setup.idFactory.transferOwnership(address(gateway));
 
         uint256 expiry = block.timestamp - 2 days;
@@ -323,7 +315,6 @@ contract GatewayTest is Test {
 
     function test_deployForWallet_revertZeroAddress() public {
         Gateway gateway = _deployGatewayWithCarol();
-        vm.prank(deployer);
         setup.idFactory.transferOwnership(address(gateway));
 
         vm.expectRevert(Errors.ZeroAddress.selector);
@@ -332,7 +323,6 @@ contract GatewayTest is Test {
 
     function test_deployForWallet_anotherSender() public {
         Gateway gateway = _deployGatewayWithCarol();
-        vm.prank(deployer);
         setup.idFactory.transferOwnership(address(gateway));
 
         vm.prank(bob);
@@ -345,7 +335,6 @@ contract GatewayTest is Test {
 
     function test_deployForWallet_shouldDeploy() public {
         Gateway gateway = _deployGatewayWithCarol();
-        vm.prank(deployer);
         setup.idFactory.transferOwnership(address(gateway));
 
         vm.prank(alice);
@@ -357,7 +346,6 @@ contract GatewayTest is Test {
 
     function test_deployForWallet_revertAlreadyDeployed() public {
         Gateway gateway = _deployGatewayWithCarol();
-        vm.prank(deployer);
         setup.idFactory.transferOwnership(address(gateway));
 
         vm.prank(alice);
@@ -372,7 +360,6 @@ contract GatewayTest is Test {
 
     function test_transferOwnership_shouldTransfer() public {
         Gateway gateway = _deployGatewayWithCarol();
-        vm.prank(deployer);
         setup.idFactory.transferOwnership(address(gateway));
 
         gateway.transferFactoryOwnership(bob);
@@ -381,7 +368,6 @@ contract GatewayTest is Test {
 
     function test_transferOwnership_revertNotOwner() public {
         Gateway gateway = _deployGatewayWithCarol();
-        vm.prank(deployer);
         setup.idFactory.transferOwnership(address(gateway));
 
         vm.prank(alice);
@@ -519,7 +505,6 @@ contract GatewayTest is Test {
         address[] memory signers = new address[](1);
         signers[0] = alice;
         Gateway gateway = _deployGateway(signers);
-        vm.prank(deployer);
         setup.idFactory.transferOwnership(address(gateway));
 
         vm.prank(alice);
@@ -531,7 +516,6 @@ contract GatewayTest is Test {
         address[] memory signers = new address[](1);
         signers[0] = alice;
         Gateway gateway = _deployGateway(signers);
-        vm.prank(deployer);
         setup.idFactory.transferOwnership(address(gateway));
 
         vm.expectRevert(Errors.CallToFactoryFailed.selector);
@@ -542,7 +526,6 @@ contract GatewayTest is Test {
         address[] memory signers = new address[](1);
         signers[0] = alice;
         Gateway gateway = _deployGateway(signers);
-        vm.prank(deployer);
         setup.idFactory.transferOwnership(address(gateway));
 
         gateway.callFactory(abi.encodeCall(IdFactory.addTokenFactory, (bob)));
