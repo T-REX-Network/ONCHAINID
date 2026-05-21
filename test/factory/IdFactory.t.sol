@@ -98,44 +98,6 @@ contract IdFactoryTest is OnchainIDSetup {
         onchainidSetup.idFactory.createIdentity(alice, "newSalt", IdentityTypes.INDIVIDUAL, new address[](0));
     }
 
-    // ============ linkWallet ============
-
-    function test_linkWallet_revertForZeroAddress() public {
-        vm.prank(alice);
-        vm.expectRevert(Errors.ZeroAddress.selector);
-        onchainidSetup.idFactory.linkWallet(address(0));
-    }
-
-    function test_linkWallet_revertForSenderNotLinked() public {
-        vm.prank(david);
-        vm.expectRevert(abi.encodeWithSelector(Errors.WalletNotLinkedToIdentity.selector, david));
-        onchainidSetup.idFactory.linkWallet(david);
-    }
-
-    function test_linkWallet_revertForNewWalletBoundToAnotherIdentity() public {
-        vm.prank(bob);
-        vm.expectRevert(
-            abi.encodeWithSelector(Errors.WalletBoundToAnotherIdentity.selector, alice, address(aliceIdentity))
-        );
-        onchainidSetup.idFactory.linkWallet(alice);
-    }
-
-    function test_linkWallet_revertForNewWalletLinkedToToken() public {
-        vm.prank(bob);
-        vm.expectRevert(abi.encodeWithSelector(Errors.TokenAlreadyLinked.selector, Constants.TOKEN_ADDRESS));
-        onchainidSetup.idFactory.linkWallet(Constants.TOKEN_ADDRESS);
-    }
-
-    function test_linkWallet_shouldLinkNewWallet() public {
-        vm.prank(alice);
-        onchainidSetup.idFactory.linkWallet(david);
-
-        address[] memory wallets = onchainidSetup.idFactory.getWallets(address(aliceIdentity));
-        assertEq(wallets.length, 2);
-        assertEq(wallets[0], alice);
-        assertEq(wallets[1], david);
-    }
-
     // ============ unlinkWallet ============
 
     function test_unlinkWallet_revertForZeroAddress() public {
@@ -157,8 +119,7 @@ contract IdFactoryTest is OnchainIDSetup {
     }
 
     function test_unlinkWallet_shouldUnlink() public {
-        vm.prank(alice);
-        onchainidSetup.idFactory.linkWallet(david);
+        _linkWalletWithSig(aliceIdentity, alice, david, davidPk);
 
         vm.prank(alice);
         onchainidSetup.idFactory.unlinkWallet(david);
@@ -188,33 +149,13 @@ contract IdFactoryTest is OnchainIDSetup {
         assertEq(identity, address(0), "Should return zero address");
     }
 
-    // ============ linkWallet - max wallets ============
-
-    /// @notice Linking more than 100 extra wallets should revert
-    function test_linkWallet_revertForMaxWalletsExceeded() public {
-        // alice already has 1 wallet linked. Link 100 more to reach the limit of 101.
-        for (uint256 i = 0; i < 100; i++) {
-            address newWallet = vm.addr(1000 + i);
-            vm.prank(alice);
-            onchainidSetup.idFactory.linkWallet(newWallet);
-        }
-
-        // The 102nd wallet should revert (101 wallets already linked)
-        address overflowWallet = makeAddr("overflowWallet");
-        vm.prank(alice);
-        vm.expectRevert(Errors.MaxWalletsPerIdentityExceeded.selector);
-        onchainidSetup.idFactory.linkWallet(overflowWallet);
-    }
-
     // ============ unlinkWallet - swap-and-pop ============
 
     /// @notice Unlinking a wallet that is not the last in the array exercises swap-and-pop
     function test_unlinkWallet_shouldSwapAndPop() public {
         // Link carol and david to alice's identity
-        vm.prank(alice);
-        onchainidSetup.idFactory.linkWallet(carol);
-        vm.prank(alice);
-        onchainidSetup.idFactory.linkWallet(david);
+        _linkWalletWithSig(aliceIdentity, alice, carol, carolPk);
+        _linkWalletWithSig(aliceIdentity, alice, david, davidPk);
 
         // wallets = [alice, carol, david]
         // Unlink carol (middle element) — triggers swap with david
@@ -596,11 +537,11 @@ contract IdFactoryTest is OnchainIDSetup {
 
     /// @notice Max wallets exceeded should revert
     function test_linkWalletWithSignature_revertForMaxWallets() public {
-        // Fill alice's identity to max wallets (101) using linkWallet
+        // Fill alice's identity to max wallets (101) by linking 100 more via signature
         for (uint256 i = 0; i < 100; i++) {
-            address newWallet = vm.addr(1000 + i);
-            vm.prank(alice);
-            onchainidSetup.idFactory.linkWallet(newWallet);
+            uint256 pk = 1000 + i;
+            address newWallet = vm.addr(pk);
+            _linkWalletWithSig(aliceIdentity, alice, newWallet, pk);
         }
 
         // Now try to link one more via signature
@@ -680,51 +621,15 @@ contract IdFactoryTest is OnchainIDSetup {
 
     // ============ Re-link restriction tests ============
 
-    /// @notice linkWallet: unlinked wallet can be re-linked to the same identity
-    function test_linkWallet_shouldAllowRelinkToSameIdentity() public {
-        // Link david to alice's identity
-        vm.prank(alice);
-        onchainidSetup.idFactory.linkWallet(david);
-        assertEq(onchainidSetup.idFactory.getIdentity(david), address(aliceIdentity));
-
-        // Unlink david
-        vm.prank(alice);
-        onchainidSetup.idFactory.unlinkWallet(david);
-        assertEq(onchainidSetup.idFactory.getIdentity(david), address(0));
-
-        // Re-link david to the SAME identity — should succeed
-        vm.prank(alice);
-        onchainidSetup.idFactory.linkWallet(david);
-        assertEq(onchainidSetup.idFactory.getIdentity(david), address(aliceIdentity));
-    }
-
-    /// @notice linkWallet: unlinked wallet cannot be linked to a different identity
-    function test_linkWallet_revertForRelinkingToDifferentIdentity() public {
-        // Link david to alice's identity
-        vm.prank(alice);
-        onchainidSetup.idFactory.linkWallet(david);
-
-        // Unlink david
-        vm.prank(alice);
-        onchainidSetup.idFactory.unlinkWallet(david);
-
-        // Bob tries to link david to bob's identity — should revert
-        vm.prank(bob);
-        vm.expectRevert(
-            abi.encodeWithSelector(Errors.WalletBoundToAnotherIdentity.selector, david, address(aliceIdentity))
-        );
-        onchainidSetup.idFactory.linkWallet(david);
-    }
-
     /// @notice createIdentity: previously linked wallet cannot create a new identity
     function test_createIdentity_revertForPreviouslyLinkedWallet() public {
-        // Link david to alice's identity
-        vm.prank(alice);
-        onchainidSetup.idFactory.linkWallet(david);
+        // Link david to alice's identity via signature
+        _linkWalletWithSig(aliceIdentity, alice, david, davidPk);
 
         // Unlink david
+        bytes memory unlinkCallData = abi.encodeWithSelector(IIdFactory.unlinkWalletByIdentity.selector, david);
         vm.prank(alice);
-        onchainidSetup.idFactory.unlinkWallet(david);
+        aliceIdentity.execute(address(onchainidSetup.idFactory), 0, unlinkCallData);
 
         // Try to create a new identity for david — should revert
         // because _userIdentity[david] != address(0) (still bound to alice's identity)
@@ -735,13 +640,13 @@ contract IdFactoryTest is OnchainIDSetup {
 
     /// @notice createIdentityWithManagementKeys: previously linked wallet cannot create a new identity
     function test_createIdentityWithManagementKeys_revertForPreviouslyLinkedWallet() public {
-        // Link david to alice's identity
-        vm.prank(alice);
-        onchainidSetup.idFactory.linkWallet(david);
+        // Link david to alice's identity via signature
+        _linkWalletWithSig(aliceIdentity, alice, david, davidPk);
 
         // Unlink david
+        bytes memory unlinkCallData = abi.encodeWithSelector(IIdFactory.unlinkWalletByIdentity.selector, david);
         vm.prank(alice);
-        onchainidSetup.idFactory.unlinkWallet(david);
+        aliceIdentity.execute(address(onchainidSetup.idFactory), 0, unlinkCallData);
 
         // Try to create a new identity for david — should revert
         bytes32[] memory keys = new bytes32[](1);
@@ -796,9 +701,8 @@ contract IdFactoryTest is OnchainIDSetup {
 
     /// @notice getIdentity should return zero for an unlinked wallet
     function test_getIdentity_shouldReturnZeroForUnlinkedWallet() public {
-        // Link david to alice's identity
-        vm.prank(alice);
-        onchainidSetup.idFactory.linkWallet(david);
+        // Link david to alice's identity via signature
+        _linkWalletWithSig(aliceIdentity, alice, david, davidPk);
         assertEq(onchainidSetup.idFactory.getIdentity(david), address(aliceIdentity));
 
         // Unlink david
@@ -809,25 +713,11 @@ contract IdFactoryTest is OnchainIDSetup {
         assertEq(onchainidSetup.idFactory.getIdentity(david), address(0));
     }
 
-    /// @notice linkWallet: wallet already actively linked to same identity should revert
-    function test_linkWallet_revertForWalletAlreadyActivelyLinked() public {
-        // Link david to alice's identity
-        vm.prank(alice);
-        onchainidSetup.idFactory.linkWallet(david);
-
-        // Try to link david again — already actively linked
-        vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(Errors.WalletAlreadyLinkedToIdentity.selector, david));
-        onchainidSetup.idFactory.linkWallet(david);
-    }
-
     /// @notice unlinkWallet: trying to unlink an unlinked wallet (bound but not active) should revert
     function test_unlinkWallet_revertForUnlinkedTarget() public {
-        // Link david and carol to alice's identity
-        vm.prank(alice);
-        onchainidSetup.idFactory.linkWallet(david);
-        vm.prank(alice);
-        onchainidSetup.idFactory.linkWallet(carol);
+        // Link david and carol to alice's identity via signature
+        _linkWalletWithSig(aliceIdentity, alice, david, davidPk);
+        _linkWalletWithSig(aliceIdentity, alice, carol, carolPk);
 
         // Unlink david (now bound but not active)
         vm.prank(alice);
@@ -878,11 +768,9 @@ contract IdFactoryTest is OnchainIDSetup {
 
     /// @notice unlinkWallet: unlinked sender cannot unlink another wallet
     function test_unlinkWallet_revertForUnlinkedSender() public {
-        // Link david and carol to alice's identity
-        vm.prank(alice);
-        onchainidSetup.idFactory.linkWallet(david);
-        vm.prank(alice);
-        onchainidSetup.idFactory.linkWallet(carol);
+        // Link david and carol to alice's identity via signature
+        _linkWalletWithSig(aliceIdentity, alice, david, davidPk);
+        _linkWalletWithSig(aliceIdentity, alice, carol, carolPk);
 
         // Unlink david
         vm.prank(alice);
@@ -892,6 +780,45 @@ contract IdFactoryTest is OnchainIDSetup {
         vm.prank(david);
         vm.expectRevert(Errors.OnlyLinkedWalletCanUnlink.selector);
         onchainidSetup.idFactory.unlinkWallet(carol);
+    }
+
+    // ============ factory-identity gate ============
+
+    /// @notice linkWalletWithSignature must reject callers that aren't identities deployed by this factory
+    function test_linkWalletWithSignature_revertForNonFactoryIdentity() public {
+        // Build a valid signature naming a non-factory contract as the identity
+        address fakeIdentity = makeAddr("fakeIdentity");
+        uint256 expiry = block.timestamp + 1 hours;
+        bytes memory signature = _signLinkWallet(davidPk, david, fakeIdentity, 0, expiry);
+
+        // Direct call from fakeIdentity should revert with NotFactoryIdentity
+        vm.prank(fakeIdentity);
+        vm.expectRevert(abi.encodeWithSelector(Errors.NotFactoryIdentity.selector, fakeIdentity));
+        onchainidSetup.idFactory.linkWalletWithSignature(david, signature, 0, expiry);
+    }
+
+    // ============ token-wallet collision guard ============
+
+    /// @notice createIdentity must reject a wallet that's already registered as a token
+    function test_createIdentity_revertForTokenRegisteredWallet() public {
+        // Constants.TOKEN_ADDRESS was registered as a token identity in setUp
+        vm.prank(deployer);
+        vm.expectRevert(abi.encodeWithSelector(Errors.TokenAlreadyLinked.selector, Constants.TOKEN_ADDRESS));
+        onchainidSetup.idFactory
+            .createIdentity(Constants.TOKEN_ADDRESS, "tokenWalletSalt", IdentityTypes.INDIVIDUAL, new address[](0));
+    }
+
+    /// @notice createIdentityWithManagementKeys must reject a wallet that's already registered as a token
+    function test_createIdentityWithManagementKeys_revertForTokenRegisteredWallet() public {
+        bytes32[] memory keys = new bytes32[](1);
+        keys[0] = ClaimSignerHelper.addressToKey(alice);
+
+        vm.prank(deployer);
+        vm.expectRevert(abi.encodeWithSelector(Errors.TokenAlreadyLinked.selector, Constants.TOKEN_ADDRESS));
+        onchainidSetup.idFactory
+            .createIdentityWithManagementKeys(
+                Constants.TOKEN_ADDRESS, "tokenWalletSalt", keys, IdentityTypes.INDIVIDUAL, new address[](0)
+            );
     }
 
 }

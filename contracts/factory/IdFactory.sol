@@ -46,6 +46,9 @@ contract IdFactory is IIdFactory, Ownable, EIP712, Nonces {
     // token linked to an ONCHAINID
     mapping(address => address) private _tokenAddress;
 
+    // identities deployed by this factory; used to gate signature-based linking
+    mapping(address => bool) private _isFactoryIdentity;
+
     // setting
     constructor(address implementationAuthorityAddress, address owner) Ownable(owner) EIP712("IdentityFactory", "1") {
         require(implementationAuthorityAddress != address(0), Errors.ZeroAddress());
@@ -87,8 +90,10 @@ contract IdFactory is IIdFactory, Ownable, EIP712, Nonces {
         string memory oidSalt = string.concat("OID", _salt);
         require(!_saltTaken[oidSalt], Errors.SaltTaken(oidSalt));
         require(_userIdentity[_wallet] == address(0), Errors.WalletAlreadyLinkedToIdentity(_wallet));
+        require(_tokenIdentity[_wallet] == address(0), Errors.TokenAlreadyLinked(_wallet));
 
         address identity = _deployIdentity(oidSalt, address(this), _identityType);
+        _isFactoryIdentity[identity] = true;
         bytes32[] memory keys = new bytes32[](1);
         keys[0] = keccak256(abi.encode(_wallet));
         _setupIdentityKeys(identity, keys, _claimAdders);
@@ -115,9 +120,11 @@ contract IdFactory is IIdFactory, Ownable, EIP712, Nonces {
         string memory oidSalt = string.concat("OID", _salt);
         require(!_saltTaken[oidSalt], Errors.SaltTaken(oidSalt));
         require(_userIdentity[_wallet] == address(0), Errors.WalletAlreadyLinkedToIdentity(_wallet));
+        require(_tokenIdentity[_wallet] == address(0), Errors.TokenAlreadyLinked(_wallet));
         require(_managementKeys.length > 0, Errors.EmptyListOfKeys());
 
         address identity = _deployIdentity(oidSalt, address(this), _identityType);
+        _isFactoryIdentity[identity] = true;
 
         for (uint256 i = 0; i < _managementKeys.length; i++) {
             require(
@@ -153,6 +160,7 @@ contract IdFactory is IIdFactory, Ownable, EIP712, Nonces {
         require(_tokenIdentity[_token] == address(0), Errors.TokenAlreadyLinked(_token));
 
         address identity = _deployIdentity(tokenIdSalt, address(this), IdentityTypes.ASSET);
+        _isFactoryIdentity[identity] = true;
         bytes32[] memory keys = new bytes32[](1);
         keys[0] = keccak256(abi.encode(_tokenOwner));
         _setupIdentityKeys(identity, keys, _claimAdders);
@@ -162,19 +170,6 @@ contract IdFactory is IIdFactory, Ownable, EIP712, Nonces {
         _tokenAddress[identity] = _token;
         emit TokenLinked(_token, identity);
         return identity;
-    }
-
-    /**
-     *  @dev See {IdFactory-linkWallet}.
-     */
-    function linkWallet(address _newWallet) external override {
-        require(_newWallet != address(0), Errors.ZeroAddress());
-        address identity = _userIdentity[msg.sender];
-        require(
-            identity != address(0) && _wallets[identity].contains(msg.sender),
-            Errors.WalletNotLinkedToIdentity(msg.sender)
-        );
-        _linkWallet(_newWallet, identity);
     }
 
     /**
@@ -199,8 +194,11 @@ contract IdFactory is IIdFactory, Ownable, EIP712, Nonces {
         external
         override
     {
+        // expiry must be set explicitly; unlike Gateway, expiry == 0 reverts to force callers
+        // to think about signature freshness given that sticky binding is permanent.
         require(wallet != address(0), Errors.ZeroAddress());
         require(block.timestamp <= expiry, Errors.ExpiredSignature(signature));
+        require(_isFactoryIdentity[msg.sender], Errors.NotFactoryIdentity(msg.sender));
 
         address identity = msg.sender;
 

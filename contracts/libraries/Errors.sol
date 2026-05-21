@@ -30,6 +30,9 @@ library Errors {
     /// @notice Reverts if the address is not a factory
     error NotAFactory(address factory);
 
+    /// @notice Reverts if the caller is not an Identity deployed by this factory
+    error NotFactoryIdentity(address caller);
+
     /// @notice Reverts if the maximum number of wallets per identity is exceeded
     error MaxWalletsPerIdentityExceeded();
 
