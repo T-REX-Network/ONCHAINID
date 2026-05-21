@@ -5,6 +5,7 @@ import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 import { Constants } from "../utils/Constants.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
+import { Nonces } from "@openzeppelin/contracts/utils/Nonces.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IIdFactory } from "contracts/factory/IIdFactory.sol";
 import { IdFactory } from "contracts/factory/IdFactory.sol";
@@ -402,14 +403,9 @@ contract IdFactoryTest is OnchainIDSetup {
         uint256 expiry = block.timestamp + 1 hours;
         bytes memory signature = _signLinkWallet(davidPk, address(0), address(aliceIdentity), 0, expiry);
 
-        bytes memory callData =
-            abi.encodeWithSelector(IIdFactory.linkWalletWithSignature.selector, address(0), signature, 0, expiry);
-        vm.prank(alice);
-        // execute() will fail silently (ExecutionFailed event), but the inner call reverts with ZeroAddress
-        aliceIdentity.execute(address(onchainidSetup.idFactory), 0, callData);
-
-        // Verify the wallet was NOT linked
-        assertEq(onchainidSetup.idFactory.getIdentity(address(0)), address(0));
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(Errors.ZeroAddress.selector);
+        onchainidSetup.idFactory.linkWalletWithSignature(address(0), signature, 0, expiry);
     }
 
     /// @notice Expired signature should revert
@@ -417,13 +413,9 @@ contract IdFactoryTest is OnchainIDSetup {
         uint256 expiry = block.timestamp - 1; // already expired
         bytes memory signature = _signLinkWallet(davidPk, david, address(aliceIdentity), 0, expiry);
 
-        bytes memory callData =
-            abi.encodeWithSelector(IIdFactory.linkWalletWithSignature.selector, david, signature, 0, expiry);
-        vm.prank(alice);
-        aliceIdentity.execute(address(onchainidSetup.idFactory), 0, callData);
-
-        // Verify the wallet was NOT linked
-        assertEq(onchainidSetup.idFactory.getIdentity(david), address(0));
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(abi.encodeWithSelector(Errors.ExpiredSignature.selector, signature));
+        onchainidSetup.idFactory.linkWalletWithSignature(david, signature, 0, expiry);
     }
 
     /// @notice Invalid signature (wrong signer) should revert
@@ -432,13 +424,9 @@ contract IdFactoryTest is OnchainIDSetup {
         // Sign with carol's key instead of david's
         bytes memory badSignature = _signLinkWallet(carolPk, david, address(aliceIdentity), 0, expiry);
 
-        bytes memory callData =
-            abi.encodeWithSelector(IIdFactory.linkWalletWithSignature.selector, david, badSignature, 0, expiry);
-        vm.prank(alice);
-        aliceIdentity.execute(address(onchainidSetup.idFactory), 0, callData);
-
-        // Verify the wallet was NOT linked
-        assertEq(onchainidSetup.idFactory.getIdentity(david), address(0));
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(Errors.InvalidSignature.selector);
+        onchainidSetup.idFactory.linkWalletWithSignature(david, badSignature, 0, expiry);
     }
 
     /// @notice Wrong nonce should revert
@@ -447,13 +435,10 @@ contract IdFactoryTest is OnchainIDSetup {
         uint256 wrongNonce = 42;
         bytes memory signature = _signLinkWallet(davidPk, david, address(aliceIdentity), wrongNonce, expiry);
 
-        bytes memory callData =
-            abi.encodeWithSelector(IIdFactory.linkWalletWithSignature.selector, david, signature, wrongNonce, expiry);
-        vm.prank(alice);
-        aliceIdentity.execute(address(onchainidSetup.idFactory), 0, callData);
-
-        // Verify the wallet was NOT linked
-        assertEq(onchainidSetup.idFactory.getIdentity(david), address(0));
+        vm.prank(address(aliceIdentity));
+        // OZ Nonces: InvalidAccountNonce(account, currentNonce)
+        vm.expectRevert(abi.encodeWithSelector(Nonces.InvalidAccountNonce.selector, david, 0));
+        onchainidSetup.idFactory.linkWalletWithSignature(david, signature, wrongNonce, expiry);
     }
 
     /// @notice Replay attack: link -> unlink -> replay same signature should revert
@@ -506,13 +491,9 @@ contract IdFactoryTest is OnchainIDSetup {
         uint256 expiry = block.timestamp + 1 hours;
         bytes memory signature = _signLinkWallet(bobPk, bob, address(aliceIdentity), 0, expiry);
 
-        bytes memory callData =
-            abi.encodeWithSelector(IIdFactory.linkWalletWithSignature.selector, bob, signature, 0, expiry);
-        vm.prank(alice);
-        aliceIdentity.execute(address(onchainidSetup.idFactory), 0, callData);
-
-        // Verify bob is still linked to bob's identity, NOT alice's
-        assertEq(onchainidSetup.idFactory.getIdentity(bob), address(bobIdentity));
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(abi.encodeWithSelector(Errors.WalletBoundToAnotherIdentity.selector, bob, address(bobIdentity)));
+        onchainidSetup.idFactory.linkWalletWithSignature(bob, signature, 0, expiry);
     }
 
     /// @notice Wallet that is a token address should revert
@@ -525,14 +506,9 @@ contract IdFactoryTest is OnchainIDSetup {
         uint256 expiry = block.timestamp + 1 hours;
         bytes memory signature = _signLinkWallet(davidPk, david, address(aliceIdentity), 0, expiry);
 
-        bytes memory callData =
-            abi.encodeWithSelector(IIdFactory.linkWalletWithSignature.selector, david, signature, 0, expiry);
-        vm.prank(alice);
-        aliceIdentity.execute(address(onchainidSetup.idFactory), 0, callData);
-
-        // Verify david was NOT linked as a user wallet (still only a token identity)
-        address[] memory wallets = onchainidSetup.idFactory.getWallets(address(aliceIdentity));
-        assertEq(wallets.length, 1, "Should still have only alice");
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(abi.encodeWithSelector(Errors.TokenAlreadyLinked.selector, david));
+        onchainidSetup.idFactory.linkWalletWithSignature(david, signature, 0, expiry);
     }
 
     /// @notice Max wallets exceeded should revert
@@ -548,13 +524,9 @@ contract IdFactoryTest is OnchainIDSetup {
         uint256 expiry = block.timestamp + 1 hours;
         bytes memory signature = _signLinkWallet(davidPk, david, address(aliceIdentity), 0, expiry);
 
-        bytes memory callData =
-            abi.encodeWithSelector(IIdFactory.linkWalletWithSignature.selector, david, signature, 0, expiry);
-        vm.prank(alice);
-        aliceIdentity.execute(address(onchainidSetup.idFactory), 0, callData);
-
-        // Verify the wallet was NOT linked (max exceeded)
-        assertEq(onchainidSetup.idFactory.getIdentity(david), address(0));
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(Errors.MaxWalletsPerIdentityExceeded.selector);
+        onchainidSetup.idFactory.linkWalletWithSignature(david, signature, 0, expiry);
     }
 
     /// @notice Direct EOA call should fail because signature binds wallet to EOA address (not an identity)
@@ -591,23 +563,17 @@ contract IdFactoryTest is OnchainIDSetup {
 
     /// @notice Zero address should revert
     function test_unlinkWalletByIdentity_revertForZeroAddress() public {
-        bytes memory callData = abi.encodeWithSelector(IIdFactory.unlinkWalletByIdentity.selector, address(0));
-        vm.prank(alice);
-        aliceIdentity.execute(address(onchainidSetup.idFactory), 0, callData);
-
-        // Verify nothing changed (alice is still linked)
-        assertEq(onchainidSetup.idFactory.getIdentity(alice), address(aliceIdentity));
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(Errors.ZeroAddress.selector);
+        onchainidSetup.idFactory.unlinkWalletByIdentity(address(0));
     }
 
     /// @notice Wallet not linked to the calling identity should revert
     function test_unlinkWalletByIdentity_revertForWalletNotLinkedToIdentity() public {
         // Try to unlink bob from alice's identity - bob is linked to bob's identity
-        bytes memory callData = abi.encodeWithSelector(IIdFactory.unlinkWalletByIdentity.selector, bob);
-        vm.prank(alice);
-        aliceIdentity.execute(address(onchainidSetup.idFactory), 0, callData);
-
-        // Verify bob is still linked to bob's identity
-        assertEq(onchainidSetup.idFactory.getIdentity(bob), address(bobIdentity));
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(abi.encodeWithSelector(Errors.WalletNotLinkedToIdentity.selector, bob));
+        onchainidSetup.idFactory.unlinkWalletByIdentity(bob);
     }
 
     /// @notice Direct EOA call should fail if wallet is linked to a different identity
@@ -739,13 +705,10 @@ contract IdFactoryTest is OnchainIDSetup {
         uint256 nonce = onchainidSetup.idFactory.nonces(david);
         uint256 expiry = block.timestamp + 1 hours;
         bytes memory signature = _signLinkWallet(davidPk, david, address(aliceIdentity), nonce, expiry);
-        bytes memory callData =
-            abi.encodeWithSelector(IIdFactory.linkWalletWithSignature.selector, david, signature, nonce, expiry);
-        vm.prank(alice);
-        aliceIdentity.execute(address(onchainidSetup.idFactory), 0, callData);
 
-        // Verify david is still linked (call failed silently via execute)
-        assertEq(onchainidSetup.idFactory.getIdentity(david), address(aliceIdentity));
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(abi.encodeWithSelector(Errors.WalletAlreadyLinkedToIdentity.selector, david));
+        onchainidSetup.idFactory.linkWalletWithSignature(david, signature, nonce, expiry);
     }
 
     /// @notice unlinkWalletByIdentity: trying to unlink a previously linked but now unlinked wallet should revert
@@ -758,12 +721,10 @@ contract IdFactoryTest is OnchainIDSetup {
         vm.prank(alice);
         aliceIdentity.execute(address(onchainidSetup.idFactory), 0, unlinkCallData);
 
-        // Try to unlink david again — already unlinked but still bound
-        vm.prank(alice);
-        aliceIdentity.execute(address(onchainidSetup.idFactory), 0, unlinkCallData);
-
-        // Verify david is still unlinked
-        assertEq(onchainidSetup.idFactory.getIdentity(david), address(0));
+        // Try to unlink david again — already unlinked but still bound, reverts WalletNotLinkedToIdentity
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(abi.encodeWithSelector(Errors.WalletNotLinkedToIdentity.selector, david));
+        onchainidSetup.idFactory.unlinkWalletByIdentity(david);
     }
 
     /// @notice unlinkWallet: unlinked sender cannot unlink another wallet
