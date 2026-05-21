@@ -311,7 +311,7 @@ contract IdFactory is IIdFactory, Ownable, EIP712, Nonces {
         bytes memory _constructData = abi.encode(implementationAuthority, _wallet, _identityType);
         bytes memory bytecode = abi.encodePacked(_code, _constructData);
 
-        return Create3.deploy(0, keccak256(abi.encodePacked(_salt)), bytecode);
+        return Create3.deploy(0, keccak256(bytes(_salt)), bytecode);
     }
 
     function _verifyWalletSignature(
