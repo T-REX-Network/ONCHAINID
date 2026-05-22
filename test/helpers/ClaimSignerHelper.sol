@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
-import { Identity } from "contracts/Identity.sol";
+import { IIdentity } from "contracts/interface/IIdentity.sol";
 import { Vm } from "forge-std/Vm.sol";
 
 /// @notice Helper library for building and signing claims in tests
@@ -54,7 +54,7 @@ library ClaimSignerHelper {
         uint256 topic,
         bytes memory data
     ) internal view returns (bytes memory) {
-        bytes32 digest = Identity(payable(issuerContract)).getClaimHash(identity, topic, data);
+        bytes32 digest = IIdentity(issuerContract).getClaimHash(identity, topic, data);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerPk, digest);
         bytes memory rawSig = abi.encodePacked(r, s, v);
         bytes memory signer = abi.encodePacked(signerAddr);

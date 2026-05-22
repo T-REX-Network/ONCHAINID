@@ -3,6 +3,7 @@ pragma solidity ^0.8.27;
 
 import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
+import { IIdentity } from "contracts/interface/IIdentity.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 
@@ -38,14 +39,15 @@ contract VersionUpgradeTest is OnchainIDSetup {
             claimData
         );
 
-        // Add self-issued claim with valid signature
+        // Add self-issued claim with valid signature (ClaimsModule via fallback).
         vm.prank(alice);
-        aliceIdentity.addClaim(claimTopic, 1, address(aliceIdentity), signature, claimData, claimUri);
+        IIdentity(address(aliceIdentity))
+            .addClaim(claimTopic, 1, address(aliceIdentity), signature, claimData, claimUri);
 
         // Verify claim
         bytes32 claimId = keccak256(abi.encode(address(aliceIdentity), claimTopic));
         (uint256 topic,, address returnedIssuer,, bytes memory data, string memory uri) =
-            aliceIdentity.getClaim(claimId);
+            IIdentity(address(aliceIdentity)).getClaim(claimId);
 
         assertEq(topic, claimTopic);
         assertEq(returnedIssuer, address(aliceIdentity));

@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
-import { ClaimIssuerHelper } from "../helpers/ClaimIssuerHelper.sol";
 import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { IdentityHelper } from "../helpers/IdentityHelper.sol";
 import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
-import { ClaimIssuer } from "contracts/ClaimIssuer.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IdentityUtilities } from "contracts/IdentityUtilities.sol";
+import { IIdentity } from "contracts/interface/IIdentity.sol";
 import { IIdentityUtilities } from "contracts/interface/IIdentityUtilities.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
@@ -874,13 +873,15 @@ contract IdentityUtilitiesTest is Test {
         );
         vm.stopPrank();
 
-        // Deploy ClaimIssuer and Identity
+        // Deploy issuer identity and subject identity. The issuer is just an Identity with the
+        // ClaimsModule installed; the proxy helper installs it automatically.
         (address claimIssuerOwner, uint256 claimIssuerOwnerPk) = makeAddrAndKey("ciOwner");
         address identityOwner = makeAddr("idOwner");
         (address claimSigner,) = makeAddrAndKey("claimSigner");
 
         ECDSAValidator ecdsa = new ECDSAValidator();
-        ClaimIssuer ci = ClaimIssuerHelper.deployWithProxy(claimIssuerOwner, address(ecdsa));
+        (Identity ci, ECDSAValidator ciValidator) = IdentityHelper.deployIdentityWithProxy(claimIssuerOwner);
+        ecdsa = ciValidator;
         (Identity identity,) = IdentityHelper.deployIdentityWithProxy(identityOwner);
 
         // Add CLAIM_SIGNER key to claim issuer for the claimIssuerOwner
@@ -904,8 +905,8 @@ contract IdentityUtilitiesTest is Test {
 
         // Add claims to identity via claimSigner (has CLAIM_SIGNER key)
         vm.startPrank(claimSigner);
-        identity.addClaim(1001, 1, address(ci), sig1, claimData1, "https://example.com/kyc");
-        identity.addClaim(1002, 1, address(ci), sig2, claimData2, "https://example.com/aml");
+        IIdentity(address(identity)).addClaim(1001, 1, address(ci), sig1, claimData1, "https://example.com/kyc");
+        IIdentity(address(identity)).addClaim(1002, 1, address(ci), sig2, claimData2, "https://example.com/aml");
         vm.stopPrank();
 
         // Query
@@ -962,7 +963,8 @@ contract IdentityUtilitiesTest is Test {
 
         // Add a self-attested claim with valid signature
         vm.prank(admin);
-        identity.addClaim(3004, 1, address(identity), signature, claimData, "https://example.com/claim");
+        IIdentity(address(identity))
+            .addClaim(3004, 1, address(identity), signature, claimData, "https://example.com/claim");
 
         // Query
         uint256[] memory topicIds = new uint256[](1);

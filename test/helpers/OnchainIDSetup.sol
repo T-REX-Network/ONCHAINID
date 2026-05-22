@@ -2,12 +2,11 @@
 pragma solidity ^0.8.27;
 
 import { Constants } from "../utils/Constants.sol";
-import { ClaimIssuerHelper } from "./ClaimIssuerHelper.sol";
 import { ClaimSignerHelper } from "./ClaimSignerHelper.sol";
 import { IdentityHelper } from "./IdentityHelper.sol";
-import { ClaimIssuer } from "contracts/ClaimIssuer.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IdFactory } from "contracts/factory/IdFactory.sol";
+import { IIdentity } from "contracts/interface/IIdentity.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
@@ -46,7 +45,7 @@ contract OnchainIDSetup is Test {
     // Deployed identities
     Identity public aliceIdentity;
     Identity public bobIdentity;
-    ClaimIssuer public claimIssuer;
+    Identity public claimIssuer; // Identity with ClaimsModule installed (was a standalone ClaimIssuer)
 
     // Pre-built claim
     ClaimSignerHelper.Claim public aliceClaim666;
@@ -66,12 +65,43 @@ contract OnchainIDSetup is Test {
         onchainidSetup = IdentityHelper.deployFactory(deployer);
         vm.stopPrank();
 
-        // Deploy ClaimIssuer with proxy
-        claimIssuer = ClaimIssuerHelper.deployWithProxy(claimIssuerOwner, address(onchainidSetup.ecdsaValidator));
+        // ClaimIssuer is now just an Identity with type CLAIM_ISSUER and the ClaimsModule installed.
+        vm.prank(deployer);
+        Structs.KeyParam[] memory issuerKeys = new Structs.KeyParam[](2);
+        issuerKeys[0] = Structs.KeyParam({
+            keyHash: keccak256(abi.encodePacked(claimIssuerOwner)),
+            purpose: KeyPurposes.MANAGEMENT,
+            keyType: KeyTypes.ECDSA,
+            signerData: abi.encodePacked(claimIssuerOwner),
+            clientData: ""
+        });
+        issuerKeys[1] = Structs.KeyParam({
+            keyHash: ClaimSignerHelper.addressToKey(claimIssuerOwner),
+            purpose: KeyPurposes.CLAIM_SIGNER,
+            keyType: KeyTypes.ECDSA,
+            signerData: abi.encodePacked(claimIssuerOwner),
+            clientData: ""
+        });
+        address claimIssuerAddr = onchainidSetup.idFactory
+            .createIdentity(
+                claimIssuerOwner,
+                IdentityTypes.CLAIM_ISSUER,
+                "claimIssuer",
+                issuerKeys,
+                IdentityHelper.legacyQueueModules(
+                    address(onchainidSetup.keyApprovalModule), address(onchainidSetup.claimsModule)
+                )
+            );
+        claimIssuer = Identity(payable(claimIssuerAddr));
 
-        // Add CLAIM_SIGNER key to ClaimIssuer (register under unified key hash)
+        // Install ECDSAValidator on the issuer so claim signatures can be verified.
         vm.prank(claimIssuerOwner);
-        claimIssuer.addKey(ClaimSignerHelper.addressToKey(claimIssuerOwner), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+        claimIssuer.installModule(
+            1,
+            /* MODULE_TYPE_VALIDATOR */
+            address(onchainidSetup.ecdsaValidator),
+            ""
+        );
 
         // Create alice identity via factory
         vm.prank(deployer);
@@ -89,9 +119,21 @@ contract OnchainIDSetup is Test {
                 IdentityTypes.INDIVIDUAL,
                 "alice",
                 aliceKeys,
-                IdentityHelper.legacyQueueModules(address(onchainidSetup.keyApprovalModule))
+                IdentityHelper.legacyQueueModules(
+                    address(onchainidSetup.keyApprovalModule), address(onchainidSetup.claimsModule)
+                )
             );
         aliceIdentity = Identity(payable(aliceIdentityAddr));
+
+        // Install ECDSAValidator on alice's identity so claims received from external issuers
+        // (which sign against the issuer's domain) can be verified there too if needed.
+        vm.prank(alice);
+        aliceIdentity.installModule(
+            1,
+            /* MODULE_TYPE_VALIDATOR */
+            address(onchainidSetup.ecdsaValidator),
+            ""
+        );
 
         // Add carol as CLAIM_SIGNER and david as ACTION key on alice's identity
         vm.startPrank(alice);
@@ -116,14 +158,15 @@ contract OnchainIDSetup is Test {
         );
 
         vm.prank(alice);
-        aliceIdentity.addClaim(
-            aliceClaim666.topic,
-            aliceClaim666.scheme,
-            aliceClaim666.issuer,
-            aliceClaim666.signature,
-            aliceClaim666.data,
-            aliceClaim666.uri
-        );
+        IIdentity(address(aliceIdentity))
+            .addClaim(
+                aliceClaim666.topic,
+                aliceClaim666.scheme,
+                aliceClaim666.issuer,
+                aliceClaim666.signature,
+                aliceClaim666.data,
+                aliceClaim666.uri
+            );
 
         // Create bob identity via factory
         vm.prank(deployer);
@@ -141,7 +184,9 @@ contract OnchainIDSetup is Test {
                 IdentityTypes.INDIVIDUAL,
                 "bob",
                 bobKeys,
-                IdentityHelper.legacyQueueModules(address(onchainidSetup.keyApprovalModule))
+                IdentityHelper.legacyQueueModules(
+                    address(onchainidSetup.keyApprovalModule), address(onchainidSetup.claimsModule)
+                )
             );
         bobIdentity = Identity(payable(bobIdentityAddr));
 
@@ -160,7 +205,9 @@ contract OnchainIDSetup is Test {
                 Constants.TOKEN_ADDRESS,
                 "tokenOwner",
                 tokenKeys,
-                IdentityHelper.legacyQueueModules(address(onchainidSetup.keyApprovalModule))
+                IdentityHelper.legacyQueueModules(
+                    address(onchainidSetup.keyApprovalModule), address(onchainidSetup.claimsModule)
+                )
             );
     }
 

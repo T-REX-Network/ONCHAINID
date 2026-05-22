@@ -6,12 +6,11 @@ import { Script, console } from "forge-std/Script.sol";
 import {
     ERC7913WebAuthnVerifier
 } from "@openzeppelin/contracts/utils/cryptography/verifiers/ERC7913WebAuthnVerifier.sol";
-import { ClaimIssuer } from "contracts/ClaimIssuer.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IdentityUtilities } from "contracts/IdentityUtilities.sol";
-import { ClaimIssuerFactory } from "contracts/factory/ClaimIssuerFactory.sol";
 import { IdFactory } from "contracts/factory/IdFactory.sol";
 import { Gateway } from "contracts/gateway/Gateway.sol";
+import { ClaimsModule } from "contracts/modules/claims/ClaimsModule.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
 import { ECDSAValidator } from "contracts/modules/validators/ECDSAValidator.sol";
 import { WebAuthnValidator } from "contracts/modules/validators/WebAuthnValidator.sol";
@@ -24,12 +23,11 @@ import { ImplementationAuthority } from "contracts/proxy/ImplementationAuthority
  *
  * Deployment order:
  *   1. Identity implementation (library mode)
- *   2. ClaimIssuer implementation
- *   3. IdentityUtilities implementation + proxy
- *   4. ImplementationAuthority (beacon pointing to Identity impl)
+ *   2. IdentityUtilities implementation + proxy
+ *   3. ImplementationAuthority (beacon pointing to Identity impl)
+ *   4. Module singletons (KeyApprovalModule, ClaimsModule)
  *   5. IdFactory (uses ImplementationAuthority for identity proxies)
- *   6. ClaimIssuerFactory (uses ClaimIssuer impl for CREATE3 proxies)
- *   7. Gateway (entry point for signed identity deployments)
+ *   6. Gateway (entry point for signed identity deployments)
  *
  * Usage:
  *   forge script scripts/DeployOnchainID.s.sol --rpc-url <RPC> --private-key <PK> --broadcast --verify
@@ -60,10 +58,6 @@ contract DeployOnchainID is Script {
         Identity identityImpl = new Identity(deployer, true);
         console.log("Identity implementation:", address(identityImpl));
 
-        // 3. ClaimIssuer implementation
-        ClaimIssuer claimIssuerImpl = new ClaimIssuer(deployer);
-        console.log("ClaimIssuer implementation:", address(claimIssuerImpl));
-
         // 3. IdentityUtilities implementation + proxy
         IdentityUtilities utilitiesImpl = new IdentityUtilities();
         IdentityUtilitiesProxy utilitiesProxy = new IdentityUtilitiesProxy(
@@ -78,19 +72,17 @@ contract DeployOnchainID is Script {
         ImplementationAuthority authority = new ImplementationAuthority(address(identityImpl), deployer);
         console.log("ImplementationAuthority:", address(authority));
 
-        // 4b. KeyApprovalModule singleton (ERC-7579 fallback handler + executor for the
-        //     legacy ERC-734 execute/approve queue). Callers include this in their
-        //     `_modules` array when creating an identity if they want the legacy ABI.
+        // 4b. Module singletons. Callers include these in their `_modules` array on
+        //     `createIdentity` to opt into the legacy ERC-734 execute/approve queue
+        //     (KeyApprovalModule) and the full ERC-735 claim surface (ClaimsModule).
         KeyApprovalModule keyApprovalModule = new KeyApprovalModule();
         console.log("KeyApprovalModule:", address(keyApprovalModule));
+        ClaimsModule claimsModule = new ClaimsModule();
+        console.log("ClaimsModule:", address(claimsModule));
 
         // 5. IdFactory
         IdFactory idFactory = new IdFactory(address(authority), deployer);
         console.log("IdFactory:", address(idFactory));
-
-        // 6. ClaimIssuerFactory
-        ClaimIssuerFactory claimIssuerFactory = new ClaimIssuerFactory(address(claimIssuerImpl), deployer);
-        console.log("ClaimIssuerFactory:", address(claimIssuerFactory));
 
         // 7. Gateway
         Gateway gateway = new Gateway(address(idFactory), gatewaySigners, deployer);
@@ -110,12 +102,12 @@ contract DeployOnchainID is Script {
         console.log("");
         console.log("========== Deployment Summary ==========");
         console.log("Identity impl:          ", address(identityImpl));
-        console.log("ClaimIssuer impl:       ", address(claimIssuerImpl));
         console.log("IdentityUtilities impl: ", address(utilitiesImpl));
         console.log("IdentityUtilities proxy:", address(utilitiesProxy));
         console.log("ImplementationAuthority:", address(authority));
         console.log("IdFactory:              ", address(idFactory));
-        console.log("ClaimIssuerFactory:     ", address(claimIssuerFactory));
+        console.log("KeyApprovalModule:      ", address(keyApprovalModule));
+        console.log("ClaimsModule:           ", address(claimsModule));
         console.log("Gateway:                ", address(gateway));
         console.log("ERC7913WebAuthnVerifier:", address(webAuthnVerifier));
         console.log("=========================================");
