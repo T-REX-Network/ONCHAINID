@@ -176,14 +176,10 @@ contract IdFactory is IIdFactory, Ownable, EIP712, Nonces {
      *  @dev See {IdFactory-unlinkWallet}.
      */
     function unlinkWallet(address _oldWallet) external override {
-        require(_oldWallet != address(0), Errors.ZeroAddress());
         require(_oldWallet != msg.sender, Errors.CannotBeCalledOnSenderAddress());
         address identity = _userIdentity[msg.sender];
-        require(identity != address(0) && _wallets[identity].contains(msg.sender), Errors.OnlyLinkedWalletCanUnlink());
-        require(
-            _userIdentity[_oldWallet] == identity && _wallets[identity].contains(_oldWallet),
-            Errors.OnlyLinkedWalletCanUnlink()
-        );
+        require(_wallets[identity].contains(msg.sender), Errors.OnlyLinkedWalletCanUnlink());
+        require(_userIdentity[_oldWallet] == identity, Errors.OnlyLinkedWalletCanUnlink());
         _unlinkWallet(_oldWallet, identity);
     }
 
@@ -196,7 +192,6 @@ contract IdFactory is IIdFactory, Ownable, EIP712, Nonces {
     {
         // expiry must be set explicitly; unlike Gateway, expiry == 0 reverts to force callers
         // to think about signature freshness given that sticky binding is permanent.
-        require(wallet != address(0), Errors.ZeroAddress());
         require(block.timestamp <= expiry, Errors.ExpiredSignature(signature));
         require(_isFactoryIdentity[msg.sender], Errors.NotFactoryIdentity(msg.sender));
 
@@ -211,11 +206,7 @@ contract IdFactory is IIdFactory, Ownable, EIP712, Nonces {
      *  @dev See {IIdFactory-unlinkWalletByIdentity}.
      */
     function unlinkWalletByIdentity(address wallet) external override {
-        require(wallet != address(0), Errors.ZeroAddress());
-        require(
-            _userIdentity[wallet] == msg.sender && _wallets[msg.sender].contains(wallet),
-            Errors.WalletNotLinkedToIdentity(wallet)
-        );
+        require(_userIdentity[wallet] == msg.sender, Errors.WalletNotLinkedToIdentity(wallet));
         _unlinkWallet(wallet, msg.sender);
     }
 
@@ -286,20 +277,20 @@ contract IdFactory is IIdFactory, Ownable, EIP712, Nonces {
 
     function _linkWallet(address _wallet, address _identity) private {
         address boundIdentity = _userIdentity[_wallet];
-        if (boundIdentity != address(0)) {
-            require(boundIdentity == _identity, Errors.WalletBoundToAnotherIdentity(_wallet, boundIdentity));
-        }
-        require(!_wallets[_identity].contains(_wallet), Errors.WalletAlreadyLinkedToIdentity(_wallet));
+        require(
+            boundIdentity == address(0) || boundIdentity == _identity,
+            Errors.WalletBoundToAnotherIdentity(_wallet, boundIdentity)
+        );
         require(_tokenIdentity[_wallet] == address(0), Errors.TokenAlreadyLinked(_wallet));
         require(_wallets[_identity].length() < _MAX_WALLETS_PER_IDENTITY, Errors.MaxWalletsPerIdentityExceeded());
+        require(_wallets[_identity].add(_wallet), Errors.WalletAlreadyLinkedToIdentity(_wallet));
 
         _userIdentity[_wallet] = _identity;
-        _wallets[_identity].add(_wallet);
         emit WalletLinked(_wallet, _identity);
     }
 
     function _unlinkWallet(address _wallet, address _identity) private {
-        _wallets[_identity].remove(_wallet);
+        require(_wallets[_identity].remove(_wallet), Errors.WalletNotLinkedToIdentity(_wallet));
         emit WalletUnlinked(_wallet, _identity);
     }
 

@@ -102,8 +102,9 @@ contract IdFactoryTest is OnchainIDSetup {
     // ============ unlinkWallet ============
 
     function test_unlinkWallet_revertForZeroAddress() public {
+        // address(0) is never linked, so the address(0) != msg.sender / linked-wallet checks reject it
         vm.prank(alice);
-        vm.expectRevert(Errors.ZeroAddress.selector);
+        vm.expectRevert(Errors.OnlyLinkedWalletCanUnlink.selector);
         onchainidSetup.idFactory.unlinkWallet(address(0));
     }
 
@@ -398,13 +399,13 @@ contract IdFactoryTest is OnchainIDSetup {
         assertEq(onchainidSetup.idFactory.nonces(david), 1);
     }
 
-    /// @notice Wallet address cannot be zero
+    /// @notice Wallet address cannot be zero — ECDSA recovery never produces address(0) for a valid sig
     function test_linkWalletWithSignature_revertForZeroAddress() public {
         uint256 expiry = block.timestamp + 1 hours;
         bytes memory signature = _signLinkWallet(davidPk, address(0), address(aliceIdentity), 0, expiry);
 
         vm.prank(address(aliceIdentity));
-        vm.expectRevert(Errors.ZeroAddress.selector);
+        vm.expectRevert(Errors.InvalidSignature.selector);
         onchainidSetup.idFactory.linkWalletWithSignature(address(0), signature, 0, expiry);
     }
 
@@ -561,10 +562,10 @@ contract IdFactoryTest is OnchainIDSetup {
         assertEq(wallets[0], alice);
     }
 
-    /// @notice Zero address should revert
+    /// @notice Zero address is never linked, so unlinking it surfaces WalletNotLinkedToIdentity
     function test_unlinkWalletByIdentity_revertForZeroAddress() public {
         vm.prank(address(aliceIdentity));
-        vm.expectRevert(Errors.ZeroAddress.selector);
+        vm.expectRevert(abi.encodeWithSelector(Errors.WalletNotLinkedToIdentity.selector, address(0)));
         onchainidSetup.idFactory.unlinkWalletByIdentity(address(0));
     }
 
@@ -689,9 +690,9 @@ contract IdFactoryTest is OnchainIDSetup {
         vm.prank(alice);
         onchainidSetup.idFactory.unlinkWallet(david);
 
-        // carol tries to unlink david — david is bound but not actively linked
+        // carol tries to unlink david — david is bound but not actively linked, _unlinkWallet's remove() rejects
         vm.prank(carol);
-        vm.expectRevert(Errors.OnlyLinkedWalletCanUnlink.selector);
+        vm.expectRevert(abi.encodeWithSelector(Errors.WalletNotLinkedToIdentity.selector, david));
         onchainidSetup.idFactory.unlinkWallet(david);
     }
 
