@@ -331,19 +331,18 @@ contract ClaimsModule is IERC7579Module, IERC735 {
         returns (bytes32)
     {
         // Read the calling identity's EIP-712 domain so off-chain signers sign against the identity address.
-        (, string memory name, string memory version, uint256 chainId, address verifyingContract,,) =
-            IERC5267(account).eip712Domain();
+        (
+            bytes1 fields,
+            string memory name,
+            string memory version,
+            uint256 chainId,
+            address verifyingContract,
+            bytes32 salt,
+        ) = IERC5267(account).eip712Domain();
 
-        // EIP-712 domain separator built from the issuer identity's domain fields.
-        bytes32 domainSeparator = keccak256(
-            abi.encode(
-                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
-                keccak256(bytes(name)),
-                keccak256(bytes(version)),
-                chainId,
-                verifyingContract
-            )
-        );
+        // Build the EIP-712 domain separator from the issuer identity's domain fields.
+        bytes32 domainSeparator =
+            MessageHashUtils.toDomainSeparator(fields, name, version, chainId, verifyingContract, salt);
 
         // The subject identity is included inside the struct hash, even though the domain belongs to the issuer.
         bytes32 structHash = keccak256(abi.encode(_CLAIM_TYPEHASH, subject, topic, keccak256(data)));
