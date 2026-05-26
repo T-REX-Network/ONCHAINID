@@ -3,8 +3,8 @@ pragma solidity ^0.8.27;
 
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { Nonces } from "@openzeppelin/contracts/utils/Nonces.sol";
-import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
+import { SignatureChecker } from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 import { IERC734 } from "../interface/IERC734.sol";
@@ -313,10 +313,9 @@ contract IdFactory is IIdFactory, Ownable, EIP712, Nonces {
         bytes calldata signature
     ) private view {
         bytes32 structHash = keccak256(abi.encode(_LINK_WALLET_TYPEHASH, wallet, identity, nonce, expiry));
-
         bytes32 digest = _hashTypedDataV4(structHash);
-        (address signer, ECDSA.RecoverError error,) = ECDSA.tryRecover(digest, signature);
-        require(error == ECDSA.RecoverError.NoError && signer == wallet, Errors.InvalidSignature());
+        // SignatureChecker accepts both EOA (ECDSA) and ERC-1271 (smart wallet) signatures
+        require(SignatureChecker.isValidSignatureNowCalldata(wallet, digest, signature), Errors.InvalidSignature());
     }
 
 }

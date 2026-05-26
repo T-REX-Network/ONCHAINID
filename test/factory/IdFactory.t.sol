@@ -13,6 +13,7 @@ import { Errors } from "contracts/libraries/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { ImplementationAuthority } from "contracts/proxy/ImplementationAuthority.sol";
+import { MockERC1271Wallet } from "test/mocks/MockERC1271Wallet.sol";
 import { RevertingIdentity } from "test/mocks/RevertingIdentity.sol";
 
 contract IdFactoryTest is OnchainIDSetup {
@@ -388,6 +389,27 @@ contract IdFactoryTest is OnchainIDSetup {
         assertEq(wallets[0], alice);
         assertEq(wallets[1], david);
         assertEq(onchainidSetup.idFactory.getIdentity(david), address(aliceIdentity));
+    }
+
+    /// @notice ERC-1271 smart wallet can sign and be linked via SignatureChecker
+    function test_linkWalletWithSignature_shouldLinkErc1271SmartWallet() public {
+        // david (EOA) owns a smart wallet; the smart wallet itself is what gets linked
+        MockERC1271Wallet smartWallet = new MockERC1271Wallet(david);
+        address walletAddr = address(smartWallet);
+
+        uint256 nonce = onchainidSetup.idFactory.nonces(walletAddr);
+        uint256 expiry = block.timestamp + 1 hours;
+        // david signs on behalf of the smart wallet; the smart wallet's isValidSignature recovers and accepts
+        bytes memory signature = _signLinkWallet(davidPk, walletAddr, address(aliceIdentity), nonce, expiry);
+
+        bytes memory callData = abi.encodeWithSelector(
+            IIdFactory.linkWalletWithSignature.selector, walletAddr, signature, nonce, expiry
+        );
+        vm.prank(alice);
+        aliceIdentity.execute(address(onchainidSetup.idFactory), 0, callData);
+
+        assertEq(onchainidSetup.idFactory.getIdentity(walletAddr), address(aliceIdentity));
+        assertEq(onchainidSetup.idFactory.nonces(walletAddr), nonce + 1);
     }
 
     /// @notice Nonce should increment after a successful link
