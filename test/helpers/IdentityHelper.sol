@@ -16,8 +16,7 @@ import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { ClaimsModule } from "contracts/modules/claims/ClaimsModule.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
-import { ECDSAValidator } from "contracts/modules/validators/ECDSAValidator.sol";
-import { WebAuthnValidator } from "contracts/modules/validators/WebAuthnValidator.sol";
+import { ERC7579Signature } from "contracts/modules/validators/ERC7579Signature.sol";
 import { IdentityProxy } from "contracts/proxy/IdentityProxy.sol";
 import { ImplementationAuthority } from "contracts/proxy/ImplementationAuthority.sol";
 import { Structs } from "contracts/storage/Structs.sol";
@@ -31,8 +30,7 @@ library IdentityHelper {
         ImplementationAuthority implementationAuthority;
         IdFactory idFactory;
         KeyApprovalModule keyApprovalModule;
-        ECDSAValidator ecdsaValidator;
-        WebAuthnValidator webauthnValidator;
+        ERC7579Signature signatureValidator;
         ClaimsModule claimsModule;
     }
 
@@ -41,8 +39,7 @@ library IdentityHelper {
     /// @return setup Struct containing all deployed contracts
     function deployFactory(address managementKey) internal returns (OnchainIDSetup memory setup) {
         // Deploy module singletons
-        setup.ecdsaValidator = new ECDSAValidator();
-        setup.webauthnValidator = new WebAuthnValidator();
+        setup.signatureValidator = new ERC7579Signature();
         setup.keyApprovalModule = new KeyApprovalModule();
         setup.claimsModule = new ClaimsModule();
 
@@ -148,30 +145,30 @@ library IdentityHelper {
     }
 
     /// @notice Deploys an Identity through the custom IdentityProxy pattern and installs an
-    ///         ECDSAValidator on it so it can verify signatures via its installed module.
-    /// @param initialManagementKey The management key for the identity
-    /// @return identity The Identity contract at the proxy address
-    /// @return ecdsaValidator The ECDSA validator module installed on the identity
+    ///         {ERC7579Signature} validator on it so it can verify ERC-1271 / 4337 signatures.
+    /// @param initialManagementKey The management key for the identity.
+    /// @return identity The Identity contract at the proxy address.
+    /// @return signatureValidator The ERC-7579 signature validator installed on the identity.
     function deployIdentityWithProxy(address initialManagementKey)
         internal
-        returns (Identity identity, ECDSAValidator ecdsaValidator)
+        returns (Identity identity, ERC7579Signature signatureValidator)
     {
         return deployIdentityWithProxy(initialManagementKey, IdentityTypes.INDIVIDUAL);
     }
 
     function deployIdentityWithProxy(address initialManagementKey, uint256 identityType)
         internal
-        returns (Identity identity, ECDSAValidator ecdsaValidator)
+        returns (Identity identity, ERC7579Signature signatureValidator)
     {
         Identity impl = new Identity(initialManagementKey, false);
         ImplementationAuthority ia = new ImplementationAuthority(address(impl), initialManagementKey);
         IdentityProxy proxy = new IdentityProxy(address(ia), initialManagementKey, identityType);
         identity = Identity(payable(address(proxy)));
 
-        ecdsaValidator = new ECDSAValidator();
+        signatureValidator = new ERC7579Signature();
         Vm vmHandle = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
         vmHandle.prank(initialManagementKey);
-        identity.installModule(MODULE_TYPE_VALIDATOR, address(ecdsaValidator), "");
+        identity.installModule(MODULE_TYPE_VALIDATOR, address(signatureValidator), "");
 
         // Install ClaimsModule so the identity exposes the ERC-735 ABI via fallback.
         ClaimsModule claimsModule = new ClaimsModule();

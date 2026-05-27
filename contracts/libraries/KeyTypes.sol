@@ -14,7 +14,8 @@ library KeyTypes {
     /// @dev 3: WEBAUTHN (P-256 / secp256r1 via WebAuthn ceremony, ERC-7913)
     uint256 internal constant WEBAUTHN = 3;
 
-    /// @dev 4: MODULE (an installed ERC-7579 module whose address holds a purpose).
+    /// @dev 4: MODULE. Used for executor modules only (gates `executeFromExecutor`).
+    ///      Not used for validators. Validators address signers, not modules.
     uint256 internal constant MODULE = 4;
 
 }

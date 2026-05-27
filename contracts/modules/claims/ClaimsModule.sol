@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.28;
 
-import { IERC1271 } from "@openzeppelin/contracts/interfaces/IERC1271.sol";
 import { IERC5267 } from "@openzeppelin/contracts/interfaces/IERC5267.sol";
 import {
     IERC7579Module,
-    IERC7579ModuleConfig,
-    IERC7579Validator,
     MODULE_TYPE_EXECUTOR,
-    MODULE_TYPE_FALLBACK,
-    MODULE_TYPE_VALIDATOR
+    MODULE_TYPE_FALLBACK
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+import { SignatureChecker } from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 import { IClaimIssuer } from "../../interface/IClaimIssuer.sol";
@@ -349,65 +346,37 @@ contract ClaimsModule is IERC7579Module, IERC735 {
         return MessageHashUtils.toTypedDataHash(domainSeparator, structHash);
     }
 
-    /**
-     * @dev Revocation lookup, CLAIM_SIGNER purpose check, then ERC-1271 signature verification
-     *      against the issuer's installed validator. Shared by `isClaimValid` (external view)
-     *      and `addClaimTo` (avoids a self-call).
-     *
-     *      Why this is not delegated to `IERC1271(account).isValidSignature`: that path is hard
-     *      coded to the ACTION purpose (see `SmartAccount.isValidSignature`). Claim signatures
-     *      must require CLAIM_SIGNER. We do the purpose check here and then ask the validator
-     *      module to do the crypto, so the account stays claim agnostic.
-     *
-     * @param account Issuer identity to check the revocation set against.
-     * @param _identity Subject identity the claim is about.
-     * @param topic Claim topic.
-     * @param sig Wire format `[validator address (20)][abi.encode(bytes signer, bytes rawSig)]`.
-     * @param data Claim payload that was signed.
-     * @return True when the signature is not revoked, the signer holds CLAIM_SIGNER on the
-     *         issuer, and the validator module accepts the signature.
-     */
+    /// @dev Checks a claim signature: not revoked, signer has CLAIM_SIGNER, signature valid.
+    ///      Goes straight through SignatureChecker. Does not use any installed validator,
+    ///      so old claims still verify even after the issuer rotates schemes.
+    /// @param account Issuer identity (holds the revocation set + the CLAIM_SIGNER keys).
+    /// @param _identity Subject identity the claim is about.
+    /// @param topic Claim topic.
+    /// @param sig `abi.encode(bytes signer, bytes rawSig)`. `signer` follows ERC-7913.
+    /// @param data Claim payload that was signed.
+    /// @return True when not revoked AND CLAIM_SIGNER holds AND signature is valid.
     function _isClaimValid(address account, IIdentity _identity, uint256 topic, bytes calldata sig, bytes calldata data)
         internal
         view
         returns (bool)
     {
-        // Stop early if the issuer already revoked this signature.
+        // Revoked → stop here.
         if (_state[account].revokedClaims[sig]) return false;
 
-        // The signature must start with a 20-byte validator address. Anything shorter is invalid.
-        if (sig.length < 20) return false;
+        // Unpack the wire format. Malformed payloads revert; fine for a view function.
+        (bytes memory signer, bytes memory rawSig) = abi.decode(sig, (bytes, bytes));
+        if (signer.length < 20) return false;
 
-        // Hash the claim using the issuer's EIP-712 domain, the same one the signer used off-chain.
+        // Signer must hold CLAIM_SIGNER on the issuer.
+        if (!IERC734(account).keyHasPurpose(keccak256(signer), KeyPurposes.CLAIM_SIGNER)) {
+            return false;
+        }
+
+        // Recompute the EIP-712 digest the signer signed off-chain.
         bytes32 digest = _claimDigest(account, address(_identity), topic, data);
 
-        // First 20 bytes tell us which installed validator module should check the signature.
-        address validator = address(bytes20(sig[:20]));
-        // The rest is what we pass to that validator: abi.encode(bytes signer, bytes rawSig).
-        bytes calldata moduleSig = sig[20:];
-
-        // The validator must be installed on the issuer; if not, there is nothing to call.
-        if (!IERC7579ModuleConfig(account).isModuleInstalled(MODULE_TYPE_VALIDATOR, validator, "")) {
-            return false;
-        }
-
-        // Inner format is `abi.encode(bytes signer, bytes rawSig)`. keccak256(signer) is the keyHash
-        // stored in the issuer's ERC-734 keys.
-        (bytes memory signerBytes,) = abi.decode(moduleSig, (bytes, bytes));
-        // The signer must hold CLAIM_SIGNER on the issuer; otherwise it cannot sign claims.
-        if (!IERC734(account).keyHasPurpose(keccak256(signerBytes), KeyPurposes.CLAIM_SIGNER)) {
-            return false;
-        }
-
-        // Ask the validator module to check the signature. Wrap in try/catch so a bad module
-        // cannot make this view function revert.
-        try IERC7579Validator(validator).isValidSignatureWithSender(msg.sender, digest, moduleSig) returns (
-            bytes4 magic
-        ) {
-            return magic == IERC1271.isValidSignature.selector;
-        } catch {
-            return false;
-        }
+        // Verify (EOA, 1271, or 7913 verifier, picked by signer length).
+        return SignatureChecker.isValidSignatureNow(signer, digest, rawSig);
     }
 
     /**

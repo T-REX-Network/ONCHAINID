@@ -2,6 +2,7 @@
 pragma solidity ^0.8.27;
 
 import { PackedUserOperation } from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
+import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/draft-ERC4337Utils.sol";
 import {
     Execution,
     IERC7579Execution,
@@ -10,6 +11,7 @@ import {
     MODULE_TYPE_FALLBACK,
     MODULE_TYPE_VALIDATOR
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import { IAccount } from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import { Identity } from "contracts/Identity.sol";
 import { SmartAccount } from "contracts/SmartAccount.sol";
 import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
@@ -17,7 +19,7 @@ import { Errors } from "contracts/libraries/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
-import { ECDSAValidator } from "contracts/modules/validators/ECDSAValidator.sol";
+import { ERC7579Signature } from "contracts/modules/validators/ERC7579Signature.sol";
 
 import { ClaimSignerHelper } from "./helpers/ClaimSignerHelper.sol";
 import { OnchainIDSetup } from "./helpers/OnchainIDSetup.sol";
@@ -157,7 +159,7 @@ contract SmartAccountTest is OnchainIDSetup {
     function test_uninstallModule_byManagement_succeeds() public {
         // The fixture only installs the queue module, so we add a fresh validator here
         // and own its lifecycle for this test.
-        ECDSAValidator validator = new ECDSAValidator();
+        ERC7579Signature validator = new ERC7579Signature();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), "");
         // Validators don't need an ERC 734 purpose. We add one anyway so we can check
@@ -183,7 +185,7 @@ contract SmartAccountTest is OnchainIDSetup {
 
     /// An ACTION key shouldn't be able to uninstall a module — uninstall is MANAGEMENT only.
     function test_uninstallModule_byActionKey_reverts() public {
-        ECDSAValidator validator = new ECDSAValidator();
+        ERC7579Signature validator = new ERC7579Signature();
         vm.prank(alice);
         aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), "");
 
@@ -234,8 +236,8 @@ contract SmartAccountTest is OnchainIDSetup {
 
     /// How you upgrade a module with ERC 7579. Uninstall the old one, install the new one.
     function test_uninstallModule_then_reinstall_upgradePath() public {
-        ECDSAValidator v1 = new ECDSAValidator();
-        ECDSAValidator v2 = new ECDSAValidator();
+        ERC7579Signature v1 = new ERC7579Signature();
+        ERC7579Signature v2 = new ERC7579Signature();
 
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(v1), "");
@@ -621,6 +623,124 @@ contract SmartAccountTest is OnchainIDSetup {
 
         testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
         assertEq(counter.count(), 1, "broken policy must not lock out ACTION on external targets");
+    }
+
+    // -----------------------------------------------------------------------
+    // ERC-4337 _validateUserOp tests — exercises the full AA path that
+    // executeFromExecutor bypasses. We impersonate the canonical EntryPoint
+    // (ENTRYPOINT_V09) and call validateUserOp directly. Two things checked:
+    //   1) a well-formed UserOp from an ACTION key → SUCCESS
+    //   2) the same UserOp but targeting a self-call (e.g. addKey) → FAIL
+    //      because ACTION isn't enough for self-modification.
+    // -----------------------------------------------------------------------
+
+    /// @notice The canonical ERC-4337 v0.9 EntryPoint address. `Account.entryPoint()`
+    ///         returns this constant, and `validateUserOp` only accepts calls from it.
+    address internal constant ENTRY_POINT = 0x433709009B8330FDa32311DF1C2AFA402eD8D009;
+
+    /// @dev Pack the validator address into the top 20 bytes of `nonce`, as required
+    ///      by OZ's `_extractUserOpValidator`. Lower 12 bytes are the actual nonce.
+    function _packNonce(address validator, uint96 seq) internal pure returns (uint256) {
+        return (uint256(uint160(validator)) << 96) | uint256(seq);
+    }
+
+    /// @dev Build a minimal PackedUserOperation for `aliceIdentity` calling
+    ///      `target.callData` via the standard execute() pathway, signed by `david`
+    ///      (who has ACTION on the identity in OnchainIDSetup).
+    function _buildAndSignUserOp(address target, bytes memory innerCall)
+        internal
+        view
+        returns (PackedUserOperation memory userOp, bytes32 userOpHash)
+    {
+        // SINGLE-mode execute payload: target(20) || value(32) || data
+        bytes memory executionCalldata = abi.encodePacked(target, uint256(0), innerCall);
+        bytes memory callData = abi.encodeWithSelector(
+            bytes4(keccak256("execute(bytes32,bytes)")), bytes32(0), executionCalldata
+        );
+
+        userOp = PackedUserOperation({
+            sender: address(aliceIdentity),
+            nonce: _packNonce(address(onchainidSetup.signatureValidator), 0),
+            initCode: "",
+            callData: callData,
+            accountGasLimits: bytes32(0),
+            preVerificationGas: 0,
+            gasFees: bytes32(0),
+            paymasterAndData: "",
+            signature: ""
+        });
+
+        // For test purposes any deterministic hash works; the validator only checks the
+        // signature against this hash. `_signableUserOpHash` returns it unchanged by default.
+        userOpHash = keccak256(abi.encode(userOp.sender, userOp.nonce, userOp.callData));
+
+        // david signs (he holds ACTION on aliceIdentity via the OnchainIDSetup fixture)
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(davidPk, userOpHash);
+        bytes memory ecdsaSig = abi.encodePacked(r, s, v);
+        bytes memory signer = abi.encodePacked(david);
+        userOp.signature = abi.encode(signer, ecdsaSig);
+    }
+
+    /// @notice Happy path: ACTION key signs a UserOp that calls an external target.
+    ///         All three gates pass (validator + ACTION purpose + per-target rule).
+    function test_validateUserOp_actionKey_externalTarget_succeeds() public {
+        Counter counter = new Counter();
+        bytes memory innerCall = abi.encodeCall(Counter.increment, ());
+
+        (PackedUserOperation memory userOp, bytes32 userOpHash) =
+            _buildAndSignUserOp(address(counter), innerCall);
+
+        vm.prank(ENTRY_POINT);
+        uint256 result = IAccount(address(aliceIdentity)).validateUserOp(userOp, userOpHash, 0);
+        assertEq(result, ERC4337Utils.SIG_VALIDATION_SUCCESS, "ACTION + external target must succeed");
+    }
+
+    /// @notice The per-target rule fires: an ACTION-only key cannot self-target
+    ///         a privileged selector like addKey. The signature is cryptographically
+    ///         valid, but step 2 of _validateUserOp rejects it.
+    function test_validateUserOp_actionKey_selfTarget_fails() public {
+        bytes memory innerCall = abi.encodeWithSignature(
+            "addKey(bytes32,uint256,uint256)", keccak256("evil"), KeyPurposes.MANAGEMENT, KeyTypes.ECDSA
+        );
+
+        (PackedUserOperation memory userOp, bytes32 userOpHash) =
+            _buildAndSignUserOp(address(aliceIdentity), innerCall);
+
+        vm.prank(ENTRY_POINT);
+        uint256 result = IAccount(address(aliceIdentity)).validateUserOp(userOp, userOpHash, 0);
+        assertEq(result, ERC4337Utils.SIG_VALIDATION_FAILED, "ACTION must not be able to self-target addKey");
+    }
+
+    /// @notice A signer not registered as a key on the identity fails at the validator's
+    ///         purpose check (signature is valid, but the signer has no ACTION).
+    function test_validateUserOp_unregisteredSigner_fails() public {
+        (address stranger, uint256 strangerPk) = makeAddrAndKey("stranger");
+        Counter counter = new Counter();
+        bytes memory innerCall = abi.encodeCall(Counter.increment, ());
+
+        // Build the UserOp shell, then sign with the stranger instead of david.
+        bytes memory executionCalldata = abi.encodePacked(address(counter), uint256(0), innerCall);
+        bytes memory callData = abi.encodeWithSelector(
+            bytes4(keccak256("execute(bytes32,bytes)")), bytes32(0), executionCalldata
+        );
+        PackedUserOperation memory userOp = PackedUserOperation({
+            sender: address(aliceIdentity),
+            nonce: _packNonce(address(onchainidSetup.signatureValidator), 0),
+            initCode: "",
+            callData: callData,
+            accountGasLimits: bytes32(0),
+            preVerificationGas: 0,
+            gasFees: bytes32(0),
+            paymasterAndData: "",
+            signature: ""
+        });
+        bytes32 userOpHash = keccak256(abi.encode(userOp.sender, userOp.nonce, userOp.callData));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(strangerPk, userOpHash);
+        userOp.signature = abi.encode(abi.encodePacked(stranger), abi.encodePacked(r, s, v));
+
+        vm.prank(ENTRY_POINT);
+        uint256 result = IAccount(address(aliceIdentity)).validateUserOp(userOp, userOpHash, 0);
+        assertEq(result, ERC4337Utils.SIG_VALIDATION_FAILED, "unregistered signer must fail at ACTION check");
     }
 
 }

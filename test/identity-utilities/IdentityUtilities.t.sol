@@ -10,7 +10,6 @@ import { IIdentity } from "contracts/interface/IIdentity.sol";
 import { IIdentityUtilities } from "contracts/interface/IIdentityUtilities.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
-import { ECDSAValidator } from "contracts/modules/validators/ECDSAValidator.sol";
 import { IdentityUtilitiesProxy } from "contracts/proxy/IdentityUtilitiesProxy.sol";
 import { Test } from "forge-std/Test.sol";
 import { Test as TestContract } from "test/mocks/Test.sol";
@@ -879,9 +878,7 @@ contract IdentityUtilitiesTest is Test {
         address identityOwner = makeAddr("idOwner");
         (address claimSigner,) = makeAddrAndKey("claimSigner");
 
-        ECDSAValidator ecdsa = new ECDSAValidator();
-        (Identity ci, ECDSAValidator ciValidator) = IdentityHelper.deployIdentityWithProxy(claimIssuerOwner);
-        ecdsa = ciValidator;
+        (Identity ci,) = IdentityHelper.deployIdentityWithProxy(claimIssuerOwner);
         (Identity identity,) = IdentityHelper.deployIdentityWithProxy(identityOwner);
 
         // Add CLAIM_SIGNER key to claim issuer for the claimIssuerOwner
@@ -897,10 +894,10 @@ contract IdentityUtilitiesTest is Test {
         bytes memory claimData2 = abi.encode(uint8(2));
 
         bytes memory sig1 = ClaimSignerHelper.signClaim(
-            claimIssuerOwnerPk, claimIssuerOwner, address(ecdsa), address(ci), address(identity), 1001, claimData1
+            claimIssuerOwnerPk, claimIssuerOwner, address(ci), address(identity), 1001, claimData1
         );
         bytes memory sig2 = ClaimSignerHelper.signClaim(
-            claimIssuerOwnerPk, claimIssuerOwner, address(ecdsa), address(ci), address(identity), 1002, claimData2
+            claimIssuerOwnerPk, claimIssuerOwner, address(ci), address(identity), 1002, claimData2
         );
 
         // Add claims to identity via claimSigner (has CLAIM_SIGNER key)
@@ -949,7 +946,7 @@ contract IdentityUtilitiesTest is Test {
         _addDefaultTopic(3004, "Test Topic", _singleStringArray("name"), _singleStringArray("string"));
 
         // Deploy Identity
-        (Identity identity, ECDSAValidator ecdsa) = IdentityHelper.deployIdentityWithProxy(admin);
+        (Identity identity,) = IdentityHelper.deployIdentityWithProxy(admin);
 
         // Add CLAIM_SIGNER key for admin on the identity (unified key hash)
         vm.prank(admin);
@@ -958,7 +955,7 @@ contract IdentityUtilitiesTest is Test {
         // Sign claim properly for self-attested claim
         bytes memory claimData = hex"";
         bytes memory signature = ClaimSignerHelper.signClaim(
-            adminPk, admin, address(ecdsa), address(identity), address(identity), 3004, claimData
+            adminPk, admin, address(identity), address(identity), 3004, claimData
         );
 
         // Add a self-attested claim with valid signature

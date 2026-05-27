@@ -94,14 +94,9 @@ contract OnchainIDSetup is Test {
             );
         claimIssuer = Identity(payable(claimIssuerAddr));
 
-        // Install ECDSAValidator on the issuer so claim signatures can be verified.
-        vm.prank(claimIssuerOwner);
-        claimIssuer.installModule(
-            1,
-            /* MODULE_TYPE_VALIDATOR */
-            address(onchainidSetup.ecdsaValidator),
-            ""
-        );
+        // No validator install on the issuer: `ClaimsModule._isClaimValid` verifies the
+        // claim signature directly via `SignatureChecker` (ERC-7913 dispatch). It does not
+        // round-trip through any installed validator on the issuer.
 
         // Create alice identity via factory
         vm.prank(deployer);
@@ -125,13 +120,14 @@ contract OnchainIDSetup is Test {
             );
         aliceIdentity = Identity(payable(aliceIdentityAddr));
 
-        // Install ECDSAValidator on alice's identity so claims received from external issuers
-        // (which sign against the issuer's domain) can be verified there too if needed.
+        // Install the ERC-7579 signature validator on alice's account so the ERC-1271 / 4337
+        // dispatch through the account works. (Claim verification on the issuer does NOT
+        // need this — it goes straight through SignatureChecker.)
         vm.prank(alice);
         aliceIdentity.installModule(
             1,
             /* MODULE_TYPE_VALIDATOR */
-            address(onchainidSetup.ecdsaValidator),
+            address(onchainidSetup.signatureValidator),
             ""
         );
 
@@ -149,7 +145,6 @@ contract OnchainIDSetup is Test {
         aliceClaim666 = ClaimSignerHelper.buildClaim(
             claimIssuerOwnerPk,
             claimIssuerOwner,
-            address(onchainidSetup.ecdsaValidator),
             address(aliceIdentity),
             address(claimIssuer),
             Constants.CLAIM_TOPIC_666,

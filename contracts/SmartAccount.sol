@@ -6,14 +6,10 @@ import {
 } from "@openzeppelin/contracts-upgradeable/account/extensions/draft-AccountERC7579Upgradeable.sol";
 import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/draft-ERC4337Utils.sol";
 import { CallType, ERC7579Utils, Mode } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
-import { IERC1271 } from "@openzeppelin/contracts/interfaces/IERC1271.sol";
 import { PackedUserOperation } from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import {
     Execution,
-    IERC7579Validator,
-    MODULE_TYPE_EXECUTOR,
-    MODULE_TYPE_FALLBACK,
-    MODULE_TYPE_VALIDATOR
+    MODULE_TYPE_EXECUTOR
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { Calldata } from "@openzeppelin/contracts/utils/Calldata.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
@@ -25,42 +21,17 @@ import { Errors } from "./libraries/Errors.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
 import { KeyApprovalModule } from "./modules/executors/KeyApprovalModule.sol";
 
-/**
- * @title SmartAccount
- * @notice ERC-7579 modular account layer for ONCHAINID. Bridges the ERC-734 key registry
- *         ({KeyManager}) with the ERC-4337 / ERC-7579 validation pipeline.
- *
- *         Execution flows through exactly one entry point: the inherited
- *         `AccountERC7579Upgradeable.execute(bytes32 mode, bytes executionCalldata)`. The
- *         legacy ERC-734 `execute(address,uint256,bytes)` and `approve(uint256,bool)` ABI
- *         live on the installed {KeyApprovalModule} via ERC-7579 fallback handler.
- *
- *         An installed executor module's authority on this account is governed by whether
- *         the executor's address — hashed as `keccak256(abi.encodePacked(module))` — is
- *         registered in the ERC-734 key registry with an appropriate purpose. Whoever
- *         manages the identity (typically the factory at bootstrap, MANAGEMENT keys
- *         thereafter) grants this purpose with a normal `addKey` call. Every dispatch from
- *         the module through `executeFromExecutor` then runs through the same per-target
- *         purpose rule as a UserOp signer's key. Modules are therefore not a privileged
- *         bypass surface — they are capped at whatever purpose was granted to their address.
- */
+/// @title SmartAccount
+/// @notice ERC-7579 modular account that uses the ERC-734 key registry from {KeyManager}.
+///         Signature checks happen in the installed validator; the per-target rule for
+///         user ops runs here.
 abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 {
 
     using EnumerableSet for EnumerableSet.UintSet;
 
-    /// @dev ERC-1271 failure sentinel.
-    bytes4 internal constant _SIG_INVALID = 0xffffffff;
-
     receive() external payable virtual override { }
 
-    /**
-     * @notice Install an ERC-7579 module. Overrides OZ's `onlyEntryPointOrSelf` with
-     *         `onlyManager` so the factory can install at bootstrap, before any UserOp.
-     * @dev Standard 7579 calldata shape. To grant the installed module authority on this
-     *      account, follow up with a regular `addKey(keccak256(abi.encodePacked(module)),
-     *      purpose, KeyTypes.ECDSA)` call. See `executeFromExecutor` for how the registered
-     *      purpose gates each dispatch.
-     */
+    /// @notice Install a module. MANAGEMENT-gated so the factory can install at bootstrap.
     function installModule(uint256 moduleTypeId, address module, bytes calldata initData)
         public
         virtual
@@ -68,17 +39,10 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         delegatedOnly
         onlyManager
     {
-        // `onlyManager` replaces OZ's `onlyEntryPointOrSelf` — lets the factory install at bootstrap.
         _installModule(moduleTypeId, module, initData);
     }
 
-    /// @notice Uninstall an ERC-7579 module. Same gate as {installModule}: only MANAGEMENT
-    ///         can call it. A user with MANAGEMENT can swap modules directly, without
-    ///         going through the EntryPoint.
-    /// @dev Modules are not pinned. Removing a module can only take away rights, never add
-    ///      new ones. If you ever need to block removal of a specific module, do it here
-    ///      by overriding {_uninstallModule} not inside the module itself, because the
-    ///      account, not the module, controls uninstall. Upgrade = uninstall old + install new.
+    /// @notice Uninstall a module. MANAGEMENT-gated.
     function uninstallModule(uint256 moduleTypeId, address module, bytes calldata deInitData)
         public
         virtual
@@ -89,32 +53,28 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         _uninstallModule(moduleTypeId, module, deInitData);
     }
 
-    /// @dev Runs the base uninstall first (calls the module's `onUninstall`), then removes
-    ///      every ERC-734 purpose held by the module's address. This is the opposite of the
-    ///      purpose grant done at install time in `IdFactory._setupIdentity`. Without it, a
-    ///      reinstalled module address would keep its old rights. Uninstalling the last
-    ///      MANAGEMENT key still reverts same guard as a direct {removeKey}.
+    /// @dev Runs the base uninstall, then strips every ERC-734 purpose held by the
+    ///      module's address so a reinstall doesn't keep old rights.
     function _uninstallModule(uint256 moduleTypeId, address module, bytes memory deInitData) internal virtual override {
+        // Base uninstall (calls module's onUninstall).
         super._uninstallModule(moduleTypeId, module, deInitData);
 
+        // Look up the module's key entry.
         bytes32 moduleKey = keccak256(abi.encodePacked(module));
         KeyStorage storage ks = _getKeyStorage();
-        // Modules installed without a purpose (purpose == 0 on the ModuleInstall entry)
-        // have no key entry, so nothing to clean up.
+
+        // No purpose was ever granted → nothing to clean up.
         if (ks.keys[moduleKey].key == bytes32(0)) return;
 
-        // Snapshot the purposes before iterating: `_removeKeyPurpose` mutates the set.
+        // Snapshot purposes before iterating (the set mutates during removal).
         uint256[] memory purposes = ks.keys[moduleKey].purposes.values();
         for (uint256 i = 0; i < purposes.length; i++) {
             _removeKeyPurpose(moduleKey, purposes[i]);
         }
     }
 
-    /**
-     * @notice Override of OZ's `executeFromExecutor` that enforces the same ERC-734 purpose
-     *         rule used for UserOps. The executor's address is registered as a key at install
-     *         time; this function checks that key against the targets in the executionCalldata.
-     */
+    /// @notice Executor entry point. Checks the executor's address-as-key against the
+    ///         per-target rule before dispatching.
     function executeFromExecutor(bytes32 mode, bytes calldata executionCalldata)
         public
         payable
@@ -122,126 +82,67 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         override
         returns (bytes[] memory returnData)
     {
-        // 1. Caller must be a registered executor module.
+        // Caller must be a registered executor module.
         require(
             isModuleInstalled(MODULE_TYPE_EXECUTOR, msg.sender, Calldata.emptyBytes()),
             Errors.ExecutorPurposeNotAuthorized()
         );
 
-        // 2. Treat the executor's address as an ERC-734 key — its purpose was granted at install time.
+        // Use the executor's address as the key for the purpose lookup.
         bytes32 callerKeyHash = keccak256(abi.encodePacked(msg.sender));
-        // 3. Run the same per-target purpose rule used for UserOps.
+
+        // Apply the same per-target rule used for user ops.
         if (!_isAuthorizedForExecution(mode, executionCalldata, callerKeyHash)) {
             revert Errors.ExecutorPurposeNotAuthorized();
         }
 
-        // 4. Hand off to OZ's batch/single dispatcher.
+        // Dispatch.
         return _execute(Mode.wrap(mode), executionCalldata);
     }
 
-    /**
-     * @notice ERC-1271 signature validation. ACTION purpose required on the recovered signer.
-     *
-     * @param hashToVerify The 32-byte digest the user claims to have signed off-chain.
-     * @param signature Layout: `address module (20 bytes) || abi.encode(bytes signer, bytes sig)`.
-     * @return ERC-1271 magic value on success, `_SIG_INVALID` (0xffffffff) on any failure.
-     *         MUST never revert.
-     */
-    function isValidSignature(bytes32 hashToVerify, bytes calldata signature)
-        public
-        view
-        virtual
-        override
-        returns (bytes4)
-    {
-        // ACTION is the 1271 minimum: an off-chain signature represents intent to act on the account.
-        return _isValidSignature(hashToVerify, signature, KeyPurposes.ACTION)
-            ? IERC1271.isValidSignature.selector
-            : _SIG_INVALID;
-    }
-
-    /**
-     * @dev Shared signature-validation core used by {isValidSignature} and {Identity.isClaimValid}.
-     *      Routes through the installed ERC-7579 validator module named in the first 20 bytes of
-     *      the signature; the recovered signer must hold `requiredPurpose` on this account.
-     *      Malformed signatures revert on the inline `abi.decode`.
-     */
-    function _isValidSignature(bytes32 hash, bytes calldata sig, uint256 requiredPurpose) internal view returns (bool) {
-        // Length guard — the module address prefix is 20 bytes.
-        if (sig.length < 20) return false;
-
-        // Split prefix and inner signature; the prefix names the validator module to dispatch through.
-        (address module, bytes calldata moduleSignature) = _extractSignatureValidator(sig);
-        if (!isModuleInstalled(MODULE_TYPE_VALIDATOR, module, Calldata.emptyBytes())) return false;
-
-        // Wire format: `abi.encode(bytes signer, bytes sig)`. `keccak256(signer)` is the keyHash
-        // registered in the ERC-734 registry.
-        (bytes memory signerBytes,) = abi.decode(moduleSignature, (bytes, bytes));
-        if (!keyHasPurpose(keccak256(signerBytes), requiredPurpose)) return false;
-
-        // Delegate the crypto check to the validator module. try/catch so a misbehaving module
-        // can't bubble a revert out of an ERC-1271 path.
-        try IERC7579Validator(module).isValidSignatureWithSender(msg.sender, hash, moduleSignature) returns (
-            bytes4 magicValue
-        ) {
-            return magicValue == IERC1271.isValidSignature.selector;
-        } catch {
-            return false;
-        }
-    }
-
-    /**
-     * @notice ERC-4337 UserOperation validation. Called by the EntryPoint before execution.
-     *
-     * @dev Three gates: module installed, signer registered, signer authorized for the call.
-     *      Only after all three pass do we delegate the crypto check to the validator module.
-     *      MUST NOT revert — reverts here trigger UserOp rejection at the bundler level.
-     */
+    /// @notice ERC-4337 user op validation. Validator proves the signature, then this
+    ///         function applies the per-target rule.
+    /// @dev The second decode of `(signer, sig)` is intentional. The validator decoded
+    ///      it for crypto; we decode it again to read the signer for policy. This keeps
+    ///      the validator signature-only and policy on the account.
     function _validateUserOp(PackedUserOperation calldata userOp, bytes32 userOpHash, bytes calldata signature)
         internal
         virtual
         override
         returns (uint256)
     {
-        // Gate 1: validator module named in `userOp.nonce`'s key field must be installed.
-        address module = _extractUserOpValidator(userOp);
-        if (!isModuleInstalled(MODULE_TYPE_VALIDATOR, module, Calldata.emptyBytes())) {
-            return ERC4337Utils.SIG_VALIDATION_FAILED;
-        }
+        // Step 1: let the installed validator prove the signature + ACTION purpose.
+        uint256 baseValidation = super._validateUserOp(userOp, userOpHash, signature);
+        if (baseValidation != ERC4337Utils.SIG_VALIDATION_SUCCESS) return baseValidation;
 
-        // Gate 2: declared signer must be registered as a key on this account.
-        (bytes memory signerBytes,) = abi.decode(signature, (bytes, bytes));
-        bytes32 signerKeyHash = keccak256(signerBytes);
-        if (_getKeyStorage().keys[signerKeyHash].key == bytes32(0)) {
-            return ERC4337Utils.SIG_VALIDATION_FAILED;
-        }
+        // Step 2: read the signer. Safe to trust now: the validator just proved it.
+        // Malformed payload reverts here; EntryPoint treats that as a failed user op.
+        (bytes memory signer,) = abi.decode(signature, (bytes, bytes));
+        bytes32 signerKeyHash = keccak256(signer);
 
-        // Gate 3: signer's purpose must cover every target in the userOp's executionCalldata.
+        // Step 3: per-target rule.
         if (!_isAuthorizedForUserOpCallData(userOp.callData, signerKeyHash)) {
             return ERC4337Utils.SIG_VALIDATION_FAILED;
         }
-
-        // All gates pass — delegate the actual crypto verification to the validator module.
-        return IERC7579Validator(module).validateUserOp(userOp, _signableUserOpHash(userOp, userOpHash));
+        return ERC4337Utils.SIG_VALIDATION_SUCCESS;
     }
 
-    /// @dev Decodes the outer `execute(mode, executionCalldata)` call and delegates to the
-    ///      shared per-target check. Re-enters via `this.` so the inner executionCalldata stays
-    ///      as `bytes calldata` and `_isAuthorizedForExecution` can use `ERC7579Utils.decodeBatch`
-    ///      (avoiding a memory copy of the batch array).
+    /// @dev Unpacks the outer `execute(mode, data)` and forwards to `_isAuthorizedForExecution`.
+    ///      Bounces through `this.` so the inner calldata stays as `calldata` (no memory copy).
     function _isAuthorizedForUserOpCallData(bytes calldata callData, bytes32 signerKeyHash)
         private
         view
         returns (bool)
     {
-        // Reject any callData not addressed to our single `execute(mode, executionCalldata)` entry.
+        // Only the standard execute() selector is accepted.
         if (callData.length < 4 || bytes4(callData[:4]) != AccountERC7579Upgradeable.execute.selector) {
             return false;
         }
-        // Unpack the outer execute() args. `executionCalldata` lands in memory (Solidity rule).
+
+        // Decode the outer execute() args.
         (bytes32 mode, bytes memory executionCalldata) = abi.decode(callData[4:], (bytes32, bytes));
-        // Re-enter via `this.` to flip `executionCalldata` back to calldata — lets the inner
-        // function use `ERC7579Utils.decodeBatch` (no memory copy) and gives us a free try/catch.
+
+        // External re-entry flips the inner bytes back to calldata + gives us try/catch.
         try this._isAuthorizedForExecutionExternal(mode, executionCalldata, signerKeyHash) returns (bool ok) {
             return ok;
         } catch {
@@ -249,9 +150,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         }
     }
 
-    /// @dev External-only re-entry point so the `bytes memory` executionCalldata flips back to
-    ///      `bytes calldata` when this function executes. Called only via `this.` from
-    ///      `_isAuthorizedForUserOpCallData`.
+    /// @dev External hop so executionCalldata is calldata, not memory. Only called via `this.`.
     function _isAuthorizedForExecutionExternal(bytes32 modeWord, bytes calldata executionCalldata, bytes32 keyHash)
         external
         view
@@ -261,12 +160,8 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         return _isAuthorizedForExecution(modeWord, executionCalldata, keyHash);
     }
 
-    /**
-     * @dev The single authorization rule for "is this key allowed to dispatch this execution."
-     *      Used by both `_validateUserOp` (after decoding the UserOp callData) and
-     *      `executeFromExecutor` (with the executor's address-as-key). SINGLE and BATCH
-     *      supported; DELEGATECALL and unknown modes rejected.
-     */
+    /// @dev Per-target authorization. Shared by user ops and executor dispatch.
+    ///      Supports SINGLE and BATCH; rejects DELEGATECALL and unknown modes.
     function _isAuthorizedForExecution(bytes32 modeWord, bytes calldata executionCalldata, bytes32 keyHash)
         internal
         view
@@ -277,16 +172,17 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
 
         if (callType == ERC7579Utils.CALLTYPE_SINGLE) {
             // SINGLE executionCalldata layout:
-            //   - bytes [0 .. 20)  → target — an Ethereum address is 20 bytes.
-            //   - bytes [20 .. 52) → value  — a uint256 is 32 bytes.
-            //   - bytes [52 ..   ) → data   — the inner ABI-encoded call (selector + args).
-            // A well-formed payload is therefore at least 52 bytes; anything shorter is malformed.
+            //   bytes [0 .. 20)  : target (an Ethereum address, 20 bytes)
+            //   bytes [20 .. 52) : value  (a uint256, 32 bytes)
+            //   bytes [52 ..   ) : data   (the inner ABI-encoded call: selector + args)
+            // A well-formed payload is at least 52 bytes. Anything shorter is malformed.
             if (executionCalldata.length < 52) return false;
             address target = address(bytes20(executionCalldata[:20]));
             return _isKeyAuthorizedToCallTarget(keyHash, target, executionCalldata[52:]);
         }
 
         if (callType == ERC7579Utils.CALLTYPE_BATCH) {
+            // Every call in the batch must pass.
             Execution[] calldata batch = ERC7579Utils.decodeBatch(executionCalldata);
             for (uint256 i = 0; i < batch.length; i++) {
                 if (!_isKeyAuthorizedToCallTarget(keyHash, batch[i].target, batch[i].callData)) {
@@ -299,28 +195,33 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         return false;
     }
 
-    /// @dev Per-target authorization check. Delegates to the installed policy module see
-    ///      {KeyApprovalModule.canAutoApprove} so the rule table lives in one place.
-    ///      When no policy is installed or its call reverts, falls back to a strict default:
-    ///      self → MANAGEMENT, else → ACTION.
+    /// @dev Asks the installed policy module (KeyApprovalModule). If no policy is installed,
+    ///      or the policy reverts, we apply a simple built-in rule instead:
+    ///        - if the call targets THIS account (e.g. addKey, removeKey): require MANAGEMENT.
+    ///        - if the call targets any OTHER address (external token, etc.): require ACTION.
+    ///      This built-in rule is what we call the "strict default": it is intentionally
+    ///      conservative, so an account with no policy installed still cannot be hijacked
+    ///      into self-modifying calls by a plain ACTION key.
     function _isKeyAuthorizedToCallTarget(bytes32 keyHash, address target, bytes calldata data)
         private
         view
         returns (bool)
     {
-        // The policy module is whichever handler is wired for the legacy `execute` selector.
+        // The policy module is whichever contract is wired as the `execute` fallback handler.
         address policy = _fallbackHandler(IKeyExecutor.execute.selector);
 
         if (policy != address(0)) {
-            // try/catch so a broken policy can't brick the account we fall through on revert.
+            // try/catch so a broken policy can't brick the account.
             try KeyApprovalModule(policy).canAutoApprove(address(this), keyHash, target, data) returns (bool ok) {
                 return ok;
             } catch {
-                // intentional fall-through
+                // policy reverted: drop down to the built-in rule below
             }
         }
 
-        // No policy installed or it reverted, apply the strict default.
+        // Built-in rule (the "strict default"):
+        //   self-target  -> MANAGEMENT required
+        //   anything else -> ACTION required
         uint256 requiredPurpose = target == address(this) ? KeyPurposes.MANAGEMENT : KeyPurposes.ACTION;
         return keyHasPurpose(keyHash, requiredPurpose);
     }

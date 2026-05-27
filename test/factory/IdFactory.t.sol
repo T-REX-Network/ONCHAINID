@@ -440,7 +440,7 @@ contract IdFactoryTest is OnchainIDSetup {
         Structs.ModuleInstall[] memory modules = new Structs.ModuleInstall[](1);
         modules[0] = Structs.ModuleInstall({
             moduleType: 1, // MODULE_TYPE_VALIDATOR
-            module: address(onchainidSetup.ecdsaValidator),
+            module: address(onchainidSetup.signatureValidator),
             initData: "",
             purpose: 0
         });
@@ -451,8 +451,8 @@ contract IdFactoryTest is OnchainIDSetup {
 
         Identity identity = Identity(payable(identityAddr));
         assertTrue(
-            identity.isModuleInstalled(1, address(onchainidSetup.ecdsaValidator), ""),
-            "ECDSA validator should be installed"
+            identity.isModuleInstalled(1, address(onchainidSetup.signatureValidator), ""),
+            "ERC7579Signature validator should be installed"
         );
     }
 

@@ -32,7 +32,6 @@ contract VersionUpgradeTest is OnchainIDSetup {
         bytes memory signature = ClaimSignerHelper.signClaim(
             alicePk,
             alice,
-            address(onchainidSetup.ecdsaValidator),
             address(aliceIdentity),
             address(aliceIdentity),
             claimTopic,

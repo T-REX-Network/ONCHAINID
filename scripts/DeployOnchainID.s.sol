@@ -12,8 +12,7 @@ import { IdFactory } from "contracts/factory/IdFactory.sol";
 import { Gateway } from "contracts/gateway/Gateway.sol";
 import { ClaimsModule } from "contracts/modules/claims/ClaimsModule.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
-import { ECDSAValidator } from "contracts/modules/validators/ECDSAValidator.sol";
-import { WebAuthnValidator } from "contracts/modules/validators/WebAuthnValidator.sol";
+import { ERC7579Signature } from "contracts/modules/validators/ERC7579Signature.sol";
 import { IdentityUtilitiesProxy } from "contracts/proxy/IdentityUtilitiesProxy.sol";
 import { ImplementationAuthority } from "contracts/proxy/ImplementationAuthority.sol";
 
@@ -48,11 +47,11 @@ contract DeployOnchainID is Script {
 
         // ===== Phase 1: Implementation contracts =====
 
-        // 1. Validator module singletons
-        ECDSAValidator ecdsaValidator = new ECDSAValidator();
-        WebAuthnValidator webauthnValidator = new WebAuthnValidator();
-        console.log("ECDSA Validator:", address(ecdsaValidator));
-        console.log("WebAuthn Validator:", address(webauthnValidator));
+        // 1. Validator module singleton — one module, ERC-7913 signer shape, EOA/1271/7913
+        //    crypto dispatch via OZ `SignatureChecker`, ACTION purpose enforced against the
+        //    calling account's ERC-734 registry.
+        ERC7579Signature signatureValidator = new ERC7579Signature();
+        console.log("ERC7579Signature Validator:", address(signatureValidator));
 
         // 2. Identity implementation (library mode — prevents direct initialization)
         Identity identityImpl = new Identity(deployer, true);
@@ -106,6 +105,7 @@ contract DeployOnchainID is Script {
         console.log("IdentityUtilities proxy:", address(utilitiesProxy));
         console.log("ImplementationAuthority:", address(authority));
         console.log("IdFactory:              ", address(idFactory));
+        console.log("ERC7579Signature:       ", address(signatureValidator));
         console.log("KeyApprovalModule:      ", address(keyApprovalModule));
         console.log("ClaimsModule:           ", address(claimsModule));
         console.log("Gateway:                ", address(gateway));
