@@ -132,12 +132,6 @@ interface IIdFactory {
     function isTokenFactory(address _factory) external view returns (bool);
 
     /**
-     *  @dev getter to know if a salt is taken for the CREATE3 deployment
-     *  @param _salt the salt used for deployment
-     */
-    function isSaltTaken(string calldata _salt) external view returns (bool);
-
-    /**
      * @dev getter for the implementation authority used by this factory.
      */
     function implementationAuthority() external view returns (address);

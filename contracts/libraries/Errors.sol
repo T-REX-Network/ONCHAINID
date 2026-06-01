@@ -33,9 +33,6 @@ library Errors {
     /// @notice Reverts if the only linked wallet tries to unlink
     error OnlyLinkedWalletCanUnlink();
 
-    /// @notice Reverts if the salt is taken
-    error SaltTaken(string salt);
-
     /// @notice Reverts if the token is already linked
     error TokenAlreadyLinked(address token);
 

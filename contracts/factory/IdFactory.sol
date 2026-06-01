@@ -21,10 +21,6 @@ contract IdFactory is IIdFactory, Ownable {
 
     mapping(address => bool) private _tokenFactories;
 
-    // as it is not possible to deploy 2 times the same contract address, this mapping allows us to check which
-    // salt is taken and which is not
-    mapping(string => bool) private _saltTaken;
-
     // ONCHAINID of the wallet owner
     mapping(address => address) private _userIdentity;
 
@@ -77,17 +73,17 @@ contract IdFactory is IIdFactory, Ownable {
         require(_wallet != address(0), Errors.ZeroAddress());
         require(keccak256(abi.encode(_salt)) != keccak256(abi.encode("")), Errors.EmptyString());
         string memory oidSalt = string.concat("OID", _salt);
-        require(!_saltTaken[oidSalt], Errors.SaltTaken(oidSalt));
         require(_userIdentity[_wallet] == address(0), Errors.WalletAlreadyLinkedToIdentity(_wallet));
         require(_keys.length > 0, Errors.EmptyListOfKeys());
 
+        // Salt-collision protection comes from Create3 itself: `_deployIdentity` reverts with
+        // `FailedDeployment()` if `oidSalt` has already been used on this factory.
         address identity = _deployIdentity(oidSalt, _wallet, _identityType);
 
         // Checks-effects-interactions: commit storage BEFORE any user-controlled `onInstall`
         // runs in `_setupIdentity`. A malicious module re-entering `createIdentity` for the
         // same wallet now hits `_userIdentity[_wallet] != 0` and reverts before a second
         // deployment can occur.
-        _saltTaken[oidSalt] = true;
         _userIdentity[_wallet] = identity;
         _wallets[identity].push(_wallet);
         emit WalletLinked(_wallet, identity);
@@ -111,13 +107,13 @@ contract IdFactory is IIdFactory, Ownable {
         require(keccak256(abi.encode(_salt)) != keccak256(abi.encode("")), Errors.EmptyString());
         require(_keys.length > 0, Errors.EmptyListOfKeys());
         string memory tokenIdSalt = string.concat("Token", _salt);
-        require(!_saltTaken[tokenIdSalt], Errors.SaltTaken(tokenIdSalt));
         require(_tokenIdentity[_token] == address(0), Errors.TokenAlreadyLinked(_token));
 
+        // Salt-collision protection comes from Create3: reverts with `FailedDeployment()`
+        // if `tokenIdSalt` has already been used on this factory.
         address identity = _deployIdentity(tokenIdSalt, _token, IdentityTypes.ASSET);
 
         // Checks-effects-interactions: commit storage BEFORE `_setupIdentity` runs user-controlled `onInstall`.
-        _saltTaken[tokenIdSalt] = true;
         _tokenIdentity[_token] = identity;
         _tokenAddress[identity] = _token;
         emit TokenLinked(_token, identity);
@@ -171,13 +167,6 @@ contract IdFactory is IIdFactory, Ownable {
         }
 
         return _userIdentity[_wallet];
-    }
-
-    /**
-     *  @dev See {IdFactory-isSaltTaken}.
-     */
-    function isSaltTaken(string calldata _salt) external view override returns (bool) {
-        return _saltTaken[_salt];
     }
 
     /**

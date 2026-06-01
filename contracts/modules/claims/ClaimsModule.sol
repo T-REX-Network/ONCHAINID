@@ -197,6 +197,19 @@ contract ClaimsModule is IERC7579Module, IERC735 {
         return _state[msg.sender].claimsByTopic[_topic].values();
     }
 
+    /// @notice Paginated variant of {getClaimIdsByTopic}. Use this on identities with many
+    ///         claims under one topic to avoid hitting the block gas limit.
+    /// @param _topic Topic to enumerate.
+    /// @param start Index of the first claim to return.
+    /// @param end Index (exclusive) of the last claim to return.
+    function getClaimIdsByTopicPaginated(uint256 _topic, uint256 start, uint256 end)
+        external
+        view
+        returns (bytes32[] memory)
+    {
+        return _state[msg.sender].claimsByTopic[_topic].values(start, end);
+    }
+
     // -----------------------------------------------------------------------
     // ClaimIssuer extras
     // -----------------------------------------------------------------------

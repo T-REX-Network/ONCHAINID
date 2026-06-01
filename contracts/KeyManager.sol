@@ -211,35 +211,47 @@ contract KeyManager is IERC734 {
         bytes memory _signerData,
         bytes memory _clientData
     ) external virtual delegatedOnly onlyManager {
+        _addKeyWithData(_key, _purpose, _type, _signerData, _clientData);
+    }
+
+    /// @dev Internal version of {addKeyWithData}. No modifiers. Used by both the external
+    ///      entry point and by initialization paths that run before any MANAGEMENT key exists.
+    function _addKeyWithData(
+        bytes32 _key,
+        uint256 _purpose,
+        uint256 _type,
+        bytes memory _signerData,
+        bytes memory _clientData
+    ) internal {
         // The keyHash MUST commit to the signer bytes stored alongside it. Without this guard a
         // caller could register one keyHash while attaching a different signer's bytes, which
         // would silently corrupt any downstream lookup of `signerData`.
         require(_key == keccak256(_signerData), Errors.InvalidSignerData());
 
-        addKey(_key, _purpose, _type);
-
+        // Inline the addKey storage writes so we don't go through the modifier-gated public
+        // addKey from the init path.
         KeyStorage storage ks = _getKeyStorage();
+        Structs.Key storage k = ks.keys[_key];
+
+        if (k.key == bytes32(0)) {
+            k.key = _key;
+            k.keyType = _type;
+        } else {
+            require(k.keyType == _type, Errors.KeyTypeMismatch(_key, k.keyType, _type));
+        }
+
+        require(k.purposes.add(_purpose), Errors.KeyAlreadyHasPurpose(_key, _purpose));
+        ks.keysByPurpose[_purpose].add(_key);
+
         ks.keys[_key].signerData = _signerData;
         ks.keys[_key].clientData = _clientData;
+
+        emit KeyAdded(_key, _purpose, _type);
     }
 
     // -----------------------------------------------------------------------
     // Internals
     // -----------------------------------------------------------------------
-
-    /// @dev Bootstraps the initial MANAGEMENT key during identity initialization.
-    function _setupInitialManagementKey(address initialManagementKey) internal {
-        KeyStorage storage ks = _getKeyStorage();
-
-        bytes32 _key = keccak256(abi.encodePacked(initialManagementKey));
-        ks.keys[_key].key = _key;
-        ks.keys[_key].keyType = KeyTypes.ECDSA;
-        ks.keys[_key].purposes.add(KeyPurposes.MANAGEMENT);
-        ks.keysByPurpose[KeyPurposes.MANAGEMENT].add(_key);
-        ks.keys[_key].signerData = abi.encodePacked(initialManagementKey);
-
-        emit KeyAdded(_key, KeyPurposes.MANAGEMENT, KeyTypes.ECDSA);
-    }
 
     function _checkDelegated() internal view {
         require(_getKeyStorage().canInteract, Errors.InteractingWithLibraryContractForbidden());

@@ -8,6 +8,7 @@ import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IdFactory } from "contracts/factory/IdFactory.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
+import { Errors as OZErrors } from "@openzeppelin/contracts/utils/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
@@ -85,7 +86,8 @@ contract IdFactoryTest is OnchainIDSetup {
             );
 
         vm.prank(deployer);
-        vm.expectRevert(abi.encodeWithSelector(Errors.SaltTaken.selector, "OIDsaltUsed"));
+        // Salt-collision now bubbles up from Create3 as FailedDeployment().
+        vm.expectRevert(OZErrors.FailedDeployment.selector);
         onchainidSetup.idFactory
             .createIdentity(
                 david, IdentityTypes.INDIVIDUAL, "saltUsed", _makeSingleMgmtKeys(david), new Structs.ModuleInstall[](0)
@@ -278,7 +280,8 @@ contract IdFactoryTest is OnchainIDSetup {
 
         address anotherWallet = makeAddr("anotherWallet");
         vm.prank(deployer);
-        vm.expectRevert(abi.encodeWithSelector(Errors.SaltTaken.selector, "OIDsharedSalt"));
+        // Salt-collision now bubbles up from Create3 as FailedDeployment().
+        vm.expectRevert(OZErrors.FailedDeployment.selector);
         onchainidSetup.idFactory
             .createIdentity(anotherWallet, IdentityTypes.INDIVIDUAL, "sharedSalt", keys, new Structs.ModuleInstall[](0));
     }

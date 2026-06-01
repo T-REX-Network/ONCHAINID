@@ -7,6 +7,7 @@ import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IdFactory } from "contracts/factory/IdFactory.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
+import { Errors as OZErrors } from "@openzeppelin/contracts/utils/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { Structs } from "contracts/storage/Structs.sol";
@@ -158,26 +159,22 @@ contract TokenOidTest is Test {
     }
 
     function test_createTokenIdentity_shouldCreateAndRevertDuplicate() public {
-        assertFalse(setup.idFactory.isSaltTaken("Tokensalt1"));
-
         vm.prank(deployer);
         setup.idFactory.createTokenIdentity(alice, "salt1", _makeMgmtKey(bob), _emptyModules);
 
         address tokenIdentityAddr = setup.idFactory.getIdentity(alice);
         assertTrue(tokenIdentityAddr != address(0));
-        assertTrue(setup.idFactory.isSaltTaken("Tokensalt1"));
-        assertFalse(setup.idFactory.isSaltTaken("Tokensalt2"));
         assertEq(setup.idFactory.getToken(tokenIdentityAddr), alice);
 
-        // Same salt should revert
-        vm.prank(deployer);
-        vm.expectRevert(abi.encodeWithSelector(Errors.SaltTaken.selector, "Tokensalt1"));
-        setup.idFactory.createTokenIdentity(alice, "salt1", _makeMgmtKey(alice), _emptyModules);
-
-        // Same token address should revert
+        // Same token address should revert before reaching Create3.
         vm.prank(deployer);
         vm.expectRevert(abi.encodeWithSelector(Errors.TokenAlreadyLinked.selector, alice));
         setup.idFactory.createTokenIdentity(alice, "salt2", _makeMgmtKey(alice), _emptyModules);
+
+        // Same salt (with a different token) should revert at Create3 with FailedDeployment().
+        vm.prank(deployer);
+        vm.expectRevert(OZErrors.FailedDeployment.selector);
+        setup.idFactory.createTokenIdentity(bob, "salt1", _makeMgmtKey(alice), _emptyModules);
     }
 
     /// @notice createTokenIdentity with multiple key types should set all keys

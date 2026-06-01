@@ -6,6 +6,8 @@ import { IERC734 } from "./interface/IERC734.sol";
 import { IERC735 } from "./interface/IERC735.sol";
 import { IIdentity } from "./interface/IIdentity.sol";
 import { Errors } from "./libraries/Errors.sol";
+import { KeyPurposes } from "./libraries/KeyPurposes.sol";
+import { KeyTypes } from "./libraries/KeyTypes.sol";
 import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import { IERC165 } from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
@@ -109,7 +111,8 @@ contract Identity is Initializable, SmartAccount {
         ks.initialized = true;
         ks.canInteract = true;
 
-        _setupInitialManagementKey(initialManagementKey);
+        bytes memory signerData = abi.encodePacked(initialManagementKey);
+        _addKeyWithData(keccak256(signerData), KeyPurposes.MANAGEMENT, KeyTypes.ECDSA, signerData, "");
     }
 
     /// @dev Returns the identity metadata storage at its ERC-7201 slot.

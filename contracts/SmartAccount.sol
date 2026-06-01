@@ -11,7 +11,6 @@ import {
     Execution,
     MODULE_TYPE_EXECUTOR
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
-import { Calldata } from "@openzeppelin/contracts/utils/Calldata.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
@@ -28,8 +27,6 @@ import { KeyApprovalModule } from "./modules/executors/KeyApprovalModule.sol";
 abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 {
 
     using EnumerableSet for EnumerableSet.UintSet;
-
-    receive() external payable virtual override { }
 
     /// @notice Install a module. MANAGEMENT-gated so the factory can install at bootstrap.
     function installModule(uint256 moduleTypeId, address module, bytes calldata initData)
@@ -73,21 +70,15 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         }
     }
 
-    /// @notice Executor entry point. Checks the executor's address-as-key against the
-    ///         per-target rule before dispatching.
+    /// @notice Executor entry point. Applies the per-target rule, then defers to super
+    ///         (which enforces the executor-module modifier and dispatches the call).
     function executeFromExecutor(bytes32 mode, bytes calldata executionCalldata)
         public
         payable
         virtual
         override
-        returns (bytes[] memory returnData)
+        returns (bytes[] memory)
     {
-        // Caller must be a registered executor module.
-        require(
-            isModuleInstalled(MODULE_TYPE_EXECUTOR, msg.sender, Calldata.emptyBytes()),
-            Errors.ExecutorPurposeNotAuthorized()
-        );
-
         // Use the executor's address as the key for the purpose lookup.
         bytes32 callerKeyHash = keccak256(abi.encodePacked(msg.sender));
 
@@ -96,8 +87,8 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
             revert Errors.ExecutorPurposeNotAuthorized();
         }
 
-        // Dispatch.
-        return _execute(Mode.wrap(mode), executionCalldata);
+        // Super handles the executor-module check (onlyModule modifier) and dispatch.
+        return super.executeFromExecutor(mode, executionCalldata);
     }
 
     /// @notice ERC-4337 user op validation. Validator proves the signature, then this
