@@ -93,7 +93,7 @@ contract Identity is Initializable, SmartAccount, ERC165 {
     /// @notice ERC-165 surface. Returns true for the ERC-734 / ERC-735 / IIdentity selectors
     ///         even though the ERC-735 methods are served by an installed module via the
     ///         fallback handler — the interface contract is still honored at runtime.
-    function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
+    function supportsInterface(bytes4 interfaceId) public view override returns (bool) {
         return (interfaceId == type(IERC734).interfaceId || interfaceId == type(IERC735).interfaceId
                 || interfaceId == type(IIdentity).interfaceId || super.supportsInterface(interfaceId));
     }
