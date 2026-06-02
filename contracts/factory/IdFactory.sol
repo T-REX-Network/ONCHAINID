@@ -71,14 +71,14 @@ contract IdFactory is IIdFactory, Ownable {
         Structs.ModuleInstall[] memory _modules
     ) external override onlyOwner returns (address) {
         require(_wallet != address(0), Errors.ZeroAddress());
-        require(keccak256(abi.encode(_salt)) != keccak256(abi.encode("")), Errors.EmptyString());
+        require(keccak256(bytes(_salt)) != keccak256(""), Errors.EmptyString());
         string memory oidSalt = string.concat("OID", _salt);
         require(_userIdentity[_wallet] == address(0), Errors.WalletAlreadyLinkedToIdentity(_wallet));
         require(_keys.length > 0, Errors.EmptyListOfKeys());
 
         // Salt-collision protection comes from Create3 itself: `_deployIdentity` reverts with
         // `FailedDeployment()` if `oidSalt` has already been used on this factory.
-        address identity = _deployIdentity(oidSalt, _wallet, _identityType);
+        address identity = _deployIdentity(oidSalt, _identityType);
 
         // Checks-effects-interactions: commit storage BEFORE any user-controlled `onInstall`
         // runs in `_setupIdentity`. A malicious module re-entering `createIdentity` for the
@@ -104,14 +104,14 @@ contract IdFactory is IIdFactory, Ownable {
     ) external override returns (address) {
         require(isTokenFactory(msg.sender) || msg.sender == owner(), Ownable.OwnableUnauthorizedAccount(msg.sender));
         require(_token != address(0), Errors.ZeroAddress());
-        require(keccak256(abi.encode(_salt)) != keccak256(abi.encode("")), Errors.EmptyString());
+        require(keccak256(bytes(_salt)) != keccak256(""), Errors.EmptyString());
         require(_keys.length > 0, Errors.EmptyListOfKeys());
         string memory tokenIdSalt = string.concat("Token", _salt);
         require(_tokenIdentity[_token] == address(0), Errors.TokenAlreadyLinked(_token));
 
         // Salt-collision protection comes from Create3: reverts with `FailedDeployment()`
         // if `tokenIdSalt` has already been used on this factory.
-        address identity = _deployIdentity(tokenIdSalt, _token, IdentityTypes.ASSET);
+        address identity = _deployIdentity(tokenIdSalt, IdentityTypes.ASSET);
 
         // Checks-effects-interactions: commit storage BEFORE `_setupIdentity` runs user-controlled `onInstall`.
         _tokenIdentity[_token] = identity;
@@ -238,7 +238,7 @@ contract IdFactory is IIdFactory, Ownable {
     // function used to deploy an identity using CREATE3.
     // The deployed address depends only on (address(this), salt), so the same salt yields the
     // same Identity address on every canonical-EVM chain when this factory shares the same address.
-    function _deployIdentity(string memory _salt, address _wallet, uint256 _identityType) private returns (address) {
+    function _deployIdentity(string memory _salt, uint256 _identityType) private returns (address) {
         bytes memory _code = type(IdentityProxy).creationCode;
         bytes memory _constructData = abi.encode(implementationAuthority, address(this), _identityType);
         bytes memory bytecode = abi.encodePacked(_code, _constructData);

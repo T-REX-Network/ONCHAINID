@@ -1,24 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.28;
 
+import { KeyManager } from "./KeyManager.sol";
+import { IKeyExecutor } from "./interface/IKeyExecutor.sol";
+import { Errors } from "./libraries/Errors.sol";
+import { KeyPurposes } from "./libraries/KeyPurposes.sol";
+import { KeyApprovalModule } from "./modules/executors/KeyApprovalModule.sol";
+import { LowLevelCall } from "./vendor/utils/LowLevelCall.sol";
 import {
     AccountERC7579Upgradeable
 } from "@openzeppelin/contracts-upgradeable/account/extensions/draft-AccountERC7579Upgradeable.sol";
 import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/draft-ERC4337Utils.sol";
 import { CallType, ERC7579Utils, Mode } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
 import { PackedUserOperation } from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
-import {
-    Execution,
-    MODULE_TYPE_EXECUTOR
-} from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import { Execution, MODULE_TYPE_EXECUTOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
-
-import { KeyManager } from "./KeyManager.sol";
-import { IKeyExecutor } from "./interface/IKeyExecutor.sol";
-import { Errors } from "./libraries/Errors.sol";
-import { KeyPurposes } from "./libraries/KeyPurposes.sol";
-import { KeyApprovalModule } from "./modules/executors/KeyApprovalModule.sol";
 
 /// @title SmartAccount
 /// @notice ERC-7579 modular account that uses the ERC-734 key registry from {KeyManager}.
@@ -36,6 +33,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         delegatedOnly
         onlyManager
     {
+        // Skip `super.installModule` to avoid the `onlyEntryPointOrSelf` check.
         _installModule(moduleTypeId, module, initData);
     }
 
@@ -47,6 +45,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         delegatedOnly
         onlyManager
     {
+        // Skip `super.uninstallModule` to avoid the `onlyEntryPointOrSelf` check.
         _uninstallModule(moduleTypeId, module, deInitData);
     }
 
@@ -131,24 +130,14 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         }
 
         // Decode the outer execute() args.
-        (bytes32 mode, bytes memory executionCalldata) = abi.decode(callData[4:], (bytes32, bytes));
-
-        // External re-entry flips the inner bytes back to calldata + gives us try/catch.
-        try this._isAuthorizedForExecutionExternal(mode, executionCalldata, signerKeyHash) returns (bool ok) {
-            return ok;
-        } catch {
-            return false;
-        }
-    }
-
-    /// @dev External hop so executionCalldata is calldata, not memory. Only called via `this.`.
-    function _isAuthorizedForExecutionExternal(bytes32 modeWord, bytes calldata executionCalldata, bytes32 keyHash)
-        external
-        view
-        returns (bool)
-    {
-        require(msg.sender == address(this));
-        return _isAuthorizedForExecution(modeWord, executionCalldata, keyHash);
+        uint256 dataOffset = uint256(bytes32(callData[0x24:0x44]));
+        uint256 lenPos = 4 + dataOffset;
+        uint256 dataStart = lenPos + 0x20;
+        if (dataStart > callData.length) return false;
+        uint256 dataLen = uint256(bytes32(callData[lenPos:]));
+        if (dataStart + dataLen > callData.length) return false;
+        return
+            _isAuthorizedForExecution(bytes32(callData[4:0x24]), callData[dataStart:dataStart + dataLen], signerKeyHash);
     }
 
     /// @dev Per-target authorization. Shared by user ops and executor dispatch.
@@ -202,11 +191,12 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         address policy = _fallbackHandler(IKeyExecutor.execute.selector);
 
         if (policy != address(0)) {
-            // try/catch so a broken policy can't brick the account.
-            try KeyApprovalModule(policy).canAutoApprove(address(this), keyHash, target, data) returns (bool ok) {
-                return ok;
-            } catch {
-                // policy reverted: drop down to the built-in rule below
+            // LowLevelCall so a broken policy can't brick the account.
+            (bool success, bytes32 result,) = LowLevelCall.staticcallReturn64Bytes(
+                policy, abi.encodeCall(KeyApprovalModule.canAutoApprove, (address(this), keyHash, target, data))
+            );
+            if (success && LowLevelCall.returnDataSize() == 32 && result == bytes32(uint256(1))) {
+                return true;
             }
         }
 

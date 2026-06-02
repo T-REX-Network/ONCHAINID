@@ -10,7 +10,7 @@ import { KeyPurposes } from "./libraries/KeyPurposes.sol";
 import { KeyTypes } from "./libraries/KeyTypes.sol";
 import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
-import { IERC165 } from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
+import { ERC165 } from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 
 /**
  * @title Identity
@@ -33,7 +33,7 @@ import { IERC165 } from "@openzeppelin/contracts/utils/introspection/IERC165.sol
  *      The {IIdentity} interface continues to declare the ERC-735 selectors; calls to those
  *      selectors land on the installed ClaimsModule via fallback dispatch.
  */
-contract Identity is Initializable, SmartAccount {
+contract Identity is Initializable, SmartAccount, ERC165 {
 
     /// @dev Account-level identity metadata.
     /// @custom:storage-location erc7201:onchainid.identity.metadata
@@ -94,8 +94,8 @@ contract Identity is Initializable, SmartAccount {
     ///         even though the ERC-735 methods are served by an installed module via the
     ///         fallback handler — the interface contract is still honored at runtime.
     function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
-        return (interfaceId == type(IERC165).interfaceId || interfaceId == type(IERC734).interfaceId
-                || interfaceId == type(IERC735).interfaceId || interfaceId == type(IIdentity).interfaceId);
+        return (interfaceId == type(IERC734).interfaceId || interfaceId == type(IERC735).interfaceId
+                || interfaceId == type(IIdentity).interfaceId || super.supportsInterface(interfaceId));
     }
 
     /**
