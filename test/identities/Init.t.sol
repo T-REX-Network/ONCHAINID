@@ -2,6 +2,7 @@
 pragma solidity ^0.8.27;
 
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
+import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import { Identity } from "contracts/Identity.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
@@ -10,13 +11,16 @@ contract InitTest is OnchainIDSetup {
 
     function test_revert_whenReinitializingDeployedIdentity() public {
         vm.prank(alice);
-        vm.expectRevert("Initializable: contract is already initialized");
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
         aliceIdentity.initialize(alice, IdentityTypes.INDIVIDUAL);
     }
 
     function test_revert_whenInitializingWithZeroAddress() public {
+        // The library implementation is constructed with `_disableInitializers()`, so any
+        // call to `initialize` on it reverts via OZ's `Initializable` slot — before the
+        // zero-address check even runs.
         Identity libraryImpl = new Identity(deployer, true);
-        vm.expectRevert(Errors.ZeroAddress.selector);
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
         libraryImpl.initialize(address(0), IdentityTypes.INDIVIDUAL);
     }
 
@@ -31,8 +35,10 @@ contract InitTest is OnchainIDSetup {
     }
 
     function test_revert_whenInitializingLibraryWithValidAddress() public {
+        // Library implementations are locked at construction time via `_disableInitializers()`,
+        // so `initialize` reverts with OZ's standard `InvalidInitialization` regardless of args.
         Identity libraryImpl = new Identity(deployer, true);
-        vm.expectRevert(Errors.InitialKeyAlreadySetup.selector);
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
         libraryImpl.initialize(deployer, IdentityTypes.INDIVIDUAL);
     }
 
@@ -41,7 +47,11 @@ contract InitTest is OnchainIDSetup {
 
         vm.prank(deployer);
         vm.expectRevert(Errors.InteractingWithLibraryContractForbidden.selector);
-        libraryImpl.addKey(keccak256(abi.encode(alice)), 1, 1);
+        libraryImpl.addKey(keccak256(abi.encodePacked(alice)), 1, 1);
+    }
+
+    function test_accountId_returnsExpectedValue() public view {
+        assertEq(aliceIdentity.accountId(), "trex.onchainid.identity.v3.0.0");
     }
 
     function test_supportsERC165InterfaceDetection() public {

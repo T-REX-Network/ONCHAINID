@@ -3,12 +3,14 @@ pragma solidity ^0.8.27;
 
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 
-import { IERC734 } from "../interface/IERC734.sol";
+import { KeyManager } from "../KeyManager.sol";
+import { SmartAccount } from "../SmartAccount.sol";
 import { Errors } from "../libraries/Errors.sol";
 import { IdentityTypes } from "../libraries/IdentityTypes.sol";
 import { KeyPurposes } from "../libraries/KeyPurposes.sol";
 import { KeyTypes } from "../libraries/KeyTypes.sol";
 import { IdentityProxy } from "../proxy/IdentityProxy.sol";
+import { Structs } from "../storage/Structs.sol";
 import { Create3 } from "../vendor/utils/Create3.sol";
 import { IIdFactory } from "./IIdFactory.sol";
 
@@ -18,10 +20,6 @@ contract IdFactory is IIdFactory, Ownable {
     address public immutable implementationAuthority;
 
     mapping(address => bool) private _tokenFactories;
-
-    // as it is not possible to deploy 2 times the same contract address, this mapping allows us to check which
-    // salt is taken and which is not
-    mapping(string => bool) private _saltTaken;
 
     // ONCHAINID of the wallet owner
     mapping(address => address) private _userIdentity;
@@ -63,93 +61,65 @@ contract IdFactory is IIdFactory, Ownable {
     }
 
     /**
-     *  @dev See {IdFactory-createIdentity}.
+     *  @dev See {IIdFactory-createIdentity}.
      */
-    function createIdentity(address _wallet, string memory _salt, uint256 _identityType, address[] memory _claimAdders)
-        external
-        override
-        onlyOwner
-        returns (address)
-    {
-        require(_wallet != address(0), Errors.ZeroAddress());
-        require(keccak256(abi.encode(_salt)) != keccak256(abi.encode("")), Errors.EmptyString());
-        string memory oidSalt = string.concat("OID", _salt);
-        require(!_saltTaken[oidSalt], Errors.SaltTaken(oidSalt));
-        require(_userIdentity[_wallet] == address(0), Errors.WalletAlreadyLinkedToIdentity(_wallet));
-
-        address identity = _deployIdentity(oidSalt, address(this), _identityType);
-        bytes32[] memory keys = new bytes32[](1);
-        keys[0] = keccak256(abi.encode(_wallet));
-        _setupIdentityKeys(identity, keys, _claimAdders);
-
-        _saltTaken[oidSalt] = true;
-        _userIdentity[_wallet] = identity;
-        _wallets[identity].push(_wallet);
-        emit WalletLinked(_wallet, identity);
-        return identity;
-    }
-
-    /**
-     *  @dev See {IdFactory-createIdentityWithManagementKeys}.
-     */
-    function createIdentityWithManagementKeys(
+    function createIdentity(
         address _wallet,
-        string memory _salt,
-        bytes32[] memory _managementKeys,
         uint256 _identityType,
-        address[] memory _claimAdders
+        string memory _salt,
+        Structs.KeyParam[] memory _keys,
+        Structs.ModuleInstall[] memory _modules
     ) external override onlyOwner returns (address) {
         require(_wallet != address(0), Errors.ZeroAddress());
-        require(keccak256(abi.encode(_salt)) != keccak256(abi.encode("")), Errors.EmptyString());
+        require(keccak256(bytes(_salt)) != keccak256(""), Errors.EmptyString());
         string memory oidSalt = string.concat("OID", _salt);
-        require(!_saltTaken[oidSalt], Errors.SaltTaken(oidSalt));
         require(_userIdentity[_wallet] == address(0), Errors.WalletAlreadyLinkedToIdentity(_wallet));
-        require(_managementKeys.length > 0, Errors.EmptyListOfKeys());
+        require(_keys.length > 0, Errors.EmptyListOfKeys());
 
-        address identity = _deployIdentity(oidSalt, address(this), _identityType);
+        // Salt-collision protection comes from Create3 itself: `_deployIdentity` reverts with
+        // `FailedDeployment()` if `oidSalt` has already been used on this factory.
+        address identity = _deployIdentity(oidSalt, _identityType);
 
-        for (uint256 i = 0; i < _managementKeys.length; i++) {
-            require(
-                _managementKeys[i] != keccak256(abi.encode(_wallet)), Errors.WalletAlsoListedInManagementKeys(_wallet)
-            );
-        }
-
-        _setupIdentityKeys(identity, _managementKeys, _claimAdders);
-
-        _saltTaken[oidSalt] = true;
+        // Checks-effects-interactions: commit storage BEFORE any user-controlled `onInstall`
+        // runs in `_setupIdentity`. A malicious module re-entering `createIdentity` for the
+        // same wallet now hits `_userIdentity[_wallet] != 0` and reverts before a second
+        // deployment can occur.
         _userIdentity[_wallet] = identity;
         _wallets[identity].push(_wallet);
         emit WalletLinked(_wallet, identity);
+
+        _setupIdentity(identity, _keys, _modules);
 
         return identity;
     }
 
     /**
-     *  @dev See {IdFactory-createTokenIdentity}.
+     *  @dev See {IIdFactory-createTokenIdentity}.
      */
     function createTokenIdentity(
         address _token,
-        address _tokenOwner,
         string memory _salt,
-        address[] memory _claimAdders
+        Structs.KeyParam[] memory _keys,
+        Structs.ModuleInstall[] memory _modules
     ) external override returns (address) {
-        require(isTokenFactory(msg.sender) || msg.sender == owner(), OwnableUnauthorizedAccount(msg.sender));
+        require(isTokenFactory(msg.sender) || msg.sender == owner(), Ownable.OwnableUnauthorizedAccount(msg.sender));
         require(_token != address(0), Errors.ZeroAddress());
-        require(_tokenOwner != address(0), Errors.ZeroAddress());
-        require(keccak256(abi.encode(_salt)) != keccak256(abi.encode("")), Errors.EmptyString());
+        require(keccak256(bytes(_salt)) != keccak256(""), Errors.EmptyString());
+        require(_keys.length > 0, Errors.EmptyListOfKeys());
         string memory tokenIdSalt = string.concat("Token", _salt);
-        require(!_saltTaken[tokenIdSalt], Errors.SaltTaken(tokenIdSalt));
         require(_tokenIdentity[_token] == address(0), Errors.TokenAlreadyLinked(_token));
 
-        address identity = _deployIdentity(tokenIdSalt, address(this), IdentityTypes.ASSET);
-        bytes32[] memory keys = new bytes32[](1);
-        keys[0] = keccak256(abi.encode(_tokenOwner));
-        _setupIdentityKeys(identity, keys, _claimAdders);
+        // Salt-collision protection comes from Create3: reverts with `FailedDeployment()`
+        // if `tokenIdSalt` has already been used on this factory.
+        address identity = _deployIdentity(tokenIdSalt, IdentityTypes.ASSET);
 
-        _saltTaken[tokenIdSalt] = true;
+        // Checks-effects-interactions: commit storage BEFORE `_setupIdentity` runs user-controlled `onInstall`.
         _tokenIdentity[_token] = identity;
         _tokenAddress[identity] = _token;
         emit TokenLinked(_token, identity);
+
+        _setupIdentity(identity, _keys, _modules);
+
         return identity;
     }
 
@@ -200,13 +170,6 @@ contract IdFactory is IIdFactory, Ownable {
     }
 
     /**
-     *  @dev See {IdFactory-isSaltTaken}.
-     */
-    function isSaltTaken(string calldata _salt) external view override returns (bool) {
-        return _saltTaken[_salt];
-    }
-
-    /**
      *  @dev See {IdFactory-getWallets}.
      */
     function getWallets(address _identity) external view override returns (address[] memory) {
@@ -227,27 +190,57 @@ contract IdFactory is IIdFactory, Ownable {
         return _tokenFactories[_factory];
     }
 
-    // bootstraps an identity: adds management keys, claim adder keys, then removes factory key
-    function _setupIdentityKeys(address _identity, bytes32[] memory _managementKeys, address[] memory _claimAdders)
+    /// @dev Bootstraps a freshly-deployed identity:
+    ///      1. Adds user-supplied keys (factory holds bootstrap MANAGEMENT).
+    ///      2. Auto-installs {KeyApprovalModule} so the legacy ERC-734 `execute`/`approve` ABI
+    ///         keeps resolving on the identity (option (b) on the IIdentity ABI question).
+    ///      3. Installs any caller-supplied modules.
+    ///      4. Removes the factory's bootstrap MANAGEMENT key.
+    ///
+    ///      Module installation goes through {SmartAccount.installModule}, which is
+    ///      gated by `onlyManager` — the factory still holds MANAGEMENT at this point. This
+    ///      avoids the OZ default `onlyEntryPointOrSelf` chicken-and-egg at deployment time.
+    function _setupIdentity(address _identity, Structs.KeyParam[] memory _keys, Structs.ModuleInstall[] memory _modules)
         private
     {
-        for (uint256 i = 0; i < _managementKeys.length; i++) {
-            IERC734(_identity).addKey(_managementKeys[i], KeyPurposes.MANAGEMENT, KeyTypes.ECDSA);
+        // 1. User keys.
+        for (uint256 i = 0; i < _keys.length; i++) {
+            KeyManager(_identity)
+                .addKeyWithData(
+                    _keys[i].keyHash, _keys[i].purpose, _keys[i].keyType, _keys[i].signerData, _keys[i].clientData
+                );
         }
 
-        for (uint256 i = 0; i < _claimAdders.length; i++) {
-            IERC734(_identity).addKey(keccak256(abi.encode(_claimAdders[i])), KeyPurposes.CLAIM_ADDER, KeyTypes.ECDSA);
+        // 2. Caller-supplied modules. The factory takes no opinion on which modules belong
+        //    on the identity — including the queue module that powers the legacy ERC-734
+        //    `execute`/`approve` ABI. Callers who want that ABI include the four install
+        //    entries (1 executor + 3 fallbacks for execute/approve/getCurrentNonce) and
+        //    grant the queue module MANAGEMENT purpose via `purpose` on the install entry.
+        for (uint256 i = 0; i < _modules.length; i++) {
+            SmartAccount(payable(_identity))
+                .installModule(_modules[i].moduleType, _modules[i].module, _modules[i].initData);
+            if (_modules[i].purpose != 0) {
+                // Register the module address as a key under `MODULE` keyType.
+                KeyManager(_identity)
+                    .addKey(keccak256(abi.encodePacked(_modules[i].module)), _modules[i].purpose, KeyTypes.MODULE);
+            }
         }
 
-        IERC734(_identity).removeKey(keccak256(abi.encode(address(this))), KeyPurposes.MANAGEMENT);
+        // 3. Drop the bootstrap key.
+        KeyManager(_identity).removeKey(keccak256(abi.encodePacked(address(this))), KeyPurposes.MANAGEMENT);
+
+        // 4. Assert the post-setup invariant: the identity owns at least one MANAGEMENT key.
+        require(
+            KeyManager(_identity).getKeysByPurpose(KeyPurposes.MANAGEMENT).length >= 1, Errors.NoManagementKeyInKeys()
+        );
     }
 
     // function used to deploy an identity using CREATE3.
     // The deployed address depends only on (address(this), salt), so the same salt yields the
     // same Identity address on every canonical-EVM chain when this factory shares the same address.
-    function _deployIdentity(string memory _salt, address _wallet, uint256 _identityType) private returns (address) {
+    function _deployIdentity(string memory _salt, uint256 _identityType) private returns (address) {
         bytes memory _code = type(IdentityProxy).creationCode;
-        bytes memory _constructData = abi.encode(implementationAuthority, _wallet, _identityType);
+        bytes memory _constructData = abi.encode(implementationAuthority, address(this), _identityType);
         bytes memory bytecode = abi.encodePacked(_code, _constructData);
 
         return Create3.deploy(0, keccak256(abi.encodePacked(_salt)), bytecode);

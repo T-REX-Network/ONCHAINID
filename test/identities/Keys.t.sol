@@ -41,8 +41,17 @@ contract KeysTest is OnchainIDSetup {
     function test_RetrieveExistingKeysWithGivenPurpose() public view {
         bytes32[] memory keys = aliceIdentity.getKeysByPurpose(KeyPurposes.MANAGEMENT);
 
-        assertEq(keys.length, 1);
-        assertEq(keys[0], aliceKeyHash);
+        // Alice is one MANAGEMENT key; the auto-installed KeyApprovalModule is registered
+        // as another (its address is hashed and stored as a key so that dispatches through
+        // it are gated by the same ERC-734 purpose rule as any other key).
+        bool aliceFound = false;
+        for (uint256 i = 0; i < keys.length; i++) {
+            if (keys[i] == aliceKeyHash) {
+                aliceFound = true;
+                break;
+            }
+        }
+        assertTrue(aliceFound, "alice should be a MANAGEMENT key");
     }
 
     function test_ReturnTrueIfKeyHasGivenPurpose() public view {
@@ -107,6 +116,16 @@ contract KeysTest is OnchainIDSetup {
         aliceIdentity.addKey(aliceKeyHash, KeyPurposes.MANAGEMENT, KeyTypes.ECDSA);
     }
 
+    /// @notice Re-purposing an existing key with a different `_type` is rejected.
+    function test_RevertAddKey_WhenKeyTypeDoesNotMatchExisting() public {
+        // aliceKeyHash already exists with keyType = ECDSA. Attempt to add a new purpose with RSA.
+        vm.expectRevert(
+            abi.encodeWithSelector(Errors.KeyTypeMismatch.selector, aliceKeyHash, KeyTypes.ECDSA, KeyTypes.RSA)
+        );
+        vm.prank(alice);
+        aliceIdentity.addKey(aliceKeyHash, KeyPurposes.ACTION, KeyTypes.RSA);
+    }
+
     // ============ Remove key methods - Non-Management key ============
 
     function test_RevertRemoveKey_WhenCallerIsNotManagementKey() public {
@@ -118,6 +137,11 @@ contract KeysTest is OnchainIDSetup {
     // ============ Remove key methods - Management key ============
 
     function test_RemovePurposeFromExistingKey() public {
+        // Removing the only MANAGEMENT key is forbidden. Add a second one first so the
+        // invariant holds.
+        vm.prank(alice);
+        aliceIdentity.addKey(bobKeyHash, KeyPurposes.MANAGEMENT, KeyTypes.ECDSA);
+
         vm.prank(alice);
         aliceIdentity.removeKey(aliceKeyHash, KeyPurposes.MANAGEMENT);
 
@@ -191,6 +215,31 @@ contract KeysTest is OnchainIDSetup {
         (, uint256 keyType2, bytes32 key2) = aliceIdentity.getKey(davidKeyHash);
         assertEq(key2, bytes32(0), "Key should be deleted");
         assertEq(keyType2, 0, "Key type should be 0");
+    }
+
+    /// @notice C11: `addKeyWithData` reverts when keyHash and signerData don't match.
+    ///         The invariant binds the registered keyHash to the stored signer bytes so
+    ///         downstream readers can trust either field independently.
+    function test_AddKeyWithData_revertsOnHashMismatch() public {
+        bytes32 declaredHash = keccak256(abi.encodePacked(bob));
+        bytes memory mismatchedSignerData = abi.encodePacked(carol);
+
+        vm.prank(alice);
+        vm.expectRevert(Errors.InvalidSignerData.selector);
+        aliceIdentity.addKeyWithData(declaredHash, KeyPurposes.ACTION, KeyTypes.ECDSA, mismatchedSignerData, "");
+    }
+
+    /// @notice C11: `addKeyWithData` accepts the call when keyHash == keccak256(signerData).
+    function test_AddKeyWithData_acceptsMatchingHash() public {
+        bytes32 keyHash = keccak256(abi.encodePacked(bob));
+        bytes memory signerData = abi.encodePacked(bob);
+
+        vm.prank(alice);
+        aliceIdentity.addKeyWithData(keyHash, KeyPurposes.ACTION, KeyTypes.ECDSA, signerData, "");
+
+        (, uint256 keyType, bytes32 storedKey) = aliceIdentity.getKey(keyHash);
+        assertEq(storedKey, keyHash);
+        assertEq(keyType, KeyTypes.ECDSA);
     }
 
 }

@@ -1,325 +1,107 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
-import { KeyManager } from "./KeyManager.sol";
-import { IClaimIssuer } from "./interface/IClaimIssuer.sol";
+import { SmartAccount } from "./SmartAccount.sol";
 import { IERC734 } from "./interface/IERC734.sol";
 import { IERC735 } from "./interface/IERC735.sol";
 import { IIdentity } from "./interface/IIdentity.sol";
 import { Errors } from "./libraries/Errors.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
-import { Structs } from "./storage/Structs.sol";
+import { KeyTypes } from "./libraries/KeyTypes.sol";
 import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import { MulticallUpgradeable } from "@openzeppelin/contracts-upgradeable/utils/MulticallUpgradeable.sol";
-import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import { IERC165 } from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
-import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
+import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
+import { ERC165 } from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 
 /**
  * @title Identity
- * @dev Implementation of the `IERC734` "KeyHolder" and the `IERC735` "ClaimHolder" interfaces
- * into a common Identity Contract.
+ * @dev Smart-account identity. ERC-734 key registry lives here (inherited from {KeyManager} via
+ *      {SmartAccount}); ERC-735 claim functionality is provided by an installed {ClaimsModule}
+ *      reached through this account's ERC-7579 fallback handler.
  *
- * This implementation uses ERC-7201 storage slots for upgradeability, providing:
- * - O(1) key and claim management operations via EnumerableSet
- * - Separation of key and claim storage for better organization
- * - Upgradeable version management through ERC-7201 storage slots
+ *      Storage layout uses ERC-7201 namespaced slots:
+ *        - `onchainid.keymanager.storage`     — keys (from KeyManager)
+ *        - `onchainid.identity.metadata`      — `identityType`, queried by anyone via {getIdentityType}
+ *        - `onchainid.accountERC7579.storage` — installed modules (from OZ)
  *
- * The contract supports four key purposes:
- * - MANAGEMENT: Keys that can manage the identity
- * - ACTION: Keys that can perform actions on behalf of the identity
- * - CLAIM_SIGNER: Keys that can sign claims for other identities
- * - ENCRYPTION: Keys used for data encryption
+ *      Key purposes supported by the registry:
+ *        - MANAGEMENT       — manage the identity
+ *        - ACTION           — perform actions on behalf of the identity
+ *        - CLAIM_SIGNER     — sign and remove claims
+ *        - CLAIM_ADDER      — add claims (cannot remove)
+ *        - ENCRYPTION       — out-of-band encryption usage
  *
- * @custom:security This contract uses ERC-7201 storage slots to prevent storage collision attacks
- * in upgradeable contracts.
+ *      The {IIdentity} interface continues to declare the ERC-735 selectors; calls to those
+ *      selectors land on the installed ClaimsModule via fallback dispatch.
  */
-contract Identity is Initializable, IIdentity, KeyManager, MulticallUpgradeable {
+contract Identity is Initializable, SmartAccount, ERC165 {
 
-    using EnumerableSet for EnumerableSet.Bytes32Set;
-
-    /**
-     * @dev Storage struct for claim management data
-     * @custom:storage-location erc7201:onchainid.identity.claim.storage
-     */
-    struct ClaimStorage {
-        /// @dev Mapping of claim ID to Claim struct as defined by IERC735
-        mapping(bytes32 => Structs.Claim) claims;
-        /// @dev Identity type as defined in IdentityTypes library
+    /// @dev Account-level identity metadata.
+    /// @custom:storage-location erc7201:onchainid.identity.metadata
+    struct IdentityMetadata {
         uint256 identityType;
-        /// @dev Mapping of topic to set of claim IDs (EnumerableSet for O(1) add/remove/contains)
-        mapping(uint256 => EnumerableSet.Bytes32Set) claimsByTopic;
     }
+
+    /// @dev ERC-7201 storage slot for identity-level metadata.
+    bytes32 internal constant _IDENTITY_METADATA_SLOT =
+        keccak256(abi.encode(uint256(keccak256(bytes("onchainid.identity.metadata"))) - 1)) & ~bytes32(uint256(0xff));
 
     /**
-     * @dev ERC-7201 Storage Slot for claim management data
-     * This slot ensures no storage collision between different versions of the contract
-     *
-     * Formula: keccak256(abi.encode(uint256(keccak256(bytes(id))) - 1)) & ~bytes32(uint256(0xff))
-     * where id is the namespace identifier
+     * @notice Constructor of the Identity contract.
+     * @param initialManagementKey The management key address at deployment.
+     * @param _isLibrary True when deploying the implementation contract behind a proxy. In that
+     *        case we lock the OZ `Initializable` slot via `_disableInitializers()` so the
+     *        implementation can never be initialized directly; only proxies (which run the
+     *        constructor in their own context with `_isLibrary == false`) can initialize.
      */
-    bytes32 internal constant _CLAIM_STORAGE_SLOT = keccak256(
-        abi.encode(uint256(keccak256(bytes("onchainid.identity.claim.storage"))) - 1)
-    ) & ~bytes32(uint256(0xff));
-
-    // Key management functionality is inherited from KeyManager contract
-
-    // ========= Modifiers =========
-
-    /// @notice requires claim key (CLAIM_SIGNER or CLAIM_ADDER) to call this function, or internal call
-    modifier onlyClaimKey() {
-        require(
-            msg.sender == address(this) || keyHasPurpose(keccak256(abi.encode(msg.sender)), KeyPurposes.CLAIM_SIGNER)
-                || keyHasPurpose(keccak256(abi.encode(msg.sender)), KeyPurposes.CLAIM_ADDER),
-            Errors.SenderDoesNotHaveClaimSignerKey()
-        );
-        _;
-    }
-
-    /// @notice requires CLAIM_SIGNER key to call this function, or internal call
-    /// @dev CLAIM_ADDER keys are excluded — they can add but not remove claims
-    modifier onlyClaimSignerKey() {
-        require(
-            msg.sender == address(this) || keyHasPurpose(keccak256(abi.encode(msg.sender)), KeyPurposes.CLAIM_SIGNER),
-            Errors.SenderDoesNotHaveClaimSignerKey()
-        );
-        _;
-    }
-
-    // ========= Constructor =========
-
-    /**
-     * @notice constructor of the Identity contract
-     * @param initialManagementKey the address of the management key at deployment
-     * @param _isLibrary boolean value stating if the contract is library or not
-     * calls __Identity_init if contract is not library
-     */
-    constructor(address initialManagementKey, bool _isLibrary) {
-        if (!_isLibrary) {
-            __Identity_init(initialManagementKey);
+    constructor(address initialManagementKey, bool _isLibrary) EIP712("OnchainID", "1") {
+        if (_isLibrary) {
+            _disableInitializers();
         } else {
-            _getKeyStorage().initialized = true;
+            __Identity_init(initialManagementKey);
         }
     }
 
     /**
-     * @notice When using this contract as an implementation for a proxy, call this initializer with a delegatecall.
-     * @dev This function initializes the contract and sets up the initial management key and identity type.
+     * @notice When using this contract as an implementation for a proxy, call this initializer
+     *         with a delegatecall. Sets up the initial MANAGEMENT key and the identity type, and
+     *         runs the ERC-7579 module-registry initializer.
      * @param initialManagementKey The ethereum address to be set as the management key of the ONCHAINID.
-     * @param _identityType The type of the identity.
+     * @param _identityType The type of the identity (see {IdentityTypes}).
      */
     function initialize(address initialManagementKey, uint256 _identityType) external virtual initializer {
-        _getClaimStorage().identityType = _identityType;
+        _getIdentityMetadata().identityType = _identityType;
+        __AccountERC7579_init();
         __Identity_init(initialManagementKey);
     }
 
-    /**
-     * @dev See {IERC735-getClaimIdsByTopic}.
-     *   * @notice Implementation of the getClaimIdsByTopic function from the ERC-735 standard.
-     * used to get all the claims from the specified topic
-     * @param _topic The identity of the claim i.e. keccak256(abi.encode(_issuer, _topic))
-     * @return claimIds Returns an array of claim IDs by topic.
-     */
-    function getClaimIdsByTopic(uint256 _topic) external view override(IERC735) returns (bytes32[] memory claimIds) {
-        return _getClaimStorage().claimsByTopic[_topic].values();
-    }
-
-    /**
-     * @dev Returns the identity type set at initialization.
-     * @return The identity type as defined in IdentityTypes library
-     */
+    /// @notice Returns the identity type set at initialization.
+    /// @return The identity type as defined in {IdentityTypes}.
     function getIdentityType() external view returns (uint256) {
-        return _getClaimStorage().identityType;
+        return _getIdentityMetadata().identityType;
     }
 
-    /**
-     * @dev Returns the current version of the contract.
-     * @return The version string
-     */
+    /// @notice ERC-7579 account identifier.
+    function accountId() public view virtual override returns (string memory) {
+        return "trex.onchainid.identity.v3.0.0";
+    }
+
+    /// @notice Current contract version.
     function version() external pure virtual returns (string memory) {
         return "3.0.0";
     }
 
-    /**
-     * @dev See {IERC165-supportsInterface}.
-     *  * @notice Returns true if this contract implements the interface defined by interfaceId
-     * @param interfaceId The interface identifier, as specified in ERC-165
-     * @return true if the interface is supported, false otherwise
-     */
-    function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
-        return (interfaceId == type(IERC165).interfaceId || interfaceId == type(IERC734).interfaceId
-                || interfaceId == type(IERC735).interfaceId || interfaceId == type(IIdentity).interfaceId);
+    /// @notice ERC-165 surface. Returns true for the ERC-734 / ERC-735 / IIdentity selectors
+    ///         even though the ERC-735 methods are served by an installed module via the
+    ///         fallback handler — the interface contract is still honored at runtime.
+    function supportsInterface(bytes4 interfaceId) public view override returns (bool) {
+        return (interfaceId == type(IERC734).interfaceId || interfaceId == type(IERC735).interfaceId
+                || interfaceId == type(IIdentity).interfaceId || super.supportsInterface(interfaceId));
     }
 
     /**
-     * @dev See {IERC735-addClaim}.
-     * @notice Adds or updates a claim for this identity.
-     *
-     * Uses EnumerableSet for O(1) claim existence checks and management.
-     *
-     * Claim validation:
-     * - If the issuer is not the identity itself, the claim must be validated by the issuer
-     * - Self-issued claims are automatically valid
-     * - The signature must follow the structure: keccak256(abi.encode(identityHolder_address, topic, data))
-     *
-     * Access control: Only CLAIM_SIGNER keys can add claims.
-     *
-     * @param _topic The type/category of the claim
-     * @param _scheme The verification scheme for the claim (ECDSA, RSA, etc.)
-     * @param _issuer The address of the claim issuer (can be the identity itself)
-     * @param _signature The cryptographic proof that the issuer authorized this claim
-     * @param _data The claim data or hash of the claim data
-     * @param _uri The location of additional claim data (HTTP, IPFS, etc.)
-     * @return claimRequestId The unique identifier for this claim
-     */
-    function addClaim(
-        uint256 _topic,
-        uint256 _scheme,
-        address _issuer,
-        bytes memory _signature,
-        bytes memory _data,
-        string memory _uri
-    ) public delegatedOnly onlyClaimKey returns (bytes32 claimRequestId) {
-        // 1. Validate claim if issuer is not self
-        require(
-            IClaimIssuer(_issuer).isClaimValid(IIdentity(address(this)), _topic, _signature, _data),
-            Errors.InvalidClaim()
-        );
-
-        ClaimStorage storage cs = _getClaimStorage();
-        bytes32 claimId = keccak256(abi.encode(_issuer, _topic));
-        cs.claims[claimId] = Structs.Claim({
-            topic: _topic, scheme: _scheme, issuer: _issuer, signature: _signature, data: _data, uri: _uri
-        });
-
-        // 2. New claim or update existing
-        if (cs.claimsByTopic[_topic].add(claimId)) {
-            emit ClaimAdded(claimId, _topic, _scheme, _issuer, _signature, _data, _uri);
-        } else {
-            emit ClaimChanged(claimId, _topic, _scheme, _issuer, _signature, _data, _uri);
-        }
-
-        return claimId;
-    }
-
-    /**
-     * @dev See {IERC735-removeClaim}.
-     * @notice Removes a claim from this identity.
-     *
-     * Uses EnumerableSet for O(1) add/remove/contains operations.
-     *
-     * Access control: Only CLAIM_SIGNER keys can remove claims.
-     *
-     * @param _claimId The unique identifier of the claim (keccak256(abi.encode(issuer, topic)))
-     * @return success True if the claim was successfully removed
-     *
-     */
-    function removeClaim(bytes32 _claimId)
-        public
-        override(IERC735)
-        delegatedOnly
-        onlyClaimSignerKey
-        returns (bool success)
-    {
-        ClaimStorage storage cs = _getClaimStorage();
-
-        // 1. Validate claim exists and get topic
-        Structs.Claim storage c = cs.claims[_claimId];
-        uint256 topic = c.topic;
-        require(topic != 0, Errors.ClaimNotRegistered(_claimId));
-
-        // 2. Remove claim from topic set
-        cs.claimsByTopic[topic].remove(_claimId);
-
-        // 3. Emit event with claim details before deletion
-        emit ClaimRemoved(_claimId, topic, c.scheme, c.issuer, c.signature, c.data, c.uri);
-
-        // 4. Clean up the claim data
-        delete cs.claims[_claimId];
-
-        return true;
-    }
-
-    /**
-     * @dev See {IERC735-getClaim}.
-     * @notice Implementation of the getClaim function from the ERC-735 standard.
-     *
-     * @param _claimId The identity of the claim i.e. keccak256(abi.encode(_issuer, _topic))
-     *
-     * @return topic Returns all the parameters of the claim for the
-     * specified _claimId (topic, scheme, signature, issuer, data, uri) .
-     * @return scheme Returns all the parameters of the claim for the
-     * specified _claimId (topic, scheme, signature, issuer, data, uri) .
-     * @return issuer Returns all the parameters of the claim for the
-     * specified _claimId (topic, scheme, signature, issuer, data, uri) .
-     * @return signature Returns all the parameters of the claim for the
-     * specified _claimId (topic, scheme, signature, issuer, data, uri) .
-     * @return data Returns all the parameters of the claim for the
-     * specified _claimId (topic, scheme, signature, issuer, data, uri) .
-     * @return uri Returns all the parameters of the claim for the
-     * specified _claimId (topic, scheme, signature, issuer, data, uri) .
-     */
-    function getClaim(bytes32 _claimId)
-        public
-        view
-        override(IERC735)
-        returns (
-            uint256 topic,
-            uint256 scheme,
-            address issuer,
-            bytes memory signature,
-            bytes memory data,
-            string memory uri
-        )
-    {
-        Structs.Claim storage claim = _getClaimStorage().claims[_claimId];
-        return (claim.topic, claim.scheme, claim.issuer, claim.signature, claim.data, claim.uri);
-    }
-
-    /**
-     * @dev Checks if a claim is valid. Claims issued by the identity are self-attested claims. They do not have a
-     * built-in revocation mechanism and are considered valid as long as their signature is valid and they are still
-     * stored by the identity contract.
-     * @param _identity the identity contract related to the claim
-     * @param claimTopic the claim topic of the claim
-     * @param sig the signature of the claim
-     * @param data the data field of the claim
-     * @return claimValid true if the claim is valid, false otherwise
-     */
-    function isClaimValid(IIdentity _identity, uint256 claimTopic, bytes memory sig, bytes memory data)
-        public
-        view
-        virtual
-        override
-        returns (bool claimValid)
-    {
-        // Step 1: Create the data hash that was signed
-        bytes32 dataHash = keccak256(abi.encode(_identity, claimTopic, data));
-
-        // Step 2: Add Ethereum signature prefix for EIP-191 compliance
-        bytes32 prefixedHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", dataHash));
-
-        // Step 3: Recover the signer's address from the signature using OpenZeppelin's ECDSA
-        (address recovered, ECDSA.RecoverError error,) = ECDSA.tryRecover(prefixedHash, sig);
-
-        // If recovery failed, return false
-        if (error != ECDSA.RecoverError.NoError) {
-            return false;
-        }
-
-        // Step 4: Hash the recovered address for key lookup
-        bytes32 hashedAddr = keccak256(abi.encode(recovered));
-
-        // Step 5: Check if the recovered address has CLAIM_SIGNER purpose (CLAIM_ADDER cannot sign claims)
-        return keyHasPurpose(hashedAddr, KeyPurposes.CLAIM_SIGNER);
-    }
-
-    /**
-     * @notice Initializer internal function for the Identity contract.
-     *
-     * @dev This function sets up the initial management key and initializes all
-     * storage mappings including the new index mappings for efficient key management.
-     * @param initialManagementKey The ethereum address to be set as the management key of the ONCHAINID.
+     * @notice Internal initializer. Sets up the initial MANAGEMENT key, marks the KeyManager
+     *         storage as initialized, and flips the delegated-only guard on so direct calls to
+     *         the implementation contract are rejected.
      */
     // solhint-disable-next-line func-name-mixedcase
     function __Identity_init(address initialManagementKey) internal {
@@ -329,18 +111,14 @@ contract Identity is Initializable, IIdentity, KeyManager, MulticallUpgradeable 
         ks.initialized = true;
         ks.canInteract = true;
 
-        _setupInitialManagementKey(initialManagementKey);
+        bytes memory signerData = abi.encodePacked(initialManagementKey);
+        _addKeyWithData(keccak256(signerData), KeyPurposes.MANAGEMENT, KeyTypes.ECDSA, signerData, "");
     }
 
-    // ========= Internal (non-view/pure) =========
-
-    /**
-     * @dev Returns the claim storage struct at the specified ERC-7201 slot
-     * @return s The ClaimStorage struct pointer for the claim management slot
-     */
-    function _getClaimStorage() internal pure returns (ClaimStorage storage s) {
-        bytes32 slot = _CLAIM_STORAGE_SLOT;
-        assembly {
+    /// @dev Returns the identity metadata storage at its ERC-7201 slot.
+    function _getIdentityMetadata() internal pure returns (IdentityMetadata storage s) {
+        bytes32 slot = _IDENTITY_METADATA_SLOT;
+        assembly ("memory-safe") {
             s.slot := slot
         }
     }

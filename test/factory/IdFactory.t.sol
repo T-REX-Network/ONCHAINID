@@ -4,54 +4,121 @@ pragma solidity ^0.8.27;
 import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 import { Constants } from "../utils/Constants.sol";
+import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
+import { Errors as OZErrors } from "@openzeppelin/contracts/utils/Errors.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IdFactory } from "contracts/factory/IdFactory.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
+import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { ImplementationAuthority } from "contracts/proxy/ImplementationAuthority.sol";
+import { Structs } from "contracts/storage/Structs.sol";
 import { RevertingIdentity } from "test/mocks/RevertingIdentity.sol";
 
 contract IdFactoryTest is OnchainIDSetup {
+
+    // ---- helpers ----
+
+    function _makeECDSAKey(address addr, uint256 purpose) internal pure returns (Structs.KeyParam memory) {
+        // clientData is empty for ECDSA keys — only needed for non-ECDSA keys (e.g. WebAuthn credentialId)
+        return Structs.KeyParam({
+            keyHash: keccak256(abi.encodePacked(addr)),
+            purpose: purpose,
+            keyType: KeyTypes.ECDSA,
+            signerData: abi.encodePacked(addr),
+            clientData: ""
+        });
+    }
+
+    function _makeSingleMgmtKeys(address addr) internal pure returns (Structs.KeyParam[] memory keys) {
+        keys = new Structs.KeyParam[](1);
+        keys[0] = _makeECDSAKey(addr, KeyPurposes.MANAGEMENT);
+    }
 
     // ============ createIdentity ============
 
     function test_revertBecauseAuthorityIsZeroAddress() public {
         vm.expectRevert(Errors.ZeroAddress.selector);
-        new IdFactory(address(0), address(this));
+        new IdFactory(address(0), deployer);
     }
 
     function test_revertBecauseSenderNotAllowedToCreateIdentities() public {
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(Errors.OwnableUnauthorizedAccount.selector, alice));
-        onchainidSetup.idFactory.createIdentity(address(0), "salt1", IdentityTypes.INDIVIDUAL, new address[](0));
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
+        onchainidSetup.idFactory
+            .createIdentity(
+                address(0),
+                IdentityTypes.INDIVIDUAL,
+                "salt1",
+                _makeSingleMgmtKeys(address(0)),
+                new Structs.ModuleInstall[](0)
+            );
     }
 
     function test_revertBecauseWalletCannotBeZeroAddress() public {
         vm.prank(deployer);
         vm.expectRevert(Errors.ZeroAddress.selector);
-        onchainidSetup.idFactory.createIdentity(address(0), "salt1", IdentityTypes.INDIVIDUAL, new address[](0));
+        onchainidSetup.idFactory
+            .createIdentity(
+                address(0),
+                IdentityTypes.INDIVIDUAL,
+                "salt1",
+                _makeSingleMgmtKeys(address(0)),
+                new Structs.ModuleInstall[](0)
+            );
     }
 
     function test_revertBecauseSaltCannotBeEmpty() public {
         vm.prank(deployer);
         vm.expectRevert(Errors.EmptyString.selector);
-        onchainidSetup.idFactory.createIdentity(david, "", IdentityTypes.INDIVIDUAL, new address[](0));
+        onchainidSetup.idFactory
+            .createIdentity(
+                david, IdentityTypes.INDIVIDUAL, "", _makeSingleMgmtKeys(david), new Structs.ModuleInstall[](0)
+            );
     }
 
     function test_revertBecauseSaltAlreadyUsed() public {
         vm.prank(deployer);
-        onchainidSetup.idFactory.createIdentity(carol, "saltUsed", IdentityTypes.INDIVIDUAL, new address[](0));
+        onchainidSetup.idFactory
+            .createIdentity(
+                carol, IdentityTypes.INDIVIDUAL, "saltUsed", _makeSingleMgmtKeys(carol), new Structs.ModuleInstall[](0)
+            );
 
         vm.prank(deployer);
-        vm.expectRevert(abi.encodeWithSelector(Errors.SaltTaken.selector, "OIDsaltUsed"));
-        onchainidSetup.idFactory.createIdentity(david, "saltUsed", IdentityTypes.INDIVIDUAL, new address[](0));
+        // Salt-collision now bubbles up from Create3 as FailedDeployment().
+        vm.expectRevert(OZErrors.FailedDeployment.selector);
+        onchainidSetup.idFactory
+            .createIdentity(
+                david, IdentityTypes.INDIVIDUAL, "saltUsed", _makeSingleMgmtKeys(david), new Structs.ModuleInstall[](0)
+            );
     }
 
     function test_revertBecauseWalletAlreadyLinked() public {
         vm.prank(deployer);
         vm.expectRevert(abi.encodeWithSelector(Errors.WalletAlreadyLinkedToIdentity.selector, alice));
-        onchainidSetup.idFactory.createIdentity(alice, "newSalt", IdentityTypes.INDIVIDUAL, new address[](0));
+        onchainidSetup.idFactory
+            .createIdentity(
+                alice, IdentityTypes.INDIVIDUAL, "newSalt", _makeSingleMgmtKeys(alice), new Structs.ModuleInstall[](0)
+            );
+    }
+
+    function test_revertBecauseEmptyKeys() public {
+        Structs.KeyParam[] memory emptyKeys = new Structs.KeyParam[](0);
+        vm.prank(deployer);
+        vm.expectRevert(Errors.EmptyListOfKeys.selector);
+        onchainidSetup.idFactory
+            .createIdentity(david, IdentityTypes.INDIVIDUAL, "salt1", emptyKeys, new Structs.ModuleInstall[](0));
+    }
+
+    function test_revertBecauseNoManagementKey() public {
+        // Only an ACTION key, no MANAGEMENT — bootstrap removal at the end of _setupIdentity reverts.
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
+        keys[0] = _makeECDSAKey(david, KeyPurposes.ACTION);
+        vm.prank(deployer);
+        vm.expectRevert(Errors.CannotRemoveLastManagementKey.selector);
+        onchainidSetup.idFactory
+            .createIdentity(david, IdentityTypes.INDIVIDUAL, "salt1", keys, new Structs.ModuleInstall[](0));
     }
 
     // ============ linkWallet ============
@@ -171,7 +238,7 @@ contract IdFactoryTest is OnchainIDSetup {
         onchainidSetup.idFactory.linkWallet(david);
 
         // wallets = [alice, carol, david]
-        // Unlink carol (middle element) — triggers swap with david
+        // Unlink carol (middle element) -- triggers swap with david
         vm.prank(alice);
         onchainidSetup.idFactory.unlinkWallet(carol);
 
@@ -181,84 +248,63 @@ contract IdFactoryTest is OnchainIDSetup {
         assertEq(wallets[1], david, "Second wallet should be david (swapped)");
     }
 
-    // ============ createIdentityWithManagementKeys ============
+    // ============ createIdentity with management keys (non-wallet) ============
 
-    function test_createIdentityWithManagementKeys_revertZeroAddress() public {
-        bytes32[] memory keys = new bytes32[](1);
-        keys[0] = ClaimSignerHelper.addressToKey(alice);
+    function test_createIdentity_withNonWalletManagementKeys_revertZeroAddress() public {
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
+        keys[0] = _makeECDSAKey(alice, KeyPurposes.MANAGEMENT);
 
         vm.prank(deployer);
         vm.expectRevert(Errors.ZeroAddress.selector);
         onchainidSetup.idFactory
-            .createIdentityWithManagementKeys(address(0), "salt1", keys, IdentityTypes.INDIVIDUAL, new address[](0));
+            .createIdentity(address(0), IdentityTypes.INDIVIDUAL, "salt1", keys, new Structs.ModuleInstall[](0));
     }
 
-    function test_createIdentityWithManagementKeys_revertEmptySalt() public {
-        bytes32[] memory keys = new bytes32[](1);
-        keys[0] = ClaimSignerHelper.addressToKey(alice);
+    function test_createIdentity_withNonWalletManagementKeys_revertEmptySalt() public {
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
+        keys[0] = _makeECDSAKey(alice, KeyPurposes.MANAGEMENT);
 
         vm.prank(deployer);
         vm.expectRevert(Errors.EmptyString.selector);
         onchainidSetup.idFactory
-            .createIdentityWithManagementKeys(david, "", keys, IdentityTypes.INDIVIDUAL, new address[](0));
+            .createIdentity(david, IdentityTypes.INDIVIDUAL, "", keys, new Structs.ModuleInstall[](0));
     }
 
-    function test_createIdentityWithManagementKeys_revertSaltTaken() public {
-        bytes32[] memory keys = new bytes32[](1);
-        keys[0] = ClaimSignerHelper.addressToKey(alice);
+    function test_createIdentity_withNonWalletManagementKeys_revertSaltTaken() public {
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
+        keys[0] = _makeECDSAKey(alice, KeyPurposes.MANAGEMENT);
 
         vm.prank(deployer);
         onchainidSetup.idFactory
-            .createIdentityWithManagementKeys(david, "sharedSalt", keys, IdentityTypes.INDIVIDUAL, new address[](0));
+            .createIdentity(david, IdentityTypes.INDIVIDUAL, "sharedSalt", keys, new Structs.ModuleInstall[](0));
 
         address anotherWallet = makeAddr("anotherWallet");
         vm.prank(deployer);
-        vm.expectRevert(abi.encodeWithSelector(Errors.SaltTaken.selector, "OIDsharedSalt"));
+        // Salt-collision now bubbles up from Create3 as FailedDeployment().
+        vm.expectRevert(OZErrors.FailedDeployment.selector);
         onchainidSetup.idFactory
-            .createIdentityWithManagementKeys(
-                anotherWallet, "sharedSalt", keys, IdentityTypes.INDIVIDUAL, new address[](0)
-            );
+            .createIdentity(anotherWallet, IdentityTypes.INDIVIDUAL, "sharedSalt", keys, new Structs.ModuleInstall[](0));
     }
 
-    function test_createIdentityWithManagementKeys_revertWalletAlreadyLinked() public {
-        bytes32[] memory keys = new bytes32[](1);
-        keys[0] = ClaimSignerHelper.addressToKey(carol);
+    function test_createIdentity_withNonWalletManagementKeys_revertWalletAlreadyLinked() public {
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
+        keys[0] = _makeECDSAKey(carol, KeyPurposes.MANAGEMENT);
 
         vm.prank(deployer);
         vm.expectRevert(abi.encodeWithSelector(Errors.WalletAlreadyLinkedToIdentity.selector, alice));
         onchainidSetup.idFactory
-            .createIdentityWithManagementKeys(alice, "uniqueSalt", keys, IdentityTypes.INDIVIDUAL, new address[](0));
+            .createIdentity(alice, IdentityTypes.INDIVIDUAL, "uniqueSalt", keys, new Structs.ModuleInstall[](0));
     }
 
-    function test_createIdentityWithManagementKeys_revertNoKeys() public {
-        bytes32[] memory keys = new bytes32[](0);
-
-        vm.prank(deployer);
-        vm.expectRevert(Errors.EmptyListOfKeys.selector);
-        onchainidSetup.idFactory
-            .createIdentityWithManagementKeys(david, "salt1", keys, IdentityTypes.INDIVIDUAL, new address[](0));
-    }
-
-    function test_createIdentityWithManagementKeys_revertWalletInKeys() public {
-        bytes32[] memory keys = new bytes32[](2);
-        keys[0] = ClaimSignerHelper.addressToKey(alice);
-        keys[1] = ClaimSignerHelper.addressToKey(david);
-
-        vm.prank(deployer);
-        vm.expectRevert(abi.encodeWithSelector(Errors.WalletAlsoListedInManagementKeys.selector, david));
-        onchainidSetup.idFactory
-            .createIdentityWithManagementKeys(david, "salt1", keys, IdentityTypes.INDIVIDUAL, new address[](0));
-    }
-
-    function test_createIdentityWithManagementKeys_shouldDeployAndSetKeys() public {
-        bytes32[] memory keys = new bytes32[](1);
-        keys[0] = ClaimSignerHelper.addressToKey(alice);
+    function test_createIdentity_withNonWalletManagementKeys_shouldDeployAndSetKeys() public {
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
+        keys[0] = _makeECDSAKey(alice, KeyPurposes.MANAGEMENT);
 
         vm.prank(deployer);
         address identityAddr = onchainidSetup.idFactory
-            .createIdentityWithManagementKeys(david, "salt1", keys, IdentityTypes.INDIVIDUAL, new address[](0));
+            .createIdentity(david, IdentityTypes.INDIVIDUAL, "salt1", keys, new Structs.ModuleInstall[](0));
 
-        Identity identity = Identity(identityAddr);
+        Identity identity = Identity(payable(identityAddr));
 
         // Raw abi.encode (not hashed) should return false
         assertFalse(
@@ -277,15 +323,17 @@ contract IdFactoryTest is OnchainIDSetup {
     function test_createIdentity_withClaimAdders_shouldSetClaimAdderKeys() public {
         address claimAdder1 = makeAddr("claimAdder1");
         address claimAdder2 = makeAddr("claimAdder2");
-        address[] memory claimAdders = new address[](2);
-        claimAdders[0] = claimAdder1;
-        claimAdders[1] = claimAdder2;
+
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](3);
+        keys[0] = _makeECDSAKey(david, KeyPurposes.MANAGEMENT);
+        keys[1] = _makeECDSAKey(claimAdder1, KeyPurposes.CLAIM_ADDER);
+        keys[2] = _makeECDSAKey(claimAdder2, KeyPurposes.CLAIM_ADDER);
 
         vm.prank(deployer);
-        address identityAddr =
-            onchainidSetup.idFactory.createIdentity(david, "saltWithAdders", IdentityTypes.INDIVIDUAL, claimAdders);
+        address identityAddr = onchainidSetup.idFactory
+            .createIdentity(david, IdentityTypes.INDIVIDUAL, "saltWithAdders", keys, new Structs.ModuleInstall[](0));
 
-        Identity identity = Identity(identityAddr);
+        Identity identity = Identity(payable(identityAddr));
 
         // Verify CLAIM_ADDER keys are set
         assertTrue(
@@ -304,20 +352,19 @@ contract IdFactoryTest is OnchainIDSetup {
         );
     }
 
-    /// @notice createIdentityWithManagementKeys with claimAdders should set CLAIM_ADDER keys
-    function test_createIdentityWithManagementKeys_withClaimAdders_shouldSetClaimAdderKeys() public {
-        bytes32[] memory keys = new bytes32[](1);
-        keys[0] = ClaimSignerHelper.addressToKey(alice);
-
+    /// @notice createIdentity with management keys and claimAdders should set CLAIM_ADDER keys
+    function test_createIdentity_withMgmtKeysAndClaimAdders_shouldSetClaimAdderKeys() public {
         address claimAdder = makeAddr("claimAdder");
-        address[] memory claimAdders = new address[](1);
-        claimAdders[0] = claimAdder;
+
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](2);
+        keys[0] = _makeECDSAKey(alice, KeyPurposes.MANAGEMENT);
+        keys[1] = _makeECDSAKey(claimAdder, KeyPurposes.CLAIM_ADDER);
 
         vm.prank(deployer);
         address identityAddr = onchainidSetup.idFactory
-            .createIdentityWithManagementKeys(david, "saltMgmtAdders", keys, IdentityTypes.INDIVIDUAL, claimAdders);
+            .createIdentity(david, IdentityTypes.INDIVIDUAL, "saltMgmtAdders", keys, new Structs.ModuleInstall[](0));
 
-        Identity identity = Identity(identityAddr);
+        Identity identity = Identity(payable(identityAddr));
 
         // Verify CLAIM_ADDER key is set
         assertTrue(
@@ -336,9 +383,15 @@ contract IdFactoryTest is OnchainIDSetup {
     function test_createIdentity_factoryKeyRemoved() public {
         vm.prank(deployer);
         address identityAddr = onchainidSetup.idFactory
-        .createIdentity(david, "saltFactoryKey", IdentityTypes.INDIVIDUAL, new address[](0));
+            .createIdentity(
+                david,
+                IdentityTypes.INDIVIDUAL,
+                "saltFactoryKey",
+                _makeSingleMgmtKeys(david),
+                new Structs.ModuleInstall[](0)
+            );
 
-        Identity identity = Identity(identityAddr);
+        Identity identity = Identity(payable(identityAddr));
 
         // Factory should NOT have management key
         assertFalse(
@@ -355,9 +408,15 @@ contract IdFactoryTest is OnchainIDSetup {
     function test_createIdentity_smartContractType_shouldSetType() public {
         vm.prank(deployer);
         address identityAddr = onchainidSetup.idFactory
-            .createIdentity(david, "saltSmartContract", IdentityTypes.SMART_CONTRACT, new address[](0));
+            .createIdentity(
+                david,
+                IdentityTypes.SMART_CONTRACT,
+                "saltSmartContract",
+                _makeSingleMgmtKeys(david),
+                new Structs.ModuleInstall[](0)
+            );
 
-        Identity identity = Identity(identityAddr);
+        Identity identity = Identity(payable(identityAddr));
         assertEq(identity.getIdentityType(), IdentityTypes.SMART_CONTRACT, "Identity type should be SMART_CONTRACT");
     }
 
@@ -365,27 +424,57 @@ contract IdFactoryTest is OnchainIDSetup {
     function test_createIdentity_publicAuthorityType_shouldSetType() public {
         vm.prank(deployer);
         address identityAddr = onchainidSetup.idFactory
-            .createIdentity(david, "saltPublicAuth", IdentityTypes.PUBLIC_AUTHORITY, new address[](0));
+            .createIdentity(
+                david,
+                IdentityTypes.PUBLIC_AUTHORITY,
+                "saltPublicAuth",
+                _makeSingleMgmtKeys(david),
+                new Structs.ModuleInstall[](0)
+            );
 
-        Identity identity = Identity(identityAddr);
+        Identity identity = Identity(payable(identityAddr));
         assertEq(identity.getIdentityType(), IdentityTypes.PUBLIC_AUTHORITY, "Identity type should be PUBLIC_AUTHORITY");
     }
 
-    // ============ _deploy CREATE3 failure ============
+    // ============ createIdentity with module installation ============
 
-    /// @notice CREATE3 deployment failure bubbles up when the IdentityProxy constructor reverts
-    function test_createIdentity_revertWhenDeploymentFails() public {
+    /// @notice createIdentity with modules should install the ERC-7579 validator module
+    function test_createIdentity_withModules_shouldInstallValidator() public {
+        Structs.ModuleInstall[] memory modules = new Structs.ModuleInstall[](1);
+        modules[0] = Structs.ModuleInstall({
+            moduleType: 1, // MODULE_TYPE_VALIDATOR
+            module: address(onchainidSetup.signatureValidator),
+            initData: "",
+            purpose: 0
+        });
+
+        vm.prank(deployer);
+        address identityAddr = onchainidSetup.idFactory
+            .createIdentity(david, IdentityTypes.INDIVIDUAL, "saltWithModules", _makeSingleMgmtKeys(david), modules);
+
+        Identity identity = Identity(payable(identityAddr));
+        assertTrue(
+            identity.isModuleInstalled(1, address(onchainidSetup.signatureValidator), ""),
+            "ERC7579Signature validator should be installed"
+        );
+    }
+
+    // ============ _deploy CREATE2 failure ============
+
+    /// @notice CREATE2 failure triggers assembly revert when proxy constructor reverts
+    function test_createIdentity_revertWhenCreate2Fails() public {
         // Deploy a factory with a reverting implementation
         RevertingIdentity revertingImpl = new RevertingIdentity();
-        ImplementationAuthority badAuthority = new ImplementationAuthority(address(revertingImpl), address(this));
-        IdFactory badFactory = new IdFactory(address(badAuthority), address(this));
+        ImplementationAuthority badAuthority = new ImplementationAuthority(address(revertingImpl), deployer);
+        IdFactory badFactory = new IdFactory(address(badAuthority), deployer);
 
-        // createIdentity uses CREATE3: a CREATE2 proxy is deployed first, then the proxy
-        // performs CREATE of IdentityProxy. IdentityProxy's constructor delegatecalls
-        // initialize() on RevertingIdentity which reverts, so the inner CREATE fails and
-        // Create3.deploy bubbles the revert.
+        // createIdentity will try CREATE2 with IdentityProxy whose constructor
+        // delegatecalls initialize() on RevertingIdentity, which reverts,
+        // causing CREATE2 to return address(0) and triggering assembly revert
         vm.expectRevert();
-        badFactory.createIdentity(david, "salt1", IdentityTypes.INDIVIDUAL, new address[](0));
+        badFactory.createIdentity(
+            david, IdentityTypes.INDIVIDUAL, "salt1", _makeSingleMgmtKeys(david), new Structs.ModuleInstall[](0)
+        );
     }
 
 }

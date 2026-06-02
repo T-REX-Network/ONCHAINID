@@ -1,10 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
+import { IIdentity } from "contracts/interface/IIdentity.sol";
 import { Vm } from "forge-std/Vm.sol";
 
-/// @notice Helper library for building and signing claims in tests
-/// @dev Centralizes the EIP-191 signature logic used across many test files
+/// @notice Helper library for building and signing claims in tests.
+/// @dev    Wire format matches {ClaimsModule._isClaimValid}:
+///
+///             abi.encode(bytes signer, bytes rawSig)
+///
+///         where `signer` follows ERC-7913 (`len==20` for EOA / ERC-1271 wallet;
+///         `len>20` for `verifier(20) || key(rest)`). There is no validator-module
+///         prefix — `ClaimsModule` goes straight through OZ `SignatureChecker`.
 library ClaimSignerHelper {
 
     struct Claim {
@@ -20,42 +27,49 @@ library ClaimSignerHelper {
 
     Vm internal constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
-    /// @notice Computes claim ID from issuer and topic
+    /// @notice Computes claim ID from issuer and topic.
     function computeClaimId(address issuer, uint256 topic) internal pure returns (bytes32) {
         return keccak256(abi.encode(issuer, topic));
     }
 
-    /// @notice Computes the key hash for an address (used in addKey / keyHasPurpose)
+    /// @notice Computes the key hash for an EOA signer.
     function addressToKey(address addr) internal pure returns (bytes32) {
-        return keccak256(abi.encode(addr));
+        return keccak256(abi.encodePacked(addr));
     }
 
-    /// @notice Signs a claim using EIP-191 format matching the Identity contract
-    /// @param signerPk The private key of the signer
-    /// @param identity The identity address the claim is for
-    /// @param topic The claim topic
-    /// @param data The claim data
-    /// @return signature The EIP-191 signature (r, s, v packed)
-    function signClaim(uint256 signerPk, address identity, uint256 topic, bytes memory data)
-        internal
-        pure
-        returns (bytes memory)
-    {
-        bytes32 dataHash = keccak256(abi.encode(identity, topic, data));
-        bytes32 ethSignedHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", dataHash));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerPk, ethSignedHash);
-        return abi.encodePacked(r, s, v);
+    /// @notice Signs a claim using the issuer contract's EIP-712 domain.
+    /// @param signerPk The private key of the signer.
+    /// @param signerAddr The address of the signer (used as the ERC-7913 signer bytes).
+    /// @param issuerContract The issuer contract address (provides the EIP-712 domain).
+    /// @param identity The identity address the claim is for.
+    /// @param topic The claim topic.
+    /// @param data The claim data.
+    /// @return signature `abi.encode(bytes signer, bytes rawSig)` where `signer == abi.encodePacked(signerAddr)`.
+    function signClaim(
+        uint256 signerPk,
+        address signerAddr,
+        address issuerContract,
+        address identity,
+        uint256 topic,
+        bytes memory data
+    ) internal view returns (bytes memory) {
+        bytes32 digest = IIdentity(issuerContract).getClaimHash(identity, topic, data);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerPk, digest);
+        bytes memory rawSig = abi.encodePacked(r, s, v);
+        bytes memory signer = abi.encodePacked(signerAddr);
+        return abi.encode(signer, rawSig);
     }
 
-    /// @notice Builds a complete Claim struct with computed id and signature
+    /// @notice Builds a complete Claim struct with computed id and EIP-712 signature.
     function buildClaim(
         uint256 signerPk,
+        address signerAddr,
         address identityAddr,
         address issuerAddr,
         uint256 topic,
         bytes memory data,
         string memory uri
-    ) internal pure returns (Claim memory claim) {
+    ) internal view returns (Claim memory claim) {
         claim.identity = identityAddr;
         claim.issuer = issuerAddr;
         claim.topic = topic;
@@ -63,7 +77,7 @@ library ClaimSignerHelper {
         claim.data = data;
         claim.uri = uri;
         claim.id = computeClaimId(issuerAddr, topic);
-        claim.signature = signClaim(signerPk, identityAddr, topic, data);
+        claim.signature = signClaim(signerPk, signerAddr, issuerAddr, identityAddr, topic, data);
     }
 
 }

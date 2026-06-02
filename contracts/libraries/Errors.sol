@@ -33,12 +33,6 @@ library Errors {
     /// @notice Reverts if the only linked wallet tries to unlink
     error OnlyLinkedWalletCanUnlink();
 
-    /// @notice Reverts if the account is not authorized to call the function
-    error OwnableUnauthorizedAccount(address account); // TODO: OZ
-
-    /// @notice Reverts if the salt is taken
-    error SaltTaken(string salt);
-
     /// @notice Reverts if the token is already linked
     error TokenAlreadyLinked(address token);
 
@@ -50,6 +44,9 @@ library Errors {
 
     /// @notice Reverts if the wallet is not linked to an identity
     error WalletNotLinkedToIdentity(address wallet);
+
+    /// @notice Reverts if no key with MANAGEMENT purpose is provided
+    error NoManagementKeyInKeys();
 
     /* ----- Gateway ----- */
 
@@ -142,6 +139,46 @@ library Errors {
 
     /// @notice The claim is invalid.
     error InvalidClaim();
+
+    /* ----- SmartAccount ----- */
+
+    /// @notice The signature is invalid.
+    error InvalidSignature();
+
+    /// @notice The signer data is invalid or too short.
+    error InvalidSignerData();
+
+    /// @notice The last MANAGEMENT key cannot be removed (would render the identity unrecoverable).
+    error CannotRemoveLastManagementKey();
+
+    /// @notice Reverts when a ClaimIssuer attempts to revoke a claim that was not issued by itself.
+    error NotOwnIssuance();
+
+    /// @notice The validator module specified in a UserOp/signature is not installed.
+    error ValidatorModuleNotInstalled(address module);
+
+    /// @notice The signer key does not have the required purpose for the requested execution.
+    error PurposeNotAuthorizedForCall(bytes32 keyHash, address target);
+
+    /// @notice The execution mode requested is not supported by the account's purpose check.
+    error UnsupportedExecutionMode(bytes32 mode);
+
+    /// @notice An installed executor or fallback handler tried to dispatch a call whose target
+    ///         is not authorized by the purpose registered for that module at install time.
+    ///         Also raised at install time if the module's initData does not begin with a
+    ///         non-zero `uint256 purpose`.
+    error ExecutorPurposeNotAuthorized();
+
+    /// @notice `KeyApprovalModule.canAutoApprove` was queried for an `account` that does not
+    ///         match `msg.sender`. The module only answers about the calling identity's own
+    ///         authorization table; cross-identity queries are rejected.
+    error UnauthorizedPolicyQuery();
+
+    /// @notice ETH push from `KeyApprovalModule` back to the identity failed.
+    error ReturnToAccountFailed();
+
+    /// @notice `addKey` `_type` doesn't match the existing key's stored type.
+    error KeyTypeMismatch(bytes32 key, uint256 storedType, uint256 providedType);
 
     /* ----- IdentityUtilities ----- */
 

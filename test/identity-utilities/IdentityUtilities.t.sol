@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
-import { ClaimIssuerHelper } from "../helpers/ClaimIssuerHelper.sol";
 import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { IdentityHelper } from "../helpers/IdentityHelper.sol";
 import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
-import { ClaimIssuer } from "contracts/ClaimIssuer.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IdentityUtilities } from "contracts/IdentityUtilities.sol";
+import { IIdentity } from "contracts/interface/IIdentity.sol";
 import { IIdentityUtilities } from "contracts/interface/IIdentityUtilities.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
@@ -873,19 +872,20 @@ contract IdentityUtilitiesTest is Test {
         );
         vm.stopPrank();
 
-        // Deploy ClaimIssuer and Identity
+        // Deploy issuer identity and subject identity. The issuer is just an Identity with the
+        // ClaimsModule installed; the proxy helper installs it automatically.
         (address claimIssuerOwner, uint256 claimIssuerOwnerPk) = makeAddrAndKey("ciOwner");
         address identityOwner = makeAddr("idOwner");
         (address claimSigner,) = makeAddrAndKey("claimSigner");
 
-        ClaimIssuer ci = ClaimIssuerHelper.deployWithProxy(claimIssuerOwner);
-        Identity identity = IdentityHelper.deployIdentityWithProxy(identityOwner);
+        (Identity ci,) = IdentityHelper.deployIdentityWithProxy(claimIssuerOwner);
+        (Identity identity,) = IdentityHelper.deployIdentityWithProxy(identityOwner);
 
         // Add CLAIM_SIGNER key to claim issuer for the claimIssuerOwner
         vm.prank(claimIssuerOwner);
         ci.addKey(ClaimSignerHelper.addressToKey(claimIssuerOwner), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
 
-        // Add CLAIM_SIGNER key to identity for claimSigner
+        // Add CLAIM_SIGNER key to identity for claimSigner (uses addressToKey for modifier-based access)
         vm.prank(identityOwner);
         identity.addKey(ClaimSignerHelper.addressToKey(claimSigner), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
 
@@ -893,13 +893,17 @@ contract IdentityUtilitiesTest is Test {
         bytes memory claimData1 = abi.encode("verified");
         bytes memory claimData2 = abi.encode(uint8(2));
 
-        bytes memory sig1 = ClaimSignerHelper.signClaim(claimIssuerOwnerPk, address(identity), 1001, claimData1);
-        bytes memory sig2 = ClaimSignerHelper.signClaim(claimIssuerOwnerPk, address(identity), 1002, claimData2);
+        bytes memory sig1 = ClaimSignerHelper.signClaim(
+            claimIssuerOwnerPk, claimIssuerOwner, address(ci), address(identity), 1001, claimData1
+        );
+        bytes memory sig2 = ClaimSignerHelper.signClaim(
+            claimIssuerOwnerPk, claimIssuerOwner, address(ci), address(identity), 1002, claimData2
+        );
 
         // Add claims to identity via claimSigner (has CLAIM_SIGNER key)
         vm.startPrank(claimSigner);
-        identity.addClaim(1001, 1, address(ci), sig1, claimData1, "https://example.com/kyc");
-        identity.addClaim(1002, 1, address(ci), sig2, claimData2, "https://example.com/aml");
+        IIdentity(address(identity)).addClaim(1001, 1, address(ci), sig1, claimData1, "https://example.com/kyc");
+        IIdentity(address(identity)).addClaim(1002, 1, address(ci), sig2, claimData2, "https://example.com/aml");
         vm.stopPrank();
 
         // Query
@@ -942,19 +946,21 @@ contract IdentityUtilitiesTest is Test {
         _addDefaultTopic(3004, "Test Topic", _singleStringArray("name"), _singleStringArray("string"));
 
         // Deploy Identity
-        Identity identity = IdentityHelper.deployIdentityWithProxy(admin);
+        (Identity identity,) = IdentityHelper.deployIdentityWithProxy(admin);
 
-        // Add CLAIM_SIGNER key for admin on the identity
+        // Add CLAIM_SIGNER key for admin on the identity (unified key hash)
         vm.prank(admin);
         identity.addKey(ClaimSignerHelper.addressToKey(admin), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
 
         // Sign claim properly for self-attested claim
         bytes memory claimData = hex"";
-        bytes memory signature = ClaimSignerHelper.signClaim(adminPk, address(identity), 3004, claimData);
+        bytes memory signature =
+            ClaimSignerHelper.signClaim(adminPk, admin, address(identity), address(identity), 3004, claimData);
 
         // Add a self-attested claim with valid signature
         vm.prank(admin);
-        identity.addClaim(3004, 1, address(identity), signature, claimData, "https://example.com/claim");
+        IIdentity(address(identity))
+            .addClaim(3004, 1, address(identity), signature, claimData, "https://example.com/claim");
 
         // Query
         uint256[] memory topicIds = new uint256[](1);
@@ -971,7 +977,7 @@ contract IdentityUtilitiesTest is Test {
 
     function test_isClaimValid_zeroAddressIssuer() public {
         TestIdentityUtilities testUtil = new TestIdentityUtilities();
-        Identity identity = IdentityHelper.deployIdentityWithProxy(admin);
+        (Identity identity,) = IdentityHelper.deployIdentityWithProxy(admin);
 
         bool result = testUtil.checkIsClaimValid(address(identity), 3007, address(0), hex"", hex"");
         assertFalse(result);
@@ -979,7 +985,7 @@ contract IdentityUtilitiesTest is Test {
 
     function test_isClaimValid_invalidContractIssuer() public {
         TestIdentityUtilities testUtil = new TestIdentityUtilities();
-        Identity identity = IdentityHelper.deployIdentityWithProxy(admin);
+        (Identity identity,) = IdentityHelper.deployIdentityWithProxy(admin);
 
         // Deploy a contract that does not implement isClaimValid (catches and returns false)
         TestContract invalidContract = new TestContract();

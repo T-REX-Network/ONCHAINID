@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
-import { Test } from "@forge-std/Test.sol";
-
+import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
+import { IdentityHelper } from "../helpers/IdentityHelper.sol";
+import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
+import { Errors as OZErrors } from "@openzeppelin/contracts/utils/Errors.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IdFactory } from "contracts/factory/IdFactory.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
-
-import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
-import { IdentityHelper } from "../helpers/IdentityHelper.sol";
+import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
+import { Structs } from "contracts/storage/Structs.sol";
+import { Test } from "forge-std/Test.sol";
 
 contract TokenOidTest is Test {
 
@@ -19,37 +21,60 @@ contract TokenOidTest is Test {
     address internal alice;
     address internal bob;
 
+    Structs.ModuleInstall[] internal _emptyModules;
+
     function setUp() public {
         deployer = makeAddr("tokenOidDeployer");
         alice = makeAddr("tokenOidAlice");
         bob = makeAddr("tokenOidBob");
 
         vm.startPrank(deployer);
-        setup = IdentityHelper.deployFactory(deployer, address(this));
+        setup = IdentityHelper.deployFactory(deployer);
         vm.stopPrank();
+    }
+
+    // ---- helpers ----
+
+    function _makeECDSAKey(address addr, uint256 purpose) internal pure returns (Structs.KeyParam memory) {
+        return Structs.KeyParam({
+            keyHash: keccak256(abi.encodePacked(addr)),
+            purpose: purpose,
+            keyType: KeyTypes.ECDSA,
+            signerData: abi.encodePacked(addr),
+            clientData: ""
+        });
+    }
+
+    function _makeMgmtKey(address addr) internal pure returns (Structs.KeyParam[] memory keys) {
+        keys = new Structs.KeyParam[](1);
+        keys[0] = _makeECDSAKey(addr, KeyPurposes.MANAGEMENT);
     }
 
     // ============ addTokenFactory ============
 
     function test_addTokenFactory_revertNotOwner() public {
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(Errors.OwnableUnauthorizedAccount.selector, alice));
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
         setup.idFactory.addTokenFactory(alice);
     }
 
     function test_addTokenFactory_revertZeroAddress() public {
+        vm.prank(deployer);
         vm.expectRevert(Errors.ZeroAddress.selector);
         setup.idFactory.addTokenFactory(address(0));
     }
 
     function test_addTokenFactory_shouldAdd() public {
+        vm.prank(deployer);
         setup.idFactory.addTokenFactory(alice);
         assertTrue(setup.idFactory.isTokenFactory(alice));
     }
 
     function test_addTokenFactory_revertAlreadyFactory() public {
+        vm.prank(deployer);
         setup.idFactory.addTokenFactory(alice);
 
+        vm.prank(deployer);
         vm.expectRevert(abi.encodeWithSelector(Errors.AlreadyAFactory.selector, alice));
         setup.idFactory.addTokenFactory(alice);
     }
@@ -58,23 +83,27 @@ contract TokenOidTest is Test {
 
     function test_removeTokenFactory_revertNotOwner() public {
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(Errors.OwnableUnauthorizedAccount.selector, alice));
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
         setup.idFactory.removeTokenFactory(bob);
     }
 
     function test_removeTokenFactory_revertZeroAddress() public {
+        vm.prank(deployer);
         vm.expectRevert(Errors.ZeroAddress.selector);
         setup.idFactory.removeTokenFactory(address(0));
     }
 
     function test_removeTokenFactory_revertNotFactory() public {
+        vm.prank(deployer);
         vm.expectRevert(abi.encodeWithSelector(Errors.NotAFactory.selector, bob));
         setup.idFactory.removeTokenFactory(bob);
     }
 
     function test_removeTokenFactory_shouldRemove() public {
+        vm.prank(deployer);
         setup.idFactory.addTokenFactory(alice);
 
+        vm.prank(deployer);
         setup.idFactory.removeTokenFactory(alice);
         assertFalse(setup.idFactory.isTokenFactory(alice));
     }
@@ -83,34 +112,46 @@ contract TokenOidTest is Test {
 
     function test_createTokenIdentity_revertNotAuthorized() public {
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(Errors.OwnableUnauthorizedAccount.selector, alice));
-        setup.idFactory.createTokenIdentity(alice, alice, "TST", new address[](0));
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
+        setup.idFactory.createTokenIdentity(alice, "TST", _makeMgmtKey(alice), _emptyModules);
     }
 
     function test_createTokenIdentity_revertTokenZeroAddress() public {
+        vm.prank(deployer);
         vm.expectRevert(Errors.ZeroAddress.selector);
-        setup.idFactory.createTokenIdentity(address(0), alice, "TST", new address[](0));
-    }
-
-    function test_createTokenIdentity_revertOwnerZeroAddress() public {
-        vm.expectRevert(Errors.ZeroAddress.selector);
-        setup.idFactory.createTokenIdentity(alice, address(0), "TST", new address[](0));
+        setup.idFactory.createTokenIdentity(address(0), "TST", _makeMgmtKey(alice), _emptyModules);
     }
 
     function test_createTokenIdentity_revertEmptySalt() public {
+        vm.prank(deployer);
         vm.expectRevert(Errors.EmptyString.selector);
-        setup.idFactory.createTokenIdentity(alice, alice, "", new address[](0));
+        setup.idFactory.createTokenIdentity(alice, "", _makeMgmtKey(alice), _emptyModules);
+    }
+
+    function test_createTokenIdentity_revertEmptyKeys() public {
+        vm.prank(deployer);
+        vm.expectRevert(Errors.EmptyListOfKeys.selector);
+        setup.idFactory.createTokenIdentity(alice, "TST", new Structs.KeyParam[](0), _emptyModules);
+    }
+
+    /// @notice At least one MANAGEMENT key must be supplied — bootstrap removal rejects it otherwise.
+    function test_createTokenIdentity_revertNoManagementKey() public {
+        Structs.KeyParam[] memory actionOnly = new Structs.KeyParam[](1);
+        actionOnly[0] = _makeECDSAKey(bob, KeyPurposes.ACTION);
+
+        vm.prank(deployer);
+        vm.expectRevert(Errors.CannotRemoveLastManagementKey.selector);
+        setup.idFactory.createTokenIdentity(alice, "TST", actionOnly, _emptyModules);
     }
 
     /// @notice Token factory should be able to create token identity
     function test_createTokenIdentity_viaTokenFactory_shouldCreate() public {
-        // Register alice as a token factory
+        vm.prank(deployer);
         setup.idFactory.addTokenFactory(alice);
 
-        // alice (as token factory) creates a token identity
         address token = makeAddr("tokenAddr");
         vm.prank(alice);
-        address identity = setup.idFactory.createTokenIdentity(token, bob, "factorySalt", new address[](0));
+        address identity = setup.idFactory.createTokenIdentity(token, "factorySalt", _makeMgmtKey(bob), _emptyModules);
 
         assertTrue(identity != address(0), "Identity should be deployed");
         assertEq(setup.idFactory.getIdentity(token), identity, "Token should map to identity");
@@ -118,46 +159,45 @@ contract TokenOidTest is Test {
     }
 
     function test_createTokenIdentity_shouldCreateAndRevertDuplicate() public {
-        assertFalse(setup.idFactory.isSaltTaken("Tokensalt1"));
-
-        setup.idFactory.createTokenIdentity(alice, bob, "salt1", new address[](0));
+        vm.prank(deployer);
+        setup.idFactory.createTokenIdentity(alice, "salt1", _makeMgmtKey(bob), _emptyModules);
 
         address tokenIdentityAddr = setup.idFactory.getIdentity(alice);
         assertTrue(tokenIdentityAddr != address(0));
-        assertTrue(setup.idFactory.isSaltTaken("Tokensalt1"));
-        assertFalse(setup.idFactory.isSaltTaken("Tokensalt2"));
         assertEq(setup.idFactory.getToken(tokenIdentityAddr), alice);
 
-        // Same salt should revert
-        vm.expectRevert(abi.encodeWithSelector(Errors.SaltTaken.selector, "Tokensalt1"));
-        setup.idFactory.createTokenIdentity(alice, alice, "salt1", new address[](0));
-
-        // Same token address should revert
+        // Same token address should revert before reaching Create3.
+        vm.prank(deployer);
         vm.expectRevert(abi.encodeWithSelector(Errors.TokenAlreadyLinked.selector, alice));
-        setup.idFactory.createTokenIdentity(alice, alice, "salt2", new address[](0));
+        setup.idFactory.createTokenIdentity(alice, "salt2", _makeMgmtKey(alice), _emptyModules);
+
+        // Same salt (with a different token) should revert at Create3 with FailedDeployment().
+        vm.prank(deployer);
+        vm.expectRevert(OZErrors.FailedDeployment.selector);
+        setup.idFactory.createTokenIdentity(bob, "salt1", _makeMgmtKey(alice), _emptyModules);
     }
 
-    /// @notice createTokenIdentity with claimAdders should set CLAIM_ADDER keys
-    function test_createTokenIdentity_withClaimAdders_shouldSetClaimAdderKeys() public {
+    /// @notice createTokenIdentity with multiple key types should set all keys
+    function test_createTokenIdentity_withMultipleKeys_shouldSetKeys() public {
         address claimAdder = makeAddr("tokenClaimAdder");
-        address[] memory claimAdders = new address[](1);
-        claimAdders[0] = claimAdder;
 
-        address token = makeAddr("tokenWithAdders");
-        address identityAddr = setup.idFactory.createTokenIdentity(token, bob, "saltAdders", claimAdders);
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](2);
+        keys[0] = _makeECDSAKey(bob, KeyPurposes.MANAGEMENT);
+        keys[1] = _makeECDSAKey(claimAdder, KeyPurposes.CLAIM_ADDER);
 
-        Identity identity = Identity(identityAddr);
+        address token = makeAddr("tokenWithKeys");
+        vm.prank(deployer);
+        address identityAddr = setup.idFactory.createTokenIdentity(token, "saltKeys", keys, _emptyModules);
 
-        // Verify CLAIM_ADDER key is set
+        Identity identity = Identity(payable(identityAddr));
+
         assertTrue(
             identity.keyHasPurpose(ClaimSignerHelper.addressToKey(claimAdder), KeyPurposes.CLAIM_ADDER),
             "claimAdder should have CLAIM_ADDER purpose"
         );
-
-        // Verify token owner has management key
         assertTrue(
             identity.keyHasPurpose(ClaimSignerHelper.addressToKey(bob), KeyPurposes.MANAGEMENT),
-            "token owner should have MANAGEMENT purpose"
+            "bob should have MANAGEMENT purpose"
         );
     }
 

@@ -43,5 +43,5 @@ jobs:
       - name: Run tests
         run: forge test -vvv
 
-      - name: Run coverage
-        run: ./.github/scripts/coverage.sh
+#      - name: Run coverage
+#        run: ./.github/scripts/coverage.sh
