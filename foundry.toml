@@ -18,6 +18,28 @@ bracket_spacing = true
 [profile.default.lint]
 lint_on_build = true
 
+[profile.default.fuzz]
+runs = 1024
+max_test_rejects = 65536
+
+# Invariant defaults: kept LOW so the default `forge test` stays under ~2s.
+# CI ramps to audit-grade depth via [profile.ci.invariant] below.
+[profile.default.invariant]
+runs = 16
+depth = 16
+fail_on_revert = false
+shrink_run_limit = 1000
+
+# Audit-grade ramp for CI. Activate with `FOUNDRY_PROFILE=ci forge test`.
+[profile.ci.invariant]
+runs = 256
+depth = 32
+fail_on_revert = false
+shrink_run_limit = 5000
+
+[profile.ci.fuzz]
+runs = 5000
+
 [rpc_endpoints]
 baseSepolia = "https://base-sepolia.g.alchemy.com/v2/${ALCHEMY_KEY}"
 base = "https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}"

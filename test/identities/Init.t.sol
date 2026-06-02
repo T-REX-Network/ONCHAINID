@@ -54,14 +54,23 @@ contract InitTest is OnchainIDSetup {
         assertEq(aliceIdentity.accountId(), "trex.onchainid.identity.v3.0.0");
     }
 
-    function test_supportsERC165InterfaceDetection() public {
-        // ERC165 interface ID
-        assertTrue(aliceIdentity.supportsInterface(0x01ffc9a7));
+    /// @notice ERC-7201 namespaced slots: KeyManager and Identity metadata don't alias.
+    function test_storage_namespacedSlotsDoNotCollide() public view {
+        // The metadata slot holds the identityType (=2 for INDIVIDUAL).
+        bytes32 metaSlot = keccak256(abi.encode(uint256(keccak256(bytes("onchainid.identity.metadata"))) - 1))
+            & ~bytes32(uint256(0xff));
+        bytes32 keysSlot = keccak256(abi.encode(uint256(keccak256(bytes("onchainid.keymanager.storage"))) - 1))
+            & ~bytes32(uint256(0xff));
+        assertTrue(metaSlot != keysSlot, "namespaced slots must differ");
+        // identityType at meta slot should equal 2 (INDIVIDUAL).
+        bytes32 raw = vm.load(address(aliceIdentity), metaSlot);
+        assertEq(uint256(raw), IdentityTypes.INDIVIDUAL);
+    }
 
-        // Invalid interface IDs
-        assertFalse(aliceIdentity.supportsInterface(0x12345678));
-        assertFalse(aliceIdentity.supportsInterface(0x00000000));
-        assertFalse(aliceIdentity.supportsInterface(0xffffffff));
+    /// @notice Identity exposes the expected identity type from the metadata slot.
+    function test_getIdentityType_returnsConfiguredType() public view {
+        assertEq(aliceIdentity.getIdentityType(), IdentityTypes.INDIVIDUAL);
+        assertEq(claimIssuer.getIdentityType(), IdentityTypes.CLAIM_ISSUER);
     }
 
 }

@@ -1,0 +1,170 @@
+[
+  {
+    "filename": "../contracts/SmartAccount.sol",
+    "sourceroot": "..",
+    "solc": "solc",
+    "solc_optimize": true,
+    "solc_evm_version": "cancun",
+    "solc_remappings": [
+      "@openzeppelin/contracts/=../dependencies/@openzeppelin-contracts-5.6.0/",
+      "@openzeppelin/contracts-upgradeable/=../dependencies/@openzeppelin-contracts-upgradeable-5.6.0/",
+      "forge-std/=../dependencies/forge-std-v1.14.0/src/"
+    ],
+    "mutations": [
+      "binary-op-mutation",
+      "unary-operator-mutation",
+      "require-mutation",
+      "if-statement-mutation",
+      "assignment-mutation",
+      "delete-expression-mutation",
+      "swap-arguments-operator-mutation"
+    ]
+  },
+  {
+    "filename": "../contracts/KeyManager.sol",
+    "sourceroot": "..",
+    "solc": "solc",
+    "solc_optimize": true,
+    "solc_evm_version": "cancun",
+    "solc_remappings": [
+      "@openzeppelin/contracts/=../dependencies/@openzeppelin-contracts-5.6.0/",
+      "@openzeppelin/contracts-upgradeable/=../dependencies/@openzeppelin-contracts-upgradeable-5.6.0/",
+      "forge-std/=../dependencies/forge-std-v1.14.0/src/"
+    ],
+    "mutations": [
+      "binary-op-mutation",
+      "unary-operator-mutation",
+      "require-mutation",
+      "if-statement-mutation",
+      "assignment-mutation",
+      "delete-expression-mutation",
+      "swap-arguments-operator-mutation"
+    ]
+  },
+  {
+    "filename": "../contracts/factory/IdFactory.sol",
+    "sourceroot": "..",
+    "solc": "solc",
+    "solc_optimize": true,
+    "solc_evm_version": "cancun",
+    "solc_remappings": [
+      "@openzeppelin/contracts/=../dependencies/@openzeppelin-contracts-5.6.0/",
+      "@openzeppelin/contracts-upgradeable/=../dependencies/@openzeppelin-contracts-upgradeable-5.6.0/",
+      "forge-std/=../dependencies/forge-std-v1.14.0/src/"
+    ],
+    "mutations": [
+      "binary-op-mutation",
+      "unary-operator-mutation",
+      "require-mutation",
+      "if-statement-mutation",
+      "assignment-mutation",
+      "delete-expression-mutation",
+      "swap-arguments-operator-mutation"
+    ]
+  },
+  {
+    "filename": "../contracts/gateway/Gateway.sol",
+    "sourceroot": "..",
+    "solc": "solc",
+    "solc_optimize": true,
+    "solc_evm_version": "cancun",
+    "solc_remappings": [
+      "@openzeppelin/contracts/=../dependencies/@openzeppelin-contracts-5.6.0/",
+      "@openzeppelin/contracts-upgradeable/=../dependencies/@openzeppelin-contracts-upgradeable-5.6.0/",
+      "forge-std/=../dependencies/forge-std-v1.14.0/src/"
+    ],
+    "mutations": [
+      "binary-op-mutation",
+      "unary-operator-mutation",
+      "require-mutation",
+      "if-statement-mutation",
+      "assignment-mutation",
+      "delete-expression-mutation",
+      "swap-arguments-operator-mutation"
+    ]
+  },
+  {
+    "filename": "../contracts/modules/executors/KeyApprovalModule.sol",
+    "sourceroot": "..",
+    "solc": "solc",
+    "solc_optimize": true,
+    "solc_evm_version": "cancun",
+    "solc_remappings": [
+      "@openzeppelin/contracts/=../dependencies/@openzeppelin-contracts-5.6.0/",
+      "@openzeppelin/contracts-upgradeable/=../dependencies/@openzeppelin-contracts-upgradeable-5.6.0/",
+      "forge-std/=../dependencies/forge-std-v1.14.0/src/"
+    ],
+    "mutations": [
+      "binary-op-mutation",
+      "unary-operator-mutation",
+      "require-mutation",
+      "if-statement-mutation",
+      "assignment-mutation",
+      "delete-expression-mutation",
+      "swap-arguments-operator-mutation"
+    ]
+  },
+  {
+    "filename": "../contracts/modules/claims/ClaimsModule.sol",
+    "sourceroot": "..",
+    "solc": "solc",
+    "solc_optimize": true,
+    "solc_evm_version": "cancun",
+    "solc_remappings": [
+      "@openzeppelin/contracts/=../dependencies/@openzeppelin-contracts-5.6.0/",
+      "@openzeppelin/contracts-upgradeable/=../dependencies/@openzeppelin-contracts-upgradeable-5.6.0/",
+      "forge-std/=../dependencies/forge-std-v1.14.0/src/"
+    ],
+    "mutations": [
+      "binary-op-mutation",
+      "unary-operator-mutation",
+      "require-mutation",
+      "if-statement-mutation",
+      "assignment-mutation",
+      "delete-expression-mutation",
+      "swap-arguments-operator-mutation"
+    ]
+  },
+  {
+    "filename": "../contracts/Identity.sol",
+    "sourceroot": "..",
+    "solc": "solc",
+    "solc_optimize": true,
+    "solc_evm_version": "cancun",
+    "solc_remappings": [
+      "@openzeppelin/contracts/=../dependencies/@openzeppelin-contracts-5.6.0/",
+      "@openzeppelin/contracts-upgradeable/=../dependencies/@openzeppelin-contracts-upgradeable-5.6.0/",
+      "forge-std/=../dependencies/forge-std-v1.14.0/src/"
+    ],
+    "mutations": [
+      "binary-op-mutation",
+      "unary-operator-mutation",
+      "require-mutation",
+      "if-statement-mutation",
+      "assignment-mutation",
+      "delete-expression-mutation",
+      "swap-arguments-operator-mutation"
+    ]
+  },
+  {
+    "filename": "../contracts/modules/validators/ERC7579Signature.sol",
+    "sourceroot": "..",
+    "solc": "solc",
+    "solc_optimize": true,
+    "solc_evm_version": "cancun",
+    "solc_remappings": [
+      "@openzeppelin/contracts/=../dependencies/@openzeppelin-contracts-5.6.0/",
+      "@openzeppelin/contracts-upgradeable/=../dependencies/@openzeppelin-contracts-upgradeable-5.6.0/",
+      "forge-std/=../dependencies/forge-std-v1.14.0/src/"
+    ],
+    "mutations": [
+      "binary-op-mutation",
+      "unary-operator-mutation",
+      "require-mutation",
+      "if-statement-mutation",
+      "assignment-mutation",
+      "delete-expression-mutation",
+      "swap-arguments-operator-mutation"
+    ]
+  }
+]

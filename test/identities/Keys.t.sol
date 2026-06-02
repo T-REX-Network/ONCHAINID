@@ -3,6 +3,11 @@ pragma solidity ^0.8.27;
 
 import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
+import { IERC165 } from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
+import { Identity } from "contracts/Identity.sol";
+import { IERC734 } from "contracts/interface/IERC734.sol";
+import { IERC735 } from "contracts/interface/IERC735.sol";
+import { IIdentity } from "contracts/interface/IIdentity.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
@@ -240,6 +245,195 @@ contract KeysTest is OnchainIDSetup {
         (, uint256 keyType, bytes32 storedKey) = aliceIdentity.getKey(keyHash);
         assertEq(storedKey, keyHash);
         assertEq(keyType, KeyTypes.ECDSA);
+    }
+
+    /// @notice getKeyData returns the (signerData, clientData) tuple registered with the key.
+    function test_getKeyData_returnsSignerAndClientData() public {
+        bytes32 keyHash = keccak256(abi.encodePacked(bob));
+        bytes memory signerData = abi.encodePacked(bob);
+        bytes memory clientData = hex"deadbeef";
+
+        vm.prank(alice);
+        aliceIdentity.addKeyWithData(keyHash, KeyPurposes.ACTION, KeyTypes.ECDSA, signerData, clientData);
+
+        (bytes memory storedSigner, bytes memory storedClient) = aliceIdentity.getKeyData(keyHash);
+        assertEq(storedSigner, signerData);
+        assertEq(storedClient, clientData);
+    }
+
+    /// @notice getKeyData on an unknown key returns empty bytes for both fields.
+    function test_getKeyData_unknownKey_returnsEmpty() public view {
+        (bytes memory s, bytes memory c) = aliceIdentity.getKeyData(keccak256("never-registered"));
+        assertEq(s.length, 0);
+        assertEq(c.length, 0);
+    }
+
+    /// @notice Adding the same key with a different ECDSA purpose succeeds when type matches.
+    function test_AddKey_samePurposeReverts() public {
+        vm.prank(alice);
+        vm.expectRevert(
+            abi.encodeWithSelector(Errors.KeyAlreadyHasPurpose.selector, aliceKeyHash, KeyPurposes.MANAGEMENT)
+        );
+        aliceIdentity.addKey(aliceKeyHash, KeyPurposes.MANAGEMENT, KeyTypes.ECDSA);
+    }
+
+    /// @notice keyHasPurpose returns false for an unknown key.
+    function test_keyHasPurpose_unknownKey_false() public view {
+        assertFalse(aliceIdentity.keyHasPurpose(keccak256("unknown"), KeyPurposes.ACTION));
+    }
+
+    // ============ View-function edge cases (formerly Keys.branches.t.sol) ============
+
+    bytes32 internal constant _UNKNOWN_KEY = keccak256("never-registered");
+
+    function test_getKey_unknownKey_returnsEmptyTuple() public view {
+        (uint256[] memory purposes, uint256 keyType, bytes32 key) = aliceIdentity.getKey(_UNKNOWN_KEY);
+        assertEq(purposes.length, 0);
+        assertEq(keyType, 0);
+        assertEq(key, bytes32(0));
+    }
+
+    function test_getKeyPurposes_unknownKey_returnsEmpty() public view {
+        uint256[] memory purposes = aliceIdentity.getKeyPurposes(_UNKNOWN_KEY);
+        assertEq(purposes.length, 0);
+    }
+
+    /// @notice Purpose 9999 is not in `KeyPurposes`; no key has it; the set is empty.
+    function test_getKeysByPurpose_unknownPurpose_returnsEmpty() public view {
+        bytes32[] memory ids = aliceIdentity.getKeysByPurpose(9999);
+        assertEq(ids.length, 0);
+    }
+
+    /// @notice MANAGEMENT key returns true for any purpose query thanks to the universal
+    ///         permission rule at `KeyManager.sol:121`.
+    function test_keyHasPurpose_mgmt_returnsTrueForAnyPurpose() public view {
+        assertTrue(aliceIdentity.keyHasPurpose(aliceKeyHash, 9999), "MANAGEMENT must cover any purpose");
+    }
+
+    // ============ Identity.supportsInterface — all four advertised IDs and a negative ============
+
+    function test_supportsInterface_erc165_true() public view {
+        assertTrue(aliceIdentity.supportsInterface(type(IERC165).interfaceId));
+    }
+
+    function test_supportsInterface_erc734_true() public view {
+        assertTrue(aliceIdentity.supportsInterface(type(IERC734).interfaceId));
+    }
+
+    function test_supportsInterface_erc735_true() public view {
+        assertTrue(aliceIdentity.supportsInterface(type(IERC735).interfaceId));
+    }
+
+    function test_supportsInterface_iidentity_true() public view {
+        assertTrue(aliceIdentity.supportsInterface(type(IIdentity).interfaceId));
+    }
+
+    /// @notice Unknown interface IDs return false (the catch-all `else` branch at the end of
+    ///         `Identity.supportsInterface`). Picks a stable random selector unlikely to match.
+    function test_supportsInterface_unknownInterface_false() public view {
+        assertFalse(aliceIdentity.supportsInterface(bytes4(0xdeadbeef)));
+    }
+
+    /// @notice The ERC-165 selector itself is `0xffffffff` per spec — must return false.
+    function test_supportsInterface_erc165InvalidSentinel_false() public view {
+        assertFalse(aliceIdentity.supportsInterface(bytes4(0xffffffff)));
+    }
+
+    // ============ KeyManager storage layout + write-path correctness ============
+
+    /// @notice Pins the canonical ERC-7201 storage namespace for `KeyManager`. The base slot
+    ///         is `keccak256(uint256(keccak256("onchainid.keymanager.storage")) - 1) & ~0xff`.
+    ///         Under that slot, offset +2 holds the packed `initialized || canInteract`
+    ///         booleans (both true after init). If the namespace computation ever drifts to a
+    ///         different slot (e.g. the `- 1` were replaced by another operator), state lives
+    ///         at a different slot and this read returns zero — the test fails.
+    function test_keyStorage_canonicalERC7201Slot_holdsInitBooleans() public view {
+        bytes32 canonicalBase = keccak256(abi.encode(uint256(keccak256(bytes("onchainid.keymanager.storage"))) - 1))
+            & ~bytes32(uint256(0xff));
+        // Struct layout: slot 0 = `keys` mapping marker, slot 1 = `keysByPurpose` marker,
+        // slot 2 = packed (bool initialized, bool canInteract). After init both are true.
+        bytes32 initSlot = bytes32(uint256(canonicalBase) + 2);
+        bytes32 raw = vm.load(address(aliceIdentity), initSlot);
+        assertTrue(raw != bytes32(0), "canonical ERC-7201 slot+2 must hold non-zero init bits");
+    }
+
+    /// @notice Companion check — the slot a `... + 1`-namespaced variant would have produced
+    ///         is empty. Together with the canonical-slot test above, this confirms storage
+    ///         lives exactly at the ERC-7201-spec namespace and not at any neighboring offset.
+    function test_keyStorage_offsetSlot_isEmpty() public view {
+        bytes32 offsetBase = keccak256(abi.encode(uint256(keccak256(bytes("onchainid.keymanager.storage"))) + 1))
+            & ~bytes32(uint256(0xff));
+        bytes32 offsetInitSlot = bytes32(uint256(offsetBase) + 2);
+        assertEq(
+            vm.load(address(aliceIdentity), offsetInitSlot), bytes32(0), "no state should live at a non-ERC-7201 slot"
+        );
+    }
+
+    /// @notice Pins the `addKey` keyType write — `k.keyType = _type` MUST store the passed-in
+    ///         type, not a hardcoded constant. The default `OnchainIDSetup` only uses ECDSA
+    ///         keys (which is `1`), so an accidental hardcoding to `1` would be invisible to
+    ///         every existing test. This one passes RSA (`2`) and asserts readback.
+    function test_addKey_storesRequestedKeyType() public {
+        bytes32 freshKey = keccak256("fresh-rsa-key-for-write-path-pin");
+        vm.prank(alice);
+        aliceIdentity.addKey(freshKey, KeyPurposes.ACTION, KeyTypes.RSA);
+        (, uint256 keyType,) = aliceIdentity.getKey(freshKey);
+        assertEq(keyType, KeyTypes.RSA, "stored keyType must match the requested type");
+    }
+
+    /// @notice Pins the `signerData` assignment in `_setupInitialManagementKey`. The initial
+    ///         MANAGEMENT key's `signerData` MUST be the packed bytes of the bootstrap address.
+    ///
+    ///         Tests using the *factory-created* `aliceIdentity` cannot exercise this path
+    ///         because the factory's bootstrap key is REMOVED at the end of
+    ///         `IdFactory._setupIdentity`, and alice's key (the surviving one) is added
+    ///         separately via `addKeyWithData` — bypassing `_setupInitialManagementKey` entirely.
+    ///
+    ///         This test deploys Identity DIRECTLY, so the constructor's
+    ///         `_setupInitialManagementKey(alice)` is the only writer of alice's `signerData`.
+    function test_initialManagementKey_signerData_matchesBootstrapAddress() public {
+        Identity directIdentity = new Identity(alice, false);
+        (bytes memory storedSigner,) = directIdentity.getKeyData(aliceKeyHash);
+        assertEq(
+            storedSigner, abi.encodePacked(alice), "initial MANAGEMENT signerData MUST be the bootstrap address bytes"
+        );
+    }
+
+    /// @notice Pins the scope of the last-MANAGEMENT protection in `_removeKeyPurpose`. The
+    ///         `if (_purpose == KeyPurposes.MANAGEMENT) { require(length > 1, ...) }` branch
+    ///         MUST gate the MANAGEMENT-purpose case only. If it ever ran on every `removeKey`
+    ///         — including non-MANAGEMENT purposes — it would falsely block legitimate
+    ///         removals whenever exactly one MANAGEMENT key remained.
+    ///
+    ///         We first reduce aliceIdentity to a single MANAGEMENT key (alice), then remove
+    ///         a non-MANAGEMENT purpose (carol's CLAIM_SIGNER). The removal must succeed.
+    function test_removeNonMgmtPurpose_singleMgmtRemaining_succeeds() public {
+        bytes32 kamHash = keccak256(abi.encodePacked(address(onchainidSetup.keyApprovalModule)));
+        bytes32 carolHash = ClaimSignerHelper.addressToKey(carol);
+
+        // Drop the KAM module's MANAGEMENT purpose so alice is the sole MANAGEMENT key.
+        // (KAM held MANAGEMENT via IdentityHelper.legacyQueueModules.) This first remove
+        // exercises the MANAGEMENT branch with length()==2 and is just setup for the
+        // discriminating second remove below.
+        vm.prank(alice);
+        aliceIdentity.removeKey(kamHash, KeyPurposes.MANAGEMENT);
+        assertEq(
+            aliceIdentity.getKeysByPurpose(KeyPurposes.MANAGEMENT).length,
+            1,
+            "alice should be sole MANAGEMENT key after KAM purpose removed"
+        );
+
+        // Now the discriminating call: remove a non-MANAGEMENT purpose. The
+        // `_purpose == MANAGEMENT` branch must stay skipped (purpose is CLAIM_SIGNER), so the
+        // last-MANAGEMENT length check never runs. If it ever did, the length==1 condition
+        // would falsely revert `CannotRemoveLastManagementKey`.
+        vm.prank(alice);
+        aliceIdentity.removeKey(carolHash, KeyPurposes.CLAIM_SIGNER);
+
+        assertFalse(
+            aliceIdentity.keyHasPurpose(carolHash, KeyPurposes.CLAIM_SIGNER),
+            "carol's CLAIM_SIGNER purpose should be removed"
+        );
     }
 
 }

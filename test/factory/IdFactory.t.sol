@@ -477,4 +477,135 @@ contract IdFactoryTest is OnchainIDSetup {
         );
     }
 
+    // ============ Accessor edge cases (formerly IdFactory.branches.t.sol) ============
+
+    // ---- getToken accessor ----
+
+    function test_getToken_forTokenIdentity_returnsTokenAddress() public view {
+        // The fixture creates a token identity for Constants.TOKEN_ADDRESS in setUp.
+        address tokenIdentity = onchainidSetup.idFactory.getIdentity(Constants.TOKEN_ADDRESS);
+        assertEq(
+            onchainidSetup.idFactory.getToken(tokenIdentity),
+            Constants.TOKEN_ADDRESS,
+            "getToken should return the token address for a token identity"
+        );
+    }
+
+    function test_getToken_forUserIdentity_returnsZero() public view {
+        // A user identity has no associated token; the lookup table returns address(0).
+        assertEq(onchainidSetup.idFactory.getToken(address(aliceIdentity)), address(0));
+    }
+
+    function test_getToken_forUnknownIdentity_returnsZero() public {
+        assertEq(onchainidSetup.idFactory.getToken(makeAddr("unknown-identity")), address(0));
+    }
+
+    // ---- getWallets edge cases ----
+
+    function test_getWallets_forUnknownIdentity_returnsEmpty() public {
+        address[] memory wallets = onchainidSetup.idFactory.getWallets(makeAddr("unknown-id"));
+        assertEq(wallets.length, 0);
+    }
+
+    function test_getWallets_forFreshIdentity_returnsExactlyOne() public view {
+        address[] memory wallets = onchainidSetup.idFactory.getWallets(address(aliceIdentity));
+        assertEq(wallets.length, 1, "alice has exactly one wallet at setup");
+        assertEq(wallets[0], alice);
+    }
+
+    // ---- createIdentity duplicate-salt branch with non-default salt ----
+
+    /// @notice Confirms the salt collision detection actually trips after a successful create.
+    ///         Existing `test_revertBecauseSaltAlreadyUsed` covers the same arm — this is the
+    ///         cross-test that the Create3 deploy at the same salt reverts on the second call.
+    function test_createIdentity_secondCallSameSalt_revertsAfterFirstSucceeds() public {
+        vm.prank(deployer);
+        onchainidSetup.idFactory
+            .createIdentity(
+                carol,
+                IdentityTypes.INDIVIDUAL,
+                "branchSalt",
+                _makeSingleMgmtKeys(carol),
+                new Structs.ModuleInstall[](0)
+            );
+
+        // Second attempt with the same salt MUST revert — collision now bubbles up from Create3.
+        address newWallet = makeAddr("second-wallet");
+        vm.prank(deployer);
+        vm.expectRevert(OZErrors.FailedDeployment.selector);
+        onchainidSetup.idFactory
+            .createIdentity(
+                newWallet,
+                IdentityTypes.INDIVIDUAL,
+                "branchSalt",
+                _makeSingleMgmtKeys(newWallet),
+                new Structs.ModuleInstall[](0)
+            );
+    }
+
+    // ---- linkWallet — new wallet is a token address ----
+
+    /// @notice The `linkWallet` revert path when the new wallet is already a token address
+    ///         (IdFactory.sol:137). Exercises the `_tokenIdentity[_newWallet] != address(0)` arm.
+    function test_linkWallet_newWalletIsToken_reverts() public {
+        // alice is already linked to aliceIdentity. Try to link the token address — which has
+        // a token identity but no user identity, so the user check passes but the token check trips.
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(Errors.TokenAlreadyLinked.selector, Constants.TOKEN_ADDRESS));
+        onchainidSetup.idFactory.linkWallet(Constants.TOKEN_ADDRESS);
+    }
+
+    // ---- unlinkWallet edge cases ----
+
+    /// @notice Single-element wallet array: the unlinkWallet for-loop iterates exactly once
+    ///         before breaking. Exercises the "i==0" branch.
+    function test_unlinkWallet_singleWallet_clearsList() public {
+        // alice has only her own wallet (per setup). Link a side wallet, then unlink it via alice.
+        vm.prank(alice);
+        onchainidSetup.idFactory.linkWallet(makeAddr("temp-w"));
+        vm.prank(alice);
+        onchainidSetup.idFactory.unlinkWallet(makeAddr("temp-w"));
+
+        address[] memory wallets = onchainidSetup.idFactory.getWallets(address(aliceIdentity));
+        assertEq(wallets.length, 1);
+        assertEq(wallets[0], alice);
+    }
+
+    /// @notice Multiple wallets, unlink the LAST one — no swap, pop only.
+    function test_unlinkWallet_lastInArray_popOnly() public {
+        vm.prank(alice);
+        onchainidSetup.idFactory.linkWallet(carol);
+        vm.prank(alice);
+        onchainidSetup.idFactory.linkWallet(david);
+        // wallets = [alice, carol, david]; unlink david — last element, no swap needed.
+        vm.prank(alice);
+        onchainidSetup.idFactory.unlinkWallet(david);
+
+        address[] memory wallets = onchainidSetup.idFactory.getWallets(address(aliceIdentity));
+        assertEq(wallets.length, 2);
+        assertEq(wallets[0], alice);
+        assertEq(wallets[1], carol);
+    }
+
+    /// @notice Pins the `delete _userIdentity[_oldWallet]` write in `unlinkWallet` at
+    ///         `IdFactory.sol:150`. Existing tests check `getWallets` post-unlink (which
+    ///         iterates the `_wallets[identity]` array) but never read `_userIdentity` or
+    ///         the public `getIdentity(oldWallet)` accessor afterward. If that `delete` were
+    ///         absent, every caller resolving wallet→identity via `getIdentity` would still
+    ///         see the unlinked wallet as belonging to alice.
+    function test_unlinkWallet_clearsUserIdentityReverseMap() public {
+        // Link carol so we have a non-self wallet to unlink. `unlinkWallet` rejects unlinking
+        // the same address as msg.sender (CannotBeCalledOnSenderAddress), so we link a side
+        // wallet then unlink it via alice.
+        vm.prank(alice);
+        onchainidSetup.idFactory.linkWallet(carol);
+        assertEq(onchainidSetup.idFactory.getIdentity(carol), address(aliceIdentity), "linked");
+
+        vm.prank(alice);
+        onchainidSetup.idFactory.unlinkWallet(carol);
+
+        // After unlink, the reverse map MUST be cleared: `getIdentity(carol)` returns zero.
+        assertEq(onchainidSetup.idFactory.getIdentity(carol), address(0), "unlinked wallet must no longer resolve");
+    }
+
 }

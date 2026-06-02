@@ -27,6 +27,10 @@ logs
 build/
 gas-report.txt
 
+# Mutation testing (mutation/run-campaign.sh artifacts)
+gambit_out/
+mutation-report.tsv
+
 # macOS
 .DS_Store
 
