@@ -954,9 +954,8 @@ contract IdentityUtilitiesTest is Test {
 
         // Sign claim properly for self-attested claim
         bytes memory claimData = hex"";
-        bytes memory signature = ClaimSignerHelper.signClaim(
-            adminPk, admin, address(identity), address(identity), 3004, claimData
-        );
+        bytes memory signature =
+            ClaimSignerHelper.signClaim(adminPk, admin, address(identity), address(identity), 3004, claimData);
 
         // Add a self-attested claim with valid signature
         vm.prank(admin);

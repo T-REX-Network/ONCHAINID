@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
-import { PackedUserOperation } from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/draft-ERC4337Utils.sol";
+import { PackedUserOperation } from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
+import { IAccount } from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import {
     Execution,
     IERC7579Execution,
@@ -11,7 +12,6 @@ import {
     MODULE_TYPE_FALLBACK,
     MODULE_TYPE_VALIDATOR
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
-import { IAccount } from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import { Identity } from "contracts/Identity.sol";
 import { SmartAccount } from "contracts/SmartAccount.sol";
 import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
@@ -654,9 +654,8 @@ contract SmartAccountTest is OnchainIDSetup {
     {
         // SINGLE-mode execute payload: target(20) || value(32) || data
         bytes memory executionCalldata = abi.encodePacked(target, uint256(0), innerCall);
-        bytes memory callData = abi.encodeWithSelector(
-            bytes4(keccak256("execute(bytes32,bytes)")), bytes32(0), executionCalldata
-        );
+        bytes memory callData =
+            abi.encodeWithSelector(bytes4(keccak256("execute(bytes32,bytes)")), bytes32(0), executionCalldata);
 
         userOp = PackedUserOperation({
             sender: address(aliceIdentity),
@@ -687,8 +686,7 @@ contract SmartAccountTest is OnchainIDSetup {
         Counter counter = new Counter();
         bytes memory innerCall = abi.encodeCall(Counter.increment, ());
 
-        (PackedUserOperation memory userOp, bytes32 userOpHash) =
-            _buildAndSignUserOp(address(counter), innerCall);
+        (PackedUserOperation memory userOp, bytes32 userOpHash) = _buildAndSignUserOp(address(counter), innerCall);
 
         vm.prank(ENTRY_POINT);
         uint256 result = IAccount(address(aliceIdentity)).validateUserOp(userOp, userOpHash, 0);
@@ -703,8 +701,7 @@ contract SmartAccountTest is OnchainIDSetup {
             "addKey(bytes32,uint256,uint256)", keccak256("evil"), KeyPurposes.MANAGEMENT, KeyTypes.ECDSA
         );
 
-        (PackedUserOperation memory userOp, bytes32 userOpHash) =
-            _buildAndSignUserOp(address(aliceIdentity), innerCall);
+        (PackedUserOperation memory userOp, bytes32 userOpHash) = _buildAndSignUserOp(address(aliceIdentity), innerCall);
 
         vm.prank(ENTRY_POINT);
         uint256 result = IAccount(address(aliceIdentity)).validateUserOp(userOp, userOpHash, 0);
@@ -720,9 +717,8 @@ contract SmartAccountTest is OnchainIDSetup {
 
         // Build the UserOp shell, then sign with the stranger instead of david.
         bytes memory executionCalldata = abi.encodePacked(address(counter), uint256(0), innerCall);
-        bytes memory callData = abi.encodeWithSelector(
-            bytes4(keccak256("execute(bytes32,bytes)")), bytes32(0), executionCalldata
-        );
+        bytes memory callData =
+            abi.encodeWithSelector(bytes4(keccak256("execute(bytes32,bytes)")), bytes32(0), executionCalldata);
         PackedUserOperation memory userOp = PackedUserOperation({
             sender: address(aliceIdentity),
             nonce: _packNonce(address(onchainidSetup.signatureValidator), 0),
