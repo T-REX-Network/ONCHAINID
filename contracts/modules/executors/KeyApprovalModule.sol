@@ -125,7 +125,10 @@ contract KeyApprovalModule is IERC7579Module {
         require(!execution.executed, Errors.RequestAlreadyExecuted());
 
         // 3. Authorize the approver. Self-call ⇒ MANAGEMENT; external target ⇒ ACTION.
-        if (execution.to == account) {
+        // OZ `ERC7579Utils._call` rewrites `to == address(0)` to the account before dispatch,
+        // so a queued `to=0` request runs as a self-call. Match that here before branching.
+        address executionTo = execution.to == address(0) ? account : execution.to;
+        if (executionTo == account) {
             require(
                 IERC734(account).keyHasPurpose(callerKeyHash, KeyPurposes.MANAGEMENT),
                 Errors.SenderDoesNotHaveManagementKey()
@@ -179,6 +182,10 @@ contract KeyApprovalModule is IERC7579Module {
         view
         returns (bool)
     {
+        // OZ `ERC7579Utils._call` rewrites `to == address(0)` to the account before dispatch,
+        // so `to=0` will land as a self-call. Fold it in so the branches below agree.
+        if (to == address(0)) to = account;
+
         // MANAGEMENT keys pass any check.
         if (IERC734(account).keyHasPurpose(keyHash, KeyPurposes.MANAGEMENT)) {
             return true;

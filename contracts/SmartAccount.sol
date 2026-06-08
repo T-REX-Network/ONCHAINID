@@ -187,6 +187,11 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         view
         returns (bool)
     {
+        // OZ `ERC7579Utils._call` rewrites `target == address(0)` to `address(this)` before
+        // dispatch, so a payload with target=0 lands as a self-call. Collapse the same alias
+        // here so this self-vs-external check sees what the call will actually hit.
+        if (target == address(0)) target = address(this);
+
         // The policy module is whichever contract is wired as the `execute` fallback handler.
         address policy = _fallbackHandler(IKeyExecutor.execute.selector);
 
