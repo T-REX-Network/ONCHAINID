@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
+import { Structs } from "../storage/Structs.sol";
 import { IERC734 } from "./IERC734.sol";
 import { IERC735 } from "./IERC735.sol";
 
@@ -12,10 +13,10 @@ interface IIdentity is IERC734, IERC735 {
      * @param _identity the identity contract related to the claim
      * @param claimTopic the claim topic of the claim
      * @param sig the signature of the claim
-     * @param data the data field of the claim
+     * @param data the structured claim data
      * @return claimValid true if the claim is valid, false otherwise
      */
-    function isClaimValid(IIdentity _identity, uint256 claimTopic, bytes calldata sig, bytes calldata data)
+    function isClaimValid(IIdentity _identity, uint256 claimTopic, bytes calldata sig, Structs.ClaimData calldata data)
         external
         view
         returns (bool);
@@ -24,10 +25,10 @@ interface IIdentity is IERC734, IERC735 {
      * @dev Computes the EIP-712 claim digest for off-chain signing.
      * @param _identity The identity address the claim is for
      * @param _topic The claim topic
-     * @param _data The claim data
+     * @param _data The structured claim data
      * @return The EIP-712 typed data hash
      */
-    function getClaimHash(address _identity, uint256 _topic, bytes memory _data) external view returns (bytes32);
+    function getClaimHash(address _identity, uint256 _topic, Structs.ClaimData memory _data) external view returns (bytes32);
 
     /**
      * @dev Returns the identity type set at initialization.

@@ -56,7 +56,7 @@ library IdentityHelper {
         pure
         returns (Structs.ModuleInstall[] memory installs)
     {
-        installs = new Structs.ModuleInstall[](15);
+        installs = new Structs.ModuleInstall[](14);
         // ----- KeyApprovalModule: 1 executor + 3 fallbacks -----
         installs[0] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_EXECUTOR, module: keyApprovalModule, initData: "", purpose: KeyPurposes.MANAGEMENT
@@ -79,7 +79,7 @@ library IdentityHelper {
             initData: abi.encodePacked(IKeyExecutor.getCurrentNonce.selector),
             purpose: 0
         });
-        // ----- ClaimsModule: 1 executor + 10 fallbacks -----
+        // ----- ClaimsModule: 1 executor + 9 fallbacks -----
         installs[4] =
             Structs.ModuleInstall({ moduleType: MODULE_TYPE_EXECUTOR, module: claimsModule, initData: "", purpose: 0 });
         installs[5] = Structs.ModuleInstall({
@@ -121,22 +121,16 @@ library IdentityHelper {
         installs[11] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
-            initData: abi.encodePacked(IClaimIssuer.revokeClaim.selector),
+            initData: abi.encodePacked(IClaimIssuer.revokeClaimByDigest.selector),
             purpose: 0
         });
         installs[12] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
-            initData: abi.encodePacked(IClaimIssuer.revokeClaimBySignature.selector),
+            initData: abi.encodePacked(IClaimIssuer.isDigestSpent.selector),
             purpose: 0
         });
         installs[13] = Structs.ModuleInstall({
-            moduleType: MODULE_TYPE_FALLBACK,
-            module: claimsModule,
-            initData: abi.encodePacked(IClaimIssuer.isClaimRevoked.selector),
-            purpose: 0
-        });
-        installs[14] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
             initData: abi.encodePacked(IClaimIssuer.addClaimTo.selector),
@@ -188,12 +182,11 @@ library IdentityHelper {
         );
         identity.installModule(MODULE_TYPE_FALLBACK, claimsModule, abi.encodePacked(IIdentity.isClaimValid.selector));
         identity.installModule(MODULE_TYPE_FALLBACK, claimsModule, abi.encodePacked(IIdentity.getClaimHash.selector));
-        identity.installModule(MODULE_TYPE_FALLBACK, claimsModule, abi.encodePacked(IClaimIssuer.revokeClaim.selector));
         identity.installModule(
-            MODULE_TYPE_FALLBACK, claimsModule, abi.encodePacked(IClaimIssuer.revokeClaimBySignature.selector)
+            MODULE_TYPE_FALLBACK, claimsModule, abi.encodePacked(IClaimIssuer.revokeClaimByDigest.selector)
         );
         identity.installModule(
-            MODULE_TYPE_FALLBACK, claimsModule, abi.encodePacked(IClaimIssuer.isClaimRevoked.selector)
+            MODULE_TYPE_FALLBACK, claimsModule, abi.encodePacked(IClaimIssuer.isDigestSpent.selector)
         );
         identity.installModule(MODULE_TYPE_FALLBACK, claimsModule, abi.encodePacked(IClaimIssuer.addClaimTo.selector));
         vmHandle.stopPrank();

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
+import { Structs } from "../storage/Structs.sol";
+
 /// @title IIdentityUtilities
 /// @notice Interface for a schema registry that maps topic IDs to structured metadata schemas
 /// @dev Each topic is uniquely identified and contains ABI-encoded arrays of field names and types
@@ -25,7 +27,7 @@ interface IIdentityUtilities {
         uint256 scheme;
         address issuer;
         bytes signature;
-        bytes data;
+        Structs.ClaimData data;
         string uri;
     }
     /**

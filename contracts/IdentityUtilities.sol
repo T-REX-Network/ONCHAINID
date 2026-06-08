@@ -4,6 +4,7 @@ pragma solidity ^0.8.27;
 import { IClaimIssuer } from "./interface/IClaimIssuer.sol";
 import { IIdentity } from "./interface/IIdentity.sol";
 import { IIdentityUtilities } from "./interface/IIdentityUtilities.sol";
+import { Structs } from "./storage/Structs.sol";
 import { AccessControlUpgradeable } from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import { UUPSUpgradeable } from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 
@@ -182,11 +183,13 @@ contract IdentityUtilities is IIdentityUtilities, AccessControlUpgradeable, UUPS
         }
     }
 
-    function _isClaimValid(address identity, uint256 topicId, address issuer, bytes memory signature, bytes memory data)
-        internal
-        view
-        returns (bool)
-    {
+    function _isClaimValid(
+        address identity,
+        uint256 topicId,
+        address issuer,
+        bytes memory signature,
+        Structs.ClaimData memory data
+    ) internal view returns (bool) {
         if (issuer == address(0)) return false;
         try IClaimIssuer(issuer).isClaimValid(IIdentity(identity), topicId, signature, data) returns (bool valid) {
             return valid;
@@ -205,7 +208,7 @@ contract IdentityUtilities is IIdentityUtilities, AccessControlUpgradeable, UUPS
             uint256 scheme,
             address issuer,
             bytes memory signature,
-            bytes memory data,
+            Structs.ClaimData memory data,
             string memory uri
         ) = IIdentity(identity).getClaim(claimId);
 

@@ -14,12 +14,14 @@ import {
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { Identity } from "contracts/Identity.sol";
 import { SmartAccount } from "contracts/SmartAccount.sol";
+import { IERC735 } from "contracts/interface/IERC735.sol";
 import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
 import { ERC7579Signature } from "contracts/modules/validators/ERC7579Signature.sol";
+import { Structs } from "contracts/storage/Structs.sol";
 
 import { ClaimSignerHelper } from "./helpers/ClaimSignerHelper.sol";
 import { OnchainIDSetup } from "./helpers/OnchainIDSetup.sol";
@@ -273,18 +275,13 @@ contract SmartAccountTest is OnchainIDSetup {
         vm.stopPrank();
 
         // Self-issued claims now require a valid signature from one of the identity's CLAIM_SIGNER keys.
+        Structs.ClaimData memory data =
+            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: bytes("payload") });
         bytes memory signature =
-            ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(aliceIdentity), 42, bytes("payload"));
+            ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(aliceIdentity), 42, data);
 
-        bytes memory addClaimData = abi.encodeWithSignature(
-            "addClaim(uint256,uint256,address,bytes,bytes,string)",
-            uint256(42),
-            uint256(1),
-            address(aliceIdentity),
-            signature,
-            bytes("payload"),
-            string("")
-        );
+        bytes memory addClaimData =
+            abi.encodeCall(IERC735.addClaim, (uint256(42), uint256(1), address(aliceIdentity), signature, data, string("")));
         bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity), uint256(0), addClaimData);
 
         testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
@@ -334,18 +331,13 @@ contract SmartAccountTest is OnchainIDSetup {
         vm.stopPrank();
 
         // Self-issued claims now require a valid signature from one of the identity's CLAIM_SIGNER keys.
+        Structs.ClaimData memory data =
+            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: bytes("payload") });
         bytes memory signature =
-            ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(aliceIdentity), 43, bytes("payload"));
+            ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(aliceIdentity), 43, data);
 
-        bytes memory addClaimData = abi.encodeWithSignature(
-            "addClaim(uint256,uint256,address,bytes,bytes,string)",
-            uint256(43),
-            uint256(1),
-            address(aliceIdentity),
-            signature,
-            bytes("payload"),
-            string("")
-        );
+        bytes memory addClaimData =
+            abi.encodeCall(IERC735.addClaim, (uint256(43), uint256(1), address(aliceIdentity), signature, data, string("")));
         bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity), uint256(0), addClaimData);
 
         testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
@@ -394,21 +386,17 @@ contract SmartAccountTest is OnchainIDSetup {
         vm.stopPrank();
 
         // Self-issued claims now require a valid signature from one of the identity's CLAIM_SIGNER keys.
+        Structs.ClaimData memory data =
+            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: bytes("payload") });
         bytes memory signature =
-            ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(aliceIdentity), 99, bytes("payload"));
+            ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(aliceIdentity), 99, data);
 
         Execution[] memory batch = new Execution[](2);
         batch[0] = Execution({
             target: address(aliceIdentity),
             value: 0,
-            callData: abi.encodeWithSignature(
-                "addClaim(uint256,uint256,address,bytes,bytes,string)",
-                uint256(99),
-                uint256(1),
-                address(aliceIdentity),
-                signature,
-                bytes("payload"),
-                string("")
+            callData: abi.encodeCall(
+                IERC735.addClaim, (uint256(99), uint256(1), address(aliceIdentity), signature, data, string(""))
             )
         });
         batch[1] = Execution({
@@ -516,18 +504,13 @@ contract SmartAccountTest is OnchainIDSetup {
         vm.stopPrank();
 
         // Self-issued claims now require a valid signature from one of the identity's CLAIM_SIGNER keys.
+        Structs.ClaimData memory data =
+            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: bytes("payload") });
         bytes memory signature =
-            ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(aliceIdentity), 201, bytes("payload"));
+            ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(aliceIdentity), 201, data);
 
-        bytes memory addClaimData = abi.encodeWithSignature(
-            "addClaim(uint256,uint256,address,bytes,bytes,string)",
-            uint256(201),
-            uint256(1),
-            address(aliceIdentity),
-            signature,
-            bytes("payload"),
-            string("")
-        );
+        bytes memory addClaimData =
+            abi.encodeCall(IERC735.addClaim, (uint256(201), uint256(1), address(aliceIdentity), signature, data, string("")));
         bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity), uint256(0), addClaimData);
 
         testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
