@@ -94,8 +94,10 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
     /// @notice ERC-4337 user op validation. Validator proves the signature, then this
     ///         function applies the per-target rule.
     /// @dev The second decode of `(signer, sig)` is intentional. The validator decoded
-    ///      it for crypto; we decode it again to read the signer for policy. This keeps
-    ///      the validator signature-only and policy on the account.
+    ///      it for crypto; we decode it again to read the signer for policy.
+    ///      Validator contract: installed validators MUST use `abi.encode(bytes signer,
+    ///      bytes sig)` and MUST bind `signer` to verification. Otherwise the keyhash
+    ///      we derive here can diverge from the identity the validator actually checked.
     function _validateUserOp(PackedUserOperation calldata userOp, bytes32 userOpHash, bytes calldata signature)
         internal
         virtual
