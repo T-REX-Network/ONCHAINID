@@ -108,12 +108,12 @@ contract ClaimsModule is IERC7579Module, IERC735 {
             false
         );
 
-        // For claims from another issuer, ask that issuer to confirm. Skip the extra call if the issuer is this identity.
-        if (_issuer != account) {
-            require(
-                IClaimIssuer(_issuer).isClaimValid(IIdentity(account), _topic, _signature, _data), Errors.InvalidClaim()
-            );
-        }
+        // Always ask the issuer to confirm, even when the issuer is this identity.
+        // Self-issued claims still need a real CLAIM_SIGNER signature; the round trip
+        // back through our own fallback enforces the same rule as for external issuers.
+        require(
+            IClaimIssuer(_issuer).isClaimValid(IIdentity(account), _topic, _signature, _data), Errors.InvalidClaim()
+        );
 
         // (issuer, topic) is the claim id. Adding the same id again overwrites the previous entry.
         AccountState storage s = _state[account];

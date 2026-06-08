@@ -272,12 +272,16 @@ contract SmartAccountTest is OnchainIDSetup {
         aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
         vm.stopPrank();
 
+        // Self-issued claims now require a valid signature from one of the identity's CLAIM_SIGNER keys.
+        bytes memory signature =
+            ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(aliceIdentity), 42, bytes("payload"));
+
         bytes memory addClaimData = abi.encodeWithSignature(
             "addClaim(uint256,uint256,address,bytes,bytes,string)",
             uint256(42),
             uint256(1),
-            address(aliceIdentity), // self-issued claim — no external isClaimValid round trip
-            bytes(""),
+            address(aliceIdentity),
+            signature,
             bytes("payload"),
             string("")
         );
@@ -320,7 +324,8 @@ contract SmartAccountTest is OnchainIDSetup {
         testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
     }
 
-    /// @notice An executor whose key holds CLAIM_ADDER can dispatch `addClaim` on self.
+    /// @notice An executor whose key holds CLAIM_ADDER can dispatch `addClaim` on self,
+    ///         provided the claim carries a valid signature from a CLAIM_SIGNER on the identity.
     function test_executeFromExecutor_claimAdderExecutor_canAddClaimOnSelf() public {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
@@ -328,12 +333,16 @@ contract SmartAccountTest is OnchainIDSetup {
         aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_ADDER, KeyTypes.ECDSA);
         vm.stopPrank();
 
+        // Self-issued claims now require a valid signature from one of the identity's CLAIM_SIGNER keys.
+        bytes memory signature =
+            ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(aliceIdentity), 43, bytes("payload"));
+
         bytes memory addClaimData = abi.encodeWithSignature(
             "addClaim(uint256,uint256,address,bytes,bytes,string)",
             uint256(43),
             uint256(1),
             address(aliceIdentity),
-            bytes(""),
+            signature,
             bytes("payload"),
             string("")
         );
@@ -384,6 +393,10 @@ contract SmartAccountTest is OnchainIDSetup {
         aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
         vm.stopPrank();
 
+        // Self-issued claims now require a valid signature from one of the identity's CLAIM_SIGNER keys.
+        bytes memory signature =
+            ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(aliceIdentity), 99, bytes("payload"));
+
         Execution[] memory batch = new Execution[](2);
         batch[0] = Execution({
             target: address(aliceIdentity),
@@ -393,7 +406,7 @@ contract SmartAccountTest is OnchainIDSetup {
                 uint256(99),
                 uint256(1),
                 address(aliceIdentity),
-                bytes(""),
+                signature,
                 bytes("payload"),
                 string("")
             )
@@ -502,12 +515,16 @@ contract SmartAccountTest is OnchainIDSetup {
         aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
         vm.stopPrank();
 
+        // Self-issued claims now require a valid signature from one of the identity's CLAIM_SIGNER keys.
+        bytes memory signature =
+            ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(aliceIdentity), 201, bytes("payload"));
+
         bytes memory addClaimData = abi.encodeWithSignature(
             "addClaim(uint256,uint256,address,bytes,bytes,string)",
             uint256(201),
             uint256(1),
             address(aliceIdentity),
-            bytes(""),
+            signature,
             bytes("payload"),
             string("")
         );
