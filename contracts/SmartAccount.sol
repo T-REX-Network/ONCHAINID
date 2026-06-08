@@ -103,8 +103,11 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         returns (uint256)
     {
         // Step 1: let the installed validator prove the signature + ACTION purpose.
+        // Validators can return a non-zero packed `validationData` that still means success
+        // (encoded time bounds, or an aggregator authorizer). Only stop on the literal
+        // failure code; otherwise the per-target rule must still run.
         uint256 baseValidation = super._validateUserOp(userOp, userOpHash, signature);
-        if (baseValidation != ERC4337Utils.SIG_VALIDATION_SUCCESS) return baseValidation;
+        if (baseValidation == ERC4337Utils.SIG_VALIDATION_FAILED) return baseValidation;
 
         // Step 2: read the signer. Safe to trust now: the validator just proved it.
         // Malformed payload reverts here; EntryPoint treats that as a failed user op.
@@ -115,7 +118,10 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         if (!_isAuthorizedForUserOpCallData(userOp.callData, signerKeyHash)) {
             return ERC4337Utils.SIG_VALIDATION_FAILED;
         }
-        return ERC4337Utils.SIG_VALIDATION_SUCCESS;
+        // Returning `SIG_VALIDATION_SUCCESS` here would strip the time bounds and
+        // aggregator the validator encoded above. Pass the original word through so
+        // the EntryPoint enforces those constraints.
+        return baseValidation;
     }
 
     /// @dev Unpacks the outer `execute(mode, data)` and forwards to `_isAuthorizedForExecution`.
