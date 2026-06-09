@@ -127,7 +127,7 @@ library IdentityHelper {
         installs[12] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
-            initData: abi.encodePacked(IClaimIssuer.isDigestSpent.selector),
+            initData: abi.encodePacked(IClaimIssuer.isDigestRevoked.selector),
             purpose: 0
         });
         installs[13] = Structs.ModuleInstall({
@@ -186,7 +186,7 @@ library IdentityHelper {
             MODULE_TYPE_FALLBACK, claimsModule, abi.encodePacked(IClaimIssuer.revokeClaimByDigest.selector)
         );
         identity.installModule(
-            MODULE_TYPE_FALLBACK, claimsModule, abi.encodePacked(IClaimIssuer.isDigestSpent.selector)
+            MODULE_TYPE_FALLBACK, claimsModule, abi.encodePacked(IClaimIssuer.isDigestRevoked.selector)
         );
         identity.installModule(MODULE_TYPE_FALLBACK, claimsModule, abi.encodePacked(IClaimIssuer.addClaimTo.selector));
         vmHandle.stopPrank();

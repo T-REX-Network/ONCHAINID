@@ -13,7 +13,7 @@ interface IClaimIssuer is IIdentity {
         Valid,
         BadSignature,
         NotIssued,
-        Spent,
+        Revoked,
         NotYetValid,
         Expired
     }
@@ -40,7 +40,7 @@ interface IClaimIssuer is IIdentity {
      * @dev Returns true if the digest has been marked spent (revoked or removed).
      * @param digest the EIP-712 claim digest to check.
      */
-    function isDigestSpent(bytes32 digest) external view returns (bool);
+    function isDigestRevoked(bytes32 digest) external view returns (bool);
 
     /**
      * @dev Add a claim to a target identity contract. Validates that the signature is

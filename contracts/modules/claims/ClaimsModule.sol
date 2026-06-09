@@ -30,11 +30,13 @@ import { Structs } from "../../storage/Structs.sol";
  *         calling identity's domain (read via IERC5267), so off-chain signers sign against the
  *         identity address — not against this module address.
  *
- *         Digest-based revocation. The `spentDigests` mapping is the single source of truth for
- *         "this claim is no longer eligible." A digest can be marked spent by the issuer (via
- *         `revokeClaimByDigest`) or by the holder (via `removeClaim`). Once spent,
- *         the same `(issuer, topic, ClaimData)` cannot be re-added; the issuer must produce a fresh
- *         claim with different `ClaimData` (e.g. a bumped `issuedAt`) to re-attest.
+ *         Digest-based revocation. The issuer's `revokedDigests` set is the source of truth for
+ *         "this claim is no longer eligible," read by `_getClaimStatus` during validation. A digest
+ *         is marked revoked by the issuer (via `revokeClaimByDigest`) and by the holder (via
+ *         `removeClaim`, which writes to BOTH the holder's and the issuer's sets so the issuer-side
+ *         read sees it). Once revoked, the same `(issuer, topic, ClaimData)` cannot be re-added;
+ *         the issuer must produce a fresh claim with different `ClaimData` (e.g. a bumped
+ *         `issuedAt`) to re-attest.
  *
  *         Why digest, not signature bytes. Signatures are encoding-malleable in many ways
  *         (trailing zeros, ECDSA low-s siblings, fresh WebAuthn ceremonies, ERC-1271 internal
@@ -44,7 +46,7 @@ import { Structs } from "../../storage/Structs.sol";
  *         therefore the right identifier.
  *
  *         Why distinct events. `ClaimRevoked` is emitted only on issuer-side revocation;
- *         `ClaimRemoved` is emitted only on holder-side removal. They share the spent-set
+ *         `ClaimRemoved` is emitted only on holder-side removal. They share the revoked-set
  *         underneath but report different audit semantics to off-chain indexers.
  */
 contract ClaimsModule is IERC7579Module, IERC735 {
@@ -57,12 +59,14 @@ contract ClaimsModule is IERC7579Module, IERC735 {
      *
      *      claims:          claimId (= keccak256(issuer, topic)) → stored claim record.
      *      claimsByTopic:   topic → set of claimIds carrying that topic, for enumeration.
-     *      spentDigests:    EIP-712 claim digest → true once spent (revoked or removed).
+     *      revokedDigests:  EIP-712 claim digest → true once revoked. The issuer's set is the
+     *                       canonical source for `_getClaimStatus`. `removeClaim` writes to
+     *                       both the holder's and the issuer's sets to keep that invariant.
      */
     struct AccountState {
         mapping(bytes32 => Structs.Claim) claims;
         mapping(uint256 => EnumerableSet.Bytes32Set) claimsByTopic;
-        mapping(bytes32 => bool) spentDigests;
+        mapping(bytes32 => bool) revokedDigests;
     }
 
     /// @dev Storage shared across all identities that install this module.
@@ -79,7 +83,7 @@ contract ClaimsModule is IERC7579Module, IERC735 {
         keccak256("ClaimData(uint256 issuedAt,uint256 validUntil,bytes payload)");
 
     /**
-     * @notice Emitted when a claim digest is marked spent by the issuer (revocation).
+     * @notice Emitted when a claim digest is marked revoked by the issuer.
      *         Holder-side removals emit `ClaimRemoved` (from IERC735) instead.
      */
     event ClaimRevoked(bytes32 indexed digest, address indexed issuer);
@@ -107,8 +111,8 @@ contract ClaimsModule is IERC7579Module, IERC735 {
 
     /**
      * @inheritdoc IERC7579Module
-     * @dev No-op. Existing claim and spent-digest state on the uninstalling account is left in place
-     *      so re-installing the module does not silently un-revoke previously spent digests.
+     * @dev No-op. Existing claim and revoked-digest state on the uninstalling account is left in
+     *      place so re-installing the module does not silently un-revoke previously revoked digests.
      */
     function onUninstall(bytes calldata) external pure { }
 
@@ -149,13 +153,13 @@ contract ClaimsModule is IERC7579Module, IERC735 {
         // Always ask the issuer to confirm — self-issued claims included. For external issuers
         // this is a cross-contract round trip. For self-issued claims the call routes back into
         // this module's `_getClaimStatus` on the same identity, enforcing the exact same rules
-        // (CLAIM_SIGNER on issuer, signature valid for the digest, time bounds, digest not spent).
+        // (CLAIM_SIGNER on issuer, signature valid for the digest, time bounds, digest not revoked).
         require(
             IClaimIssuer(_issuer).isClaimValid(IIdentity(account), _topic, _signature, _data), Errors.InvalidClaim()
         );
 
         // Claim id is `(issuer, topic)`. Adding the same id again overwrites the previous record.
-        // The previous record is NOT counted as spent — overwriting is an update, not a removal.
+        // The previous record is NOT counted as revoked — overwriting is an update, not a removal.
         AccountState storage s = _state[account];
         bytes32 claimId = keccak256(abi.encode(_issuer, _topic));
         s.claims[claimId] = Structs.Claim({
@@ -177,7 +181,7 @@ contract ClaimsModule is IERC7579Module, IERC735 {
      * @inheritdoc IERC735
      * @param _claimId Storage key returned by `addClaim`.
      * @return success True when the claim was found and removed.
-     * @dev Marks the removed claim's digest as spent. After `removeClaim`, the exact same
+     * @dev Marks the removed claim's digest as revoked. After `removeClaim`, the exact same
      *      `(issuer, topic, ClaimData)` cannot be re-added — the issuer must sign a fresh
      *      claim (varying `issuedAt`, `payload`, or `validUntil`) to re-attest.
      */
@@ -197,11 +201,15 @@ contract ClaimsModule is IERC7579Module, IERC735 {
         uint256 topic = c.topic;
         require(topic != 0, Errors.ClaimNotRegistered(_claimId));
 
-        // Spend the digest first, while the fields are still in storage. The digest is built
-        // against the holder identity (account is the subject; issuer-side `revokeClaimByDigest`
-        // computes it the same way), so issuer revocations and holder removals key the same set.
+        // Mark the digest revoked while the fields are still in storage. Write to BOTH the
+        // holder's and the issuer's revoked sets so `_getClaimStatus` (which reads the issuer's
+        // set during validation) sees the removal and blocks re-adding the same bytes. The
+        // holder-side write keeps a local record; the issuer-side write is what makes the rule
+        // stick for external issuers.
         bytes32 digest = _getClaimDigest(c.issuer, account, topic, c.data);
-        s.spentDigests[digest] = true;
+        require(!s.revokedDigests[digest], Errors.ClaimAlreadyRevoked());
+        s.revokedDigests[digest] = true;
+        _state[c.issuer].revokedDigests[digest] = true;
 
         // Drop the topic index entry first so the event still has the claim fields available.
         s.claimsByTopic[topic].remove(_claimId);
@@ -267,26 +275,26 @@ contract ClaimsModule is IERC7579Module, IERC735 {
     // -----------------------------------------------------------------------
 
     /**
-     * @notice Mark a claim digest as spent. Canonical issuer-side revocation entry point — the
+     * @notice Mark a claim digest as revoked. Canonical issuer-side revocation entry point — the
      *         issuer already knows the digest (or computed it via `getClaimHash`), so no claim
      *         lookup is required.
-     * @param digest the EIP-712 claim digest to mark spent.
+     * @param digest the EIP-712 claim digest to mark revoked.
      */
     function revokeClaimByDigest(bytes32 digest) external {
         address account = msg.sender;
         _requireManagement(account, _msgSender());
-        require(!_state[account].spentDigests[digest], Errors.ClaimAlreadyRevoked());
+        require(!_state[account].revokedDigests[digest], Errors.ClaimAlreadyRevoked());
 
-        _state[account].spentDigests[digest] = true;
+        _state[account].revokedDigests[digest] = true;
         emit ClaimRevoked(digest, account);
     }
 
     /**
-     * @notice True if `digest` has been marked spent by the calling issuer (revoked or removed).
-     * @param digest EIP-712 claim digest to look up in the calling issuer's spent set.
+     * @notice True if `digest` has been marked revoked by the calling issuer (via revoke or removal).
+     * @param digest EIP-712 claim digest to look up in the calling issuer's revoked set.
      */
-    function isDigestSpent(bytes32 digest) public view returns (bool) {
-        return _state[msg.sender].spentDigests[digest];
+    function isDigestRevoked(bytes32 digest) public view returns (bool) {
+        return _state[msg.sender].revokedDigests[digest];
     }
 
     /**
@@ -309,7 +317,7 @@ contract ClaimsModule is IERC7579Module, IERC735 {
     }
 
     /**
-     * @notice Detailed status for a claim. Distinguishes `Spent`, `Expired`, `NotYetValid`,
+     * @notice Detailed status for a claim. Distinguishes `Revoked`, `Expired`, `NotYetValid`,
      *         `NotIssued`, and `BadSignature` — useful for off-chain consumers that need to
      *         surface a reason to users (e.g. "claim expired" vs "claim revoked").
      */
@@ -413,7 +421,7 @@ contract ClaimsModule is IERC7579Module, IERC735 {
      * @dev Compute the detailed validity status for a claim. Checks are ordered cheapest first.
      *
      *      1. Time bounds (`issuedAt` set, not in the future, not past `validUntil`).
-     *      2. Spent-digest check (revoked or removed).
+     *      2. Revoked-digest check (issuer-side revoke or holder-side removal).
      *      3. Signature shape (`abi.encode(bytes signer, bytes rawSig)` with `signer.length >= 20`).
      *      4. Signer purpose (CLAIM_SIGNER on the issuer identity).
      *      5. Cryptographic verification against the EIP-712 digest.
@@ -422,7 +430,7 @@ contract ClaimsModule is IERC7579Module, IERC735 {
      *      payload (head = 64 bytes minimum), so we short-circuit before calling `abi.decode`
      *      to keep this view crash-safe on garbage input.
      *
-     * @param account Issuer identity (holds the spent set + the CLAIM_SIGNER keys).
+     * @param account Issuer identity (holds the revoked set + the CLAIM_SIGNER keys).
      * @param _identity Subject identity the claim is about.
      * @param topic Claim topic.
      * @param sig `abi.encode(bytes signer, bytes rawSig)`. `signer` follows ERC-7913.
@@ -441,9 +449,9 @@ contract ClaimsModule is IERC7579Module, IERC735 {
         // `validUntil == 0` means "no expiry".
         if (data.validUntil != 0 && block.timestamp > data.validUntil) return IClaimIssuer.ClaimStatus.Expired;
 
-        // 2. Spent-digest. Same mapping for issuer revocations and holder removals.
+        // 2. Revoked-digest. Same mapping for issuer revocations and holder removals.
         bytes32 digest = _getClaimDigest(account, address(_identity), topic, data);
-        if (_state[account].spentDigests[digest]) return IClaimIssuer.ClaimStatus.Spent;
+        if (_state[account].revokedDigests[digest]) return IClaimIssuer.ClaimStatus.Revoked;
 
         // 3. Signature shape. Guard length to avoid `abi.decode` reverting on garbage.
         if (sig.length < 64) return IClaimIssuer.ClaimStatus.BadSignature;
