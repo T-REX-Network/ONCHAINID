@@ -2,6 +2,7 @@
 pragma solidity ^0.8.27;
 
 import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
+import { IdentityHelper } from "../helpers/IdentityHelper.sol";
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 import { Constants } from "../utils/Constants.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
@@ -41,7 +42,7 @@ contract IdFactoryTest is OnchainIDSetup {
 
     function test_revertBecauseAuthorityIsZeroAddress() public {
         vm.expectRevert(Errors.ZeroAddress.selector);
-        new IdFactory(address(0), deployer, address(0), address(0), address(0));
+        new IdFactory(address(0), deployer);
     }
 
     function test_revertBecauseSenderNotAllowedToCreateIdentities() public {
@@ -53,7 +54,7 @@ contract IdFactoryTest is OnchainIDSetup {
                 IdentityTypes.INDIVIDUAL,
                 "salt1",
                 _makeSingleMgmtKeys(address(0)),
-                new Structs.ModuleInstall[](0)
+                IdentityHelper.defaultModules(onchainidSetup)
             );
     }
 
@@ -66,7 +67,7 @@ contract IdFactoryTest is OnchainIDSetup {
                 IdentityTypes.INDIVIDUAL,
                 "salt1",
                 _makeSingleMgmtKeys(address(0)),
-                new Structs.ModuleInstall[](0)
+                IdentityHelper.defaultModules(onchainidSetup)
             );
     }
 
@@ -74,7 +75,11 @@ contract IdFactoryTest is OnchainIDSetup {
         vm.prank(deployer);
         onchainidSetup.idFactory
             .createIdentity(
-                carol, IdentityTypes.INDIVIDUAL, "saltUsed", new Structs.KeyParam[](0), new Structs.ModuleInstall[](0)
+                carol,
+                IdentityTypes.INDIVIDUAL,
+                "saltUsed",
+                new Structs.KeyParam[](0),
+                IdentityHelper.defaultModules(onchainidSetup)
             );
 
         vm.prank(deployer);
@@ -82,7 +87,11 @@ contract IdFactoryTest is OnchainIDSetup {
         vm.expectRevert(OZErrors.FailedDeployment.selector);
         onchainidSetup.idFactory
             .createIdentity(
-                david, IdentityTypes.INDIVIDUAL, "saltUsed", new Structs.KeyParam[](0), new Structs.ModuleInstall[](0)
+                david,
+                IdentityTypes.INDIVIDUAL,
+                "saltUsed",
+                new Structs.KeyParam[](0),
+                IdentityHelper.defaultModules(onchainidSetup)
             );
     }
 
@@ -91,7 +100,11 @@ contract IdFactoryTest is OnchainIDSetup {
         vm.expectRevert(abi.encodeWithSelector(Errors.AccountAlreadyLinkedToIdentity.selector, alice));
         onchainidSetup.idFactory
             .createIdentity(
-                alice, IdentityTypes.INDIVIDUAL, "newSalt", new Structs.KeyParam[](0), new Structs.ModuleInstall[](0)
+                alice,
+                IdentityTypes.INDIVIDUAL,
+                "newSalt",
+                new Structs.KeyParam[](0),
+                IdentityHelper.defaultModules(onchainidSetup)
             );
     }
 
@@ -101,7 +114,9 @@ contract IdFactoryTest is OnchainIDSetup {
         Structs.KeyParam[] memory emptyKeys = new Structs.KeyParam[](0);
         vm.prank(deployer);
         address identity = onchainidSetup.idFactory
-            .createIdentity(david, IdentityTypes.INDIVIDUAL, "salt1", emptyKeys, new Structs.ModuleInstall[](0));
+            .createIdentity(
+                david, IdentityTypes.INDIVIDUAL, "salt1", emptyKeys, IdentityHelper.defaultModules(onchainidSetup)
+            );
         bytes32 davidKey = keccak256(abi.encodePacked(david));
         assertTrue(
             Identity(payable(identity)).keyHasPurpose(davidKey, KeyPurposes.MANAGEMENT),
@@ -234,7 +249,9 @@ contract IdFactoryTest is OnchainIDSetup {
         vm.prank(deployer);
         vm.expectRevert(Errors.ZeroAddress.selector);
         onchainidSetup.idFactory
-            .createIdentity(address(0), IdentityTypes.INDIVIDUAL, "salt1", keys, new Structs.ModuleInstall[](0));
+            .createIdentity(
+                address(0), IdentityTypes.INDIVIDUAL, "salt1", keys, IdentityHelper.defaultModules(onchainidSetup)
+            );
     }
 
     function test_createIdentity_withNonAccountManagementKeys_revertSaltTaken() public {
@@ -243,7 +260,9 @@ contract IdFactoryTest is OnchainIDSetup {
 
         vm.prank(deployer);
         onchainidSetup.idFactory
-            .createIdentity(david, IdentityTypes.INDIVIDUAL, "sharedSalt", keys, new Structs.ModuleInstall[](0));
+            .createIdentity(
+                david, IdentityTypes.INDIVIDUAL, "sharedSalt", keys, IdentityHelper.defaultModules(onchainidSetup)
+            );
 
         address anotherAccount = makeAddr("anotherAccount");
         vm.prank(deployer);
@@ -251,7 +270,11 @@ contract IdFactoryTest is OnchainIDSetup {
         vm.expectRevert(OZErrors.FailedDeployment.selector);
         onchainidSetup.idFactory
             .createIdentity(
-                anotherAccount, IdentityTypes.INDIVIDUAL, "sharedSalt", keys, new Structs.ModuleInstall[](0)
+                anotherAccount,
+                IdentityTypes.INDIVIDUAL,
+                "sharedSalt",
+                keys,
+                IdentityHelper.defaultModules(onchainidSetup)
             );
     }
 
@@ -262,7 +285,9 @@ contract IdFactoryTest is OnchainIDSetup {
         vm.prank(deployer);
         vm.expectRevert(abi.encodeWithSelector(Errors.AccountAlreadyLinkedToIdentity.selector, alice));
         onchainidSetup.idFactory
-            .createIdentity(alice, IdentityTypes.INDIVIDUAL, "uniqueSalt", keys, new Structs.ModuleInstall[](0));
+            .createIdentity(
+                alice, IdentityTypes.INDIVIDUAL, "uniqueSalt", keys, IdentityHelper.defaultModules(onchainidSetup)
+            );
     }
 
     function test_createIdentity_withNonAccountManagementKeys_shouldDeployAndSetKeys() public {
@@ -271,7 +296,9 @@ contract IdFactoryTest is OnchainIDSetup {
 
         vm.prank(deployer);
         address identityAddr = onchainidSetup.idFactory
-            .createIdentity(david, IdentityTypes.INDIVIDUAL, "salt1", keys, new Structs.ModuleInstall[](0));
+            .createIdentity(
+                david, IdentityTypes.INDIVIDUAL, "salt1", keys, IdentityHelper.defaultModules(onchainidSetup)
+            );
 
         Identity identity = Identity(payable(identityAddr));
 
@@ -300,7 +327,9 @@ contract IdFactoryTest is OnchainIDSetup {
 
         vm.prank(deployer);
         address identityAddr = onchainidSetup.idFactory
-            .createIdentity(david, IdentityTypes.INDIVIDUAL, "saltWithAdders", keys, new Structs.ModuleInstall[](0));
+            .createIdentity(
+                david, IdentityTypes.INDIVIDUAL, "saltWithAdders", keys, IdentityHelper.defaultModules(onchainidSetup)
+            );
 
         Identity identity = Identity(payable(identityAddr));
 
@@ -331,7 +360,9 @@ contract IdFactoryTest is OnchainIDSetup {
 
         vm.prank(deployer);
         address identityAddr = onchainidSetup.idFactory
-            .createIdentity(david, IdentityTypes.INDIVIDUAL, "saltMgmtAdders", keys, new Structs.ModuleInstall[](0));
+            .createIdentity(
+                david, IdentityTypes.INDIVIDUAL, "saltMgmtAdders", keys, IdentityHelper.defaultModules(onchainidSetup)
+            );
 
         Identity identity = Identity(payable(identityAddr));
 
@@ -357,7 +388,7 @@ contract IdFactoryTest is OnchainIDSetup {
                 IdentityTypes.INDIVIDUAL,
                 "saltFactoryKey",
                 new Structs.KeyParam[](0),
-                new Structs.ModuleInstall[](0)
+                IdentityHelper.defaultModules(onchainidSetup)
             );
 
         Identity identity = Identity(payable(identityAddr));
@@ -382,7 +413,7 @@ contract IdFactoryTest is OnchainIDSetup {
                 IdentityTypes.SMART_CONTRACT,
                 "saltSmartContract",
                 new Structs.KeyParam[](0),
-                new Structs.ModuleInstall[](0)
+                IdentityHelper.defaultModules(onchainidSetup)
             );
 
         Identity identity = Identity(payable(identityAddr));
@@ -398,7 +429,7 @@ contract IdFactoryTest is OnchainIDSetup {
                 IdentityTypes.PUBLIC_AUTHORITY,
                 "saltPublicAuth",
                 new Structs.KeyParam[](0),
-                new Structs.ModuleInstall[](0)
+                IdentityHelper.defaultModules(onchainidSetup)
             );
 
         Identity identity = Identity(payable(identityAddr));
@@ -407,16 +438,15 @@ contract IdFactoryTest is OnchainIDSetup {
 
     // ============ createIdentity with module installation ============
 
-    /// @notice User-supplied modules are appended after the factory's auto-installed default set,
-    ///         so a fresh validator passed via `_modules` ends up installed alongside the defaults.
+    /// @notice User-supplied modules are passed straight through to `Identity.initialize`;
+    ///         the factory itself no longer installs any defaults.
     function test_createIdentity_withModules_shouldInstallUserSuppliedModule() public {
-        // Deploy a SECOND validator distinct from the one the factory auto-installs.
-        address additionalValidator = address(new ERC7579Signature());
+        address userValidator = address(new ERC7579Signature());
 
         Structs.ModuleInstall[] memory modules = new Structs.ModuleInstall[](1);
         modules[0] = Structs.ModuleInstall({
             moduleType: 1, // MODULE_TYPE_VALIDATOR
-            module: additionalValidator,
+            module: userValidator,
             initData: "",
             purpose: 0
         });
@@ -426,14 +456,7 @@ contract IdFactoryTest is OnchainIDSetup {
             .createIdentity(david, IdentityTypes.INDIVIDUAL, "saltWithModules", new Structs.KeyParam[](0), modules);
 
         Identity identity = Identity(payable(identityAddr));
-        assertTrue(
-            identity.isModuleInstalled(1, additionalValidator, ""),
-            "user-supplied validator should be installed alongside the factory defaults"
-        );
-        assertTrue(
-            identity.isModuleInstalled(1, address(onchainidSetup.signatureValidator), ""),
-            "factory's default validator should also be installed"
-        );
+        assertTrue(identity.isModuleInstalled(1, userValidator, ""), "user-supplied validator should be installed");
     }
 
     // ============ _deploy CREATE2 failure ============
@@ -443,14 +466,18 @@ contract IdFactoryTest is OnchainIDSetup {
         // Deploy a factory with a reverting implementation
         RevertingIdentity revertingImpl = new RevertingIdentity();
         ImplementationAuthority badAuthority = new ImplementationAuthority(address(revertingImpl), deployer);
-        IdFactory badFactory = new IdFactory(address(badAuthority), deployer, address(0), address(0), address(0));
+        IdFactory badFactory = new IdFactory(address(badAuthority), deployer);
 
         // createIdentity will try CREATE2 with IdentityProxy whose constructor
         // delegatecalls initialize() on RevertingIdentity, which reverts,
         // causing CREATE2 to return address(0) and triggering assembly revert
         vm.expectRevert();
         badFactory.createIdentity(
-            david, IdentityTypes.INDIVIDUAL, "salt1", new Structs.KeyParam[](0), new Structs.ModuleInstall[](0)
+            david,
+            IdentityTypes.INDIVIDUAL,
+            "salt1",
+            new Structs.KeyParam[](0),
+            IdentityHelper.defaultModules(onchainidSetup)
         );
     }
 

@@ -49,103 +49,114 @@ library IdentityHelper {
         setup.identityImplementation = new Identity(true);
         setup.implementationAuthority =
             new ImplementationAuthority(address(setup.identityImplementation), managementKey);
-        setup.idFactory = new IdFactory(
-            address(setup.implementationAuthority),
-            managementKey,
-            address(setup.signatureValidator),
-            address(setup.keyApprovalModule),
-            address(setup.claimsModule)
-        );
+        setup.idFactory = new IdFactory(address(setup.implementationAuthority), managementKey);
     }
 
-    /// @notice Builds the full default-module install list: legacy queue (execute/approve) +
-    ///         ClaimsModule (ERC-735 surface + issuer extras). Caller passes the singletons.
-    function legacyQueueModules(address keyApprovalModule, address claimsModule)
+    /// @notice Convenience overload that picks the singletons out of an `OnchainIDSetup`.
+    function defaultModules(OnchainIDSetup memory setup)
         internal
         pure
         returns (Structs.ModuleInstall[] memory installs)
     {
-        installs = new Structs.ModuleInstall[](15);
-        // ----- KeyApprovalModule: 1 executor + 3 fallbacks -----
+        return defaultModules(
+            address(setup.signatureValidator), address(setup.keyApprovalModule), address(setup.claimsModule)
+        );
+    }
+
+    /// @notice Builds the default-module install list a typical Identity wants: the ERC-7579
+    ///         signature validator, KeyApprovalModule (legacy execute/approve queue), and the
+    ///         ClaimsModule (ERC-735 + ClaimIssuer surface). The factory no longer hardcodes
+    ///         this list, so callers compose it themselves via this helper.
+    function defaultModules(address signatureValidator, address keyApprovalModule, address claimsModule)
+        internal
+        pure
+        returns (Structs.ModuleInstall[] memory installs)
+    {
+        installs = new Structs.ModuleInstall[](16);
+        // ----- Signature validator -----
         installs[0] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_VALIDATOR, module: signatureValidator, initData: "", purpose: 0
+        });
+        // ----- KeyApprovalModule: 1 executor + 3 fallbacks -----
+        installs[1] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_EXECUTOR, module: keyApprovalModule, initData: "", purpose: KeyPurposes.MANAGEMENT
         });
-        installs[1] = Structs.ModuleInstall({
+        installs[2] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: keyApprovalModule,
             initData: abi.encodePacked(IKeyExecutor.execute.selector),
             purpose: 0
         });
-        installs[2] = Structs.ModuleInstall({
+        installs[3] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: keyApprovalModule,
             initData: abi.encodePacked(IKeyExecutor.approve.selector),
             purpose: 0
         });
-        installs[3] = Structs.ModuleInstall({
+        installs[4] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: keyApprovalModule,
             initData: abi.encodePacked(IKeyExecutor.getCurrentNonce.selector),
             purpose: 0
         });
         // ----- ClaimsModule: 1 executor + 10 fallbacks -----
-        installs[4] =
+        installs[5] =
             Structs.ModuleInstall({ moduleType: MODULE_TYPE_EXECUTOR, module: claimsModule, initData: "", purpose: 0 });
-        installs[5] = Structs.ModuleInstall({
+        installs[6] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
             initData: abi.encodePacked(IERC735.addClaim.selector),
             purpose: 0
         });
-        installs[6] = Structs.ModuleInstall({
+        installs[7] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
             initData: abi.encodePacked(IERC735.removeClaim.selector),
             purpose: 0
         });
-        installs[7] = Structs.ModuleInstall({
+        installs[8] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
             initData: abi.encodePacked(IERC735.getClaim.selector),
             purpose: 0
         });
-        installs[8] = Structs.ModuleInstall({
+        installs[9] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
             initData: abi.encodePacked(IERC735.getClaimIdsByTopic.selector),
             purpose: 0
         });
-        installs[9] = Structs.ModuleInstall({
+        installs[10] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
             initData: abi.encodePacked(IIdentity.isClaimValid.selector),
             purpose: 0
         });
-        installs[10] = Structs.ModuleInstall({
+        installs[11] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
             initData: abi.encodePacked(IIdentity.getClaimHash.selector),
             purpose: 0
         });
-        installs[11] = Structs.ModuleInstall({
+        installs[12] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
             initData: abi.encodePacked(IClaimIssuer.revokeClaim.selector),
             purpose: 0
         });
-        installs[12] = Structs.ModuleInstall({
+        installs[13] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
             initData: abi.encodePacked(IClaimIssuer.revokeClaimBySignature.selector),
             purpose: 0
         });
-        installs[13] = Structs.ModuleInstall({
+        installs[14] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
             initData: abi.encodePacked(IClaimIssuer.isClaimRevoked.selector),
             purpose: 0
         });
-        installs[14] = Structs.ModuleInstall({
+        installs[15] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
             initData: abi.encodePacked(IClaimIssuer.addClaimTo.selector),

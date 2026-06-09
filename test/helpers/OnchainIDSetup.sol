@@ -79,7 +79,11 @@ contract OnchainIDSetup is Test {
         });
         address claimIssuerAddr = onchainidSetup.idFactory
             .createIdentity(
-                claimIssuerOwner, IdentityTypes.CLAIM_ISSUER, "claimIssuer", issuerKeys, new Structs.ModuleInstall[](0)
+                claimIssuerOwner,
+                IdentityTypes.CLAIM_ISSUER,
+                "claimIssuer",
+                issuerKeys,
+                IdentityHelper.defaultModules(onchainidSetup)
             );
         claimIssuer = Identity(payable(claimIssuerAddr));
 
@@ -93,7 +97,11 @@ contract OnchainIDSetup is Test {
         vm.prank(deployer);
         address aliceIdentityAddr = onchainidSetup.idFactory
             .createIdentity(
-                alice, IdentityTypes.INDIVIDUAL, "alice", new Structs.KeyParam[](0), new Structs.ModuleInstall[](0)
+                alice,
+                IdentityTypes.INDIVIDUAL,
+                "alice",
+                new Structs.KeyParam[](0),
+                IdentityHelper.defaultModules(onchainidSetup)
             );
         aliceIdentity = Identity(payable(aliceIdentityAddr));
 
@@ -133,7 +141,11 @@ contract OnchainIDSetup is Test {
         vm.prank(deployer);
         address bobIdentityAddr = onchainidSetup.idFactory
             .createIdentity(
-                bob, IdentityTypes.INDIVIDUAL, "bob", new Structs.KeyParam[](0), new Structs.ModuleInstall[](0)
+                bob,
+                IdentityTypes.INDIVIDUAL,
+                "bob",
+                new Structs.KeyParam[](0),
+                IdentityHelper.defaultModules(onchainidSetup)
             );
         bobIdentity = Identity(payable(bobIdentityAddr));
 
@@ -149,7 +161,11 @@ contract OnchainIDSetup is Test {
         });
         onchainidSetup.idFactory
             .createIdentity(
-                Constants.TOKEN_ADDRESS, IdentityTypes.ASSET, "tokenOwner", tokenKeys, new Structs.ModuleInstall[](0)
+                Constants.TOKEN_ADDRESS,
+                IdentityTypes.ASSET,
+                "tokenOwner",
+                tokenKeys,
+                IdentityHelper.defaultModules(onchainidSetup)
             );
     }
 

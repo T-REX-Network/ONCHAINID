@@ -80,9 +80,7 @@ contract DeployOnchainID is Script {
         console.log("ClaimsModule:", address(claimsModule));
 
         // 5. IdFactory
-        IdFactory idFactory = new IdFactory(
-            address(authority), deployer, address(signatureValidator), address(keyApprovalModule), address(claimsModule)
-        );
+        IdFactory idFactory = new IdFactory(address(authority), deployer);
         console.log("IdFactory:", address(idFactory));
 
         // 7. Gateway

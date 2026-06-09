@@ -22,7 +22,7 @@ contract TokenOidTest is Test {
     address internal alice;
     address internal bob;
 
-    Structs.ModuleInstall[] internal _emptyModules;
+    Structs.ModuleInstall[] internal _modules;
 
     function setUp() public {
         deployer = makeAddr("tokenOidDeployer");
@@ -32,6 +32,11 @@ contract TokenOidTest is Test {
         vm.startPrank(deployer);
         setup = IdentityHelper.deployFactory(deployer);
         vm.stopPrank();
+
+        Structs.ModuleInstall[] memory defaults = IdentityHelper.defaultModules(setup);
+        for (uint256 i = 0; i < defaults.length; i++) {
+            _modules.push(defaults[i]);
+        }
     }
 
     // ---- helpers ----
@@ -114,13 +119,13 @@ contract TokenOidTest is Test {
     function test_createTokenIdentity_revertNotAuthorized() public {
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
-        setup.idFactory.createIdentity(alice, IdentityTypes.ASSET, "TST", _makeMgmtKey(alice), _emptyModules);
+        setup.idFactory.createIdentity(alice, IdentityTypes.ASSET, "TST", _makeMgmtKey(alice), _modules);
     }
 
     function test_createTokenIdentity_revertTokenZeroAddress() public {
         vm.prank(deployer);
         vm.expectRevert(Errors.ZeroAddress.selector);
-        setup.idFactory.createIdentity(address(0), IdentityTypes.ASSET, "TST", _makeMgmtKey(alice), _emptyModules);
+        setup.idFactory.createIdentity(address(0), IdentityTypes.ASSET, "TST", _makeMgmtKey(alice), _modules);
     }
 
     /// @notice For a token identity, the factory auto-injects the token contract address
@@ -130,7 +135,7 @@ contract TokenOidTest is Test {
     function test_createTokenIdentity_autoInjectsTokenAsManagement() public {
         vm.prank(deployer);
         address identity =
-            setup.idFactory.createIdentity(alice, IdentityTypes.ASSET, "TST", new Structs.KeyParam[](0), _emptyModules);
+            setup.idFactory.createIdentity(alice, IdentityTypes.ASSET, "TST", new Structs.KeyParam[](0), _modules);
         bytes32 aliceKey = keccak256(abi.encodePacked(alice));
         assertTrue(
             Identity(payable(identity)).keyHasPurpose(aliceKey, KeyPurposes.MANAGEMENT),
@@ -146,7 +151,7 @@ contract TokenOidTest is Test {
         address token = makeAddr("tokenAddr");
         vm.prank(alice);
         address identity =
-            setup.idFactory.createIdentity(token, IdentityTypes.ASSET, "factorySalt", _makeMgmtKey(bob), _emptyModules);
+            setup.idFactory.createIdentity(token, IdentityTypes.ASSET, "factorySalt", _makeMgmtKey(bob), _modules);
 
         assertTrue(identity != address(0), "Identity should be deployed");
         assertEq(setup.idFactory.getIdentity(token), identity, "Token should map to identity");
@@ -155,7 +160,7 @@ contract TokenOidTest is Test {
 
     function test_createTokenIdentity_shouldCreateAndRevertDuplicate() public {
         vm.prank(deployer);
-        setup.idFactory.createIdentity(alice, IdentityTypes.ASSET, "salt1", _makeMgmtKey(bob), _emptyModules);
+        setup.idFactory.createIdentity(alice, IdentityTypes.ASSET, "salt1", _makeMgmtKey(bob), _modules);
 
         address tokenIdentityAddr = setup.idFactory.getIdentity(alice);
         assertTrue(tokenIdentityAddr != address(0));
@@ -164,12 +169,12 @@ contract TokenOidTest is Test {
         // Same salt should revert at Create3 with FailedDeployment() (bob's MANAGEMENT key is auto-injected).
         vm.prank(deployer);
         vm.expectRevert(OZErrors.FailedDeployment.selector);
-        setup.idFactory.createIdentity(bob, IdentityTypes.ASSET, "salt1", new Structs.KeyParam[](0), _emptyModules);
+        setup.idFactory.createIdentity(bob, IdentityTypes.ASSET, "salt1", new Structs.KeyParam[](0), _modules);
 
         // Same token address should revert (alice's MANAGEMENT key is auto-injected by the factory).
         vm.prank(deployer);
         vm.expectRevert(abi.encodeWithSelector(Errors.AccountAlreadyLinkedToIdentity.selector, alice));
-        setup.idFactory.createIdentity(alice, IdentityTypes.ASSET, "salt2", new Structs.KeyParam[](0), _emptyModules);
+        setup.idFactory.createIdentity(alice, IdentityTypes.ASSET, "salt2", new Structs.KeyParam[](0), _modules);
     }
 
     /// @notice createTokenIdentity with multiple key types should set all keys
@@ -182,8 +187,7 @@ contract TokenOidTest is Test {
 
         address token = makeAddr("tokenWithKeys");
         vm.prank(deployer);
-        address identityAddr =
-            setup.idFactory.createIdentity(token, IdentityTypes.ASSET, "saltKeys", keys, _emptyModules);
+        address identityAddr = setup.idFactory.createIdentity(token, IdentityTypes.ASSET, "saltKeys", keys, _modules);
 
         Identity identity = Identity(payable(identityAddr));
 
