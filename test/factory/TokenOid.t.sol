@@ -8,6 +8,7 @@ import { Errors as OZErrors } from "@openzeppelin/contracts/utils/Errors.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IdFactory } from "contracts/factory/IdFactory.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
+import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { Structs } from "contracts/storage/Structs.sol";
@@ -113,35 +114,28 @@ contract TokenOidTest is Test {
     function test_createTokenIdentity_revertNotAuthorized() public {
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
-        setup.idFactory.createTokenIdentity(alice, "TST", _makeMgmtKey(alice), _emptyModules);
+        setup.idFactory.createIdentity(alice, IdentityTypes.ASSET, "TST", _makeMgmtKey(alice), _emptyModules);
     }
 
     function test_createTokenIdentity_revertTokenZeroAddress() public {
         vm.prank(deployer);
         vm.expectRevert(Errors.ZeroAddress.selector);
-        setup.idFactory.createTokenIdentity(address(0), "TST", _makeMgmtKey(alice), _emptyModules);
+        setup.idFactory.createIdentity(address(0), IdentityTypes.ASSET, "TST", _makeMgmtKey(alice), _emptyModules);
     }
 
-    function test_createTokenIdentity_revertEmptySalt() public {
+    /// @notice For a token identity, the factory auto-injects the token contract address
+    ///         (`_account`) as a MANAGEMENT key. Empty user-supplied keys still produce a valid
+    ///         identity — the token-as-MANAGEMENT key is unusable on its own (contracts don't
+    ///         sign), so callers who want operational control supply their own keys via `_keys`.
+    function test_createTokenIdentity_autoInjectsTokenAsManagement() public {
         vm.prank(deployer);
-        vm.expectRevert(Errors.EmptyString.selector);
-        setup.idFactory.createTokenIdentity(alice, "", _makeMgmtKey(alice), _emptyModules);
-    }
-
-    function test_createTokenIdentity_revertEmptyKeys() public {
-        vm.prank(deployer);
-        vm.expectRevert(Errors.EmptyListOfKeys.selector);
-        setup.idFactory.createTokenIdentity(alice, "TST", new Structs.KeyParam[](0), _emptyModules);
-    }
-
-    /// @notice At least one MANAGEMENT key must be supplied — bootstrap removal rejects it otherwise.
-    function test_createTokenIdentity_revertNoManagementKey() public {
-        Structs.KeyParam[] memory actionOnly = new Structs.KeyParam[](1);
-        actionOnly[0] = _makeECDSAKey(bob, KeyPurposes.ACTION);
-
-        vm.prank(deployer);
-        vm.expectRevert(Errors.CannotRemoveLastManagementKey.selector);
-        setup.idFactory.createTokenIdentity(alice, "TST", actionOnly, _emptyModules);
+        address identity =
+            setup.idFactory.createIdentity(alice, IdentityTypes.ASSET, "TST", new Structs.KeyParam[](0), _emptyModules);
+        bytes32 aliceKey = keccak256(abi.encodePacked(alice));
+        assertTrue(
+            Identity(payable(identity)).keyHasPurpose(aliceKey, KeyPurposes.MANAGEMENT),
+            "token contract should be auto-injected as MANAGEMENT key"
+        );
     }
 
     /// @notice Token factory should be able to create token identity
@@ -151,7 +145,8 @@ contract TokenOidTest is Test {
 
         address token = makeAddr("tokenAddr");
         vm.prank(alice);
-        address identity = setup.idFactory.createTokenIdentity(token, "factorySalt", _makeMgmtKey(bob), _emptyModules);
+        address identity =
+            setup.idFactory.createIdentity(token, IdentityTypes.ASSET, "factorySalt", _makeMgmtKey(bob), _emptyModules);
 
         assertTrue(identity != address(0), "Identity should be deployed");
         assertEq(setup.idFactory.getIdentity(token), identity, "Token should map to identity");
@@ -160,21 +155,21 @@ contract TokenOidTest is Test {
 
     function test_createTokenIdentity_shouldCreateAndRevertDuplicate() public {
         vm.prank(deployer);
-        setup.idFactory.createTokenIdentity(alice, "salt1", _makeMgmtKey(bob), _emptyModules);
+        setup.idFactory.createIdentity(alice, IdentityTypes.ASSET, "salt1", _makeMgmtKey(bob), _emptyModules);
 
         address tokenIdentityAddr = setup.idFactory.getIdentity(alice);
         assertTrue(tokenIdentityAddr != address(0));
         assertEq(setup.idFactory.getToken(tokenIdentityAddr), alice);
 
-        // Same token address should revert before reaching Create3.
-        vm.prank(deployer);
-        vm.expectRevert(abi.encodeWithSelector(Errors.TokenAlreadyLinked.selector, alice));
-        setup.idFactory.createTokenIdentity(alice, "salt2", _makeMgmtKey(alice), _emptyModules);
-
-        // Same salt (with a different token) should revert at Create3 with FailedDeployment().
+        // Same salt should revert at Create3 with FailedDeployment() (bob's MANAGEMENT key is auto-injected).
         vm.prank(deployer);
         vm.expectRevert(OZErrors.FailedDeployment.selector);
-        setup.idFactory.createTokenIdentity(bob, "salt1", _makeMgmtKey(alice), _emptyModules);
+        setup.idFactory.createIdentity(bob, IdentityTypes.ASSET, "salt1", new Structs.KeyParam[](0), _emptyModules);
+
+        // Same token address should revert (alice's MANAGEMENT key is auto-injected by the factory).
+        vm.prank(deployer);
+        vm.expectRevert(abi.encodeWithSelector(Errors.AccountAlreadyLinkedToIdentity.selector, alice));
+        setup.idFactory.createIdentity(alice, IdentityTypes.ASSET, "salt2", new Structs.KeyParam[](0), _emptyModules);
     }
 
     /// @notice createTokenIdentity with multiple key types should set all keys
@@ -187,7 +182,8 @@ contract TokenOidTest is Test {
 
         address token = makeAddr("tokenWithKeys");
         vm.prank(deployer);
-        address identityAddr = setup.idFactory.createTokenIdentity(token, "saltKeys", keys, _emptyModules);
+        address identityAddr =
+            setup.idFactory.createIdentity(token, IdentityTypes.ASSET, "saltKeys", keys, _emptyModules);
 
         Identity identity = Identity(payable(identityAddr));
 

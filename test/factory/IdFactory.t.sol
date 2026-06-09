@@ -12,6 +12,7 @@ import { Errors } from "contracts/libraries/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
+import { ERC7579Signature } from "contracts/modules/validators/ERC7579Signature.sol";
 import { ImplementationAuthority } from "contracts/proxy/ImplementationAuthority.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 import { RevertingIdentity } from "test/mocks/RevertingIdentity.sol";
@@ -40,7 +41,7 @@ contract IdFactoryTest is OnchainIDSetup {
 
     function test_revertBecauseAuthorityIsZeroAddress() public {
         vm.expectRevert(Errors.ZeroAddress.selector);
-        new IdFactory(address(0), deployer);
+        new IdFactory(address(0), deployer, address(0), address(0), address(0));
     }
 
     function test_revertBecauseSenderNotAllowedToCreateIdentities() public {
@@ -56,7 +57,7 @@ contract IdFactoryTest is OnchainIDSetup {
             );
     }
 
-    function test_revertBecauseWalletCannotBeZeroAddress() public {
+    function test_revertBecauseAccountCannotBeZeroAddress() public {
         vm.prank(deployer);
         vm.expectRevert(Errors.ZeroAddress.selector);
         onchainidSetup.idFactory
@@ -69,20 +70,11 @@ contract IdFactoryTest is OnchainIDSetup {
             );
     }
 
-    function test_revertBecauseSaltCannotBeEmpty() public {
-        vm.prank(deployer);
-        vm.expectRevert(Errors.EmptyString.selector);
-        onchainidSetup.idFactory
-            .createIdentity(
-                david, IdentityTypes.INDIVIDUAL, "", _makeSingleMgmtKeys(david), new Structs.ModuleInstall[](0)
-            );
-    }
-
     function test_revertBecauseSaltAlreadyUsed() public {
         vm.prank(deployer);
         onchainidSetup.idFactory
             .createIdentity(
-                carol, IdentityTypes.INDIVIDUAL, "saltUsed", _makeSingleMgmtKeys(carol), new Structs.ModuleInstall[](0)
+                carol, IdentityTypes.INDIVIDUAL, "saltUsed", new Structs.KeyParam[](0), new Structs.ModuleInstall[](0)
             );
 
         vm.prank(deployer);
@@ -90,103 +82,106 @@ contract IdFactoryTest is OnchainIDSetup {
         vm.expectRevert(OZErrors.FailedDeployment.selector);
         onchainidSetup.idFactory
             .createIdentity(
-                david, IdentityTypes.INDIVIDUAL, "saltUsed", _makeSingleMgmtKeys(david), new Structs.ModuleInstall[](0)
+                david, IdentityTypes.INDIVIDUAL, "saltUsed", new Structs.KeyParam[](0), new Structs.ModuleInstall[](0)
             );
     }
 
-    function test_revertBecauseWalletAlreadyLinked() public {
+    function test_revertBecauseAccountAlreadyLinked() public {
         vm.prank(deployer);
-        vm.expectRevert(abi.encodeWithSelector(Errors.WalletAlreadyLinkedToIdentity.selector, alice));
+        vm.expectRevert(abi.encodeWithSelector(Errors.AccountAlreadyLinkedToIdentity.selector, alice));
         onchainidSetup.idFactory
             .createIdentity(
-                alice, IdentityTypes.INDIVIDUAL, "newSalt", _makeSingleMgmtKeys(alice), new Structs.ModuleInstall[](0)
+                alice, IdentityTypes.INDIVIDUAL, "newSalt", new Structs.KeyParam[](0), new Structs.ModuleInstall[](0)
             );
     }
 
-    function test_revertBecauseEmptyKeys() public {
+    /// @notice The factory auto-injects `_account` as a MANAGEMENT key, so an empty user-supplied
+    ///         `_keys` array still produces a fully-initialized identity.
+    function test_createIdentity_autoInjectsAccountAsManagement() public {
         Structs.KeyParam[] memory emptyKeys = new Structs.KeyParam[](0);
         vm.prank(deployer);
-        vm.expectRevert(Errors.EmptyListOfKeys.selector);
-        onchainidSetup.idFactory
+        address identity = onchainidSetup.idFactory
             .createIdentity(david, IdentityTypes.INDIVIDUAL, "salt1", emptyKeys, new Structs.ModuleInstall[](0));
+        bytes32 davidKey = keccak256(abi.encodePacked(david));
+        assertTrue(
+            Identity(payable(identity)).keyHasPurpose(davidKey, KeyPurposes.MANAGEMENT),
+            "_account should be auto-injected as MANAGEMENT key"
+        );
     }
 
-    function test_revertBecauseNoManagementKey() public {
-        // Only an ACTION key, no MANAGEMENT — bootstrap removal at the end of _setupIdentity reverts.
-        Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
-        keys[0] = _makeECDSAKey(david, KeyPurposes.ACTION);
-        vm.prank(deployer);
-        vm.expectRevert(Errors.CannotRemoveLastManagementKey.selector);
-        onchainidSetup.idFactory
-            .createIdentity(david, IdentityTypes.INDIVIDUAL, "salt1", keys, new Structs.ModuleInstall[](0));
-    }
+    // ============ linkAccount ============
 
-    // ============ linkWallet ============
-
-    function test_linkWallet_revertForZeroAddress() public {
+    function test_linkAccount_revertForZeroAddress() public {
         vm.prank(alice);
         vm.expectRevert(Errors.ZeroAddress.selector);
-        onchainidSetup.idFactory.linkWallet(address(0));
+        onchainidSetup.idFactory.linkAccount(address(0));
     }
 
-    function test_linkWallet_revertForSenderNotLinked() public {
+    function test_linkAccount_revertForSenderNotLinked() public {
         vm.prank(david);
-        vm.expectRevert(abi.encodeWithSelector(Errors.WalletNotLinkedToIdentity.selector, david));
-        onchainidSetup.idFactory.linkWallet(david);
+        vm.expectRevert(abi.encodeWithSelector(Errors.AccountNotLinkedToIdentity.selector, david));
+        onchainidSetup.idFactory.linkAccount(david);
     }
 
-    function test_linkWallet_revertForNewWalletAlreadyLinked() public {
+    function test_linkAccount_revertForNewAccountAlreadyLinked() public {
         vm.prank(bob);
-        vm.expectRevert(abi.encodeWithSelector(Errors.WalletAlreadyLinkedToIdentity.selector, alice));
-        onchainidSetup.idFactory.linkWallet(alice);
+        vm.expectRevert(abi.encodeWithSelector(Errors.AccountAlreadyLinkedToIdentity.selector, alice));
+        onchainidSetup.idFactory.linkAccount(alice);
     }
 
-    function test_linkWallet_revertForNewWalletLinkedToToken() public {
+    function test_linkAccount_revertForNewAccountLinkedToToken() public {
         vm.prank(bob);
-        vm.expectRevert(abi.encodeWithSelector(Errors.TokenAlreadyLinked.selector, Constants.TOKEN_ADDRESS));
-        onchainidSetup.idFactory.linkWallet(Constants.TOKEN_ADDRESS);
+        vm.expectRevert(abi.encodeWithSelector(Errors.AccountAlreadyLinkedToIdentity.selector, Constants.TOKEN_ADDRESS));
+        onchainidSetup.idFactory.linkAccount(Constants.TOKEN_ADDRESS);
     }
 
-    function test_linkWallet_shouldLinkNewWallet() public {
+    function test_linkAccount_shouldLinkNewAccount() public {
         vm.prank(alice);
-        onchainidSetup.idFactory.linkWallet(david);
+        onchainidSetup.idFactory.linkAccount(david);
 
-        address[] memory wallets = onchainidSetup.idFactory.getWallets(address(aliceIdentity));
-        assertEq(wallets.length, 2);
-        assertEq(wallets[0], alice);
-        assertEq(wallets[1], david);
+        address[] memory accounts = onchainidSetup.idFactory.getAccounts(address(aliceIdentity));
+        assertEq(accounts.length, 2);
+        assertEq(accounts[0], alice);
+        assertEq(accounts[1], david);
     }
 
-    // ============ unlinkWallet ============
+    // ============ unlinkAccount ============
 
-    function test_unlinkWallet_revertForZeroAddress() public {
+    function test_unlinkAccount_revertForZeroAddress() public {
         vm.prank(alice);
         vm.expectRevert(Errors.ZeroAddress.selector);
-        onchainidSetup.idFactory.unlinkWallet(address(0));
+        onchainidSetup.idFactory.unlinkAccount(address(0));
     }
 
-    function test_unlinkWallet_revertForUnlinkingSelf() public {
+    function test_unlinkAccount_revertForUnlinkingSelf() public {
         vm.prank(alice);
         vm.expectRevert(Errors.CannotBeCalledOnSenderAddress.selector);
-        onchainidSetup.idFactory.unlinkWallet(alice);
+        onchainidSetup.idFactory.unlinkAccount(alice);
     }
 
-    function test_unlinkWallet_revertForSenderNotLinked() public {
+    function test_unlinkAccount_revertForSenderNotLinked() public {
         vm.prank(david);
-        vm.expectRevert(Errors.OnlyLinkedWalletCanUnlink.selector);
-        onchainidSetup.idFactory.unlinkWallet(alice);
+        vm.expectRevert(Errors.OnlyLinkedAccountCanUnlink.selector);
+        onchainidSetup.idFactory.unlinkAccount(alice);
     }
 
-    function test_unlinkWallet_shouldUnlink() public {
+    function test_unlinkAccount_revertForBothUnlinked() public {
+        address unlinkedTarget = makeAddr("unlinkedTarget");
+        vm.prank(david);
+        vm.expectRevert(abi.encodeWithSelector(Errors.AccountNotLinkedToIdentity.selector, unlinkedTarget));
+        onchainidSetup.idFactory.unlinkAccount(unlinkedTarget);
+    }
+
+    function test_unlinkAccount_shouldUnlink() public {
         vm.prank(alice);
-        onchainidSetup.idFactory.linkWallet(david);
+        onchainidSetup.idFactory.linkAccount(david);
 
         vm.prank(alice);
-        onchainidSetup.idFactory.unlinkWallet(david);
+        onchainidSetup.idFactory.unlinkAccount(david);
 
-        address[] memory wallets = onchainidSetup.idFactory.getWallets(address(aliceIdentity));
-        assertEq(wallets.length, 1);
-        assertEq(wallets[0], alice);
+        address[] memory accounts = onchainidSetup.idFactory.getAccounts(address(aliceIdentity));
+        assertEq(accounts.length, 1);
+        assertEq(accounts[0], alice);
     }
 
     // ============ getIdentity ============
@@ -197,8 +192,8 @@ contract IdFactoryTest is OnchainIDSetup {
         assertTrue(identity != address(0), "Token identity should exist");
     }
 
-    /// @notice getIdentity should return user identity for wallet addresses
-    function test_getIdentity_forUserWallet_shouldReturnUserIdentity() public view {
+    /// @notice getIdentity should return user identity for account addresses
+    function test_getIdentity_forUserAccount_shouldReturnUserIdentity() public view {
         address identity = onchainidSetup.idFactory.getIdentity(alice);
         assertEq(identity, address(aliceIdentity), "Should return alice's identity");
     }
@@ -209,48 +204,30 @@ contract IdFactoryTest is OnchainIDSetup {
         assertEq(identity, address(0), "Should return zero address");
     }
 
-    // ============ linkWallet - max wallets ============
+    // ============ unlinkAccount - swap-and-pop ============
 
-    /// @notice Linking more than 100 extra wallets should revert
-    function test_linkWallet_revertForMaxWalletsExceeded() public {
-        // alice already has 1 wallet linked. Link 100 more to reach the limit of 101.
-        for (uint256 i = 0; i < 100; i++) {
-            address newWallet = vm.addr(1000 + i);
-            vm.prank(alice);
-            onchainidSetup.idFactory.linkWallet(newWallet);
-        }
-
-        // The 102nd wallet should revert (101 wallets already linked)
-        address overflowWallet = makeAddr("overflowWallet");
-        vm.prank(alice);
-        vm.expectRevert(Errors.MaxWalletsPerIdentityExceeded.selector);
-        onchainidSetup.idFactory.linkWallet(overflowWallet);
-    }
-
-    // ============ unlinkWallet - swap-and-pop ============
-
-    /// @notice Unlinking a wallet that is not the last in the array exercises swap-and-pop
-    function test_unlinkWallet_shouldSwapAndPop() public {
+    /// @notice Unlinking a account that is not the last in the array exercises swap-and-pop
+    function test_unlinkAccount_shouldSwapAndPop() public {
         // Link carol and david to alice's identity
         vm.prank(alice);
-        onchainidSetup.idFactory.linkWallet(carol);
+        onchainidSetup.idFactory.linkAccount(carol);
         vm.prank(alice);
-        onchainidSetup.idFactory.linkWallet(david);
+        onchainidSetup.idFactory.linkAccount(david);
 
-        // wallets = [alice, carol, david]
+        // accounts = [alice, carol, david]
         // Unlink carol (middle element) -- triggers swap with david
         vm.prank(alice);
-        onchainidSetup.idFactory.unlinkWallet(carol);
+        onchainidSetup.idFactory.unlinkAccount(carol);
 
-        address[] memory wallets = onchainidSetup.idFactory.getWallets(address(aliceIdentity));
-        assertEq(wallets.length, 2, "Should have 2 wallets");
-        assertEq(wallets[0], alice, "First wallet should be alice");
-        assertEq(wallets[1], david, "Second wallet should be david (swapped)");
+        address[] memory accounts = onchainidSetup.idFactory.getAccounts(address(aliceIdentity));
+        assertEq(accounts.length, 2, "Should have 2 accounts");
+        assertEq(accounts[0], alice, "First account should be alice");
+        assertEq(accounts[1], david, "Second account should be david (swapped)");
     }
 
-    // ============ createIdentity with management keys (non-wallet) ============
+    // ============ createIdentity with management keys (non-account) ============
 
-    function test_createIdentity_withNonWalletManagementKeys_revertZeroAddress() public {
+    function test_createIdentity_withNonAccountManagementKeys_revertZeroAddress() public {
         Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
         keys[0] = _makeECDSAKey(alice, KeyPurposes.MANAGEMENT);
 
@@ -260,17 +237,7 @@ contract IdFactoryTest is OnchainIDSetup {
             .createIdentity(address(0), IdentityTypes.INDIVIDUAL, "salt1", keys, new Structs.ModuleInstall[](0));
     }
 
-    function test_createIdentity_withNonWalletManagementKeys_revertEmptySalt() public {
-        Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
-        keys[0] = _makeECDSAKey(alice, KeyPurposes.MANAGEMENT);
-
-        vm.prank(deployer);
-        vm.expectRevert(Errors.EmptyString.selector);
-        onchainidSetup.idFactory
-            .createIdentity(david, IdentityTypes.INDIVIDUAL, "", keys, new Structs.ModuleInstall[](0));
-    }
-
-    function test_createIdentity_withNonWalletManagementKeys_revertSaltTaken() public {
+    function test_createIdentity_withNonAccountManagementKeys_revertSaltTaken() public {
         Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
         keys[0] = _makeECDSAKey(alice, KeyPurposes.MANAGEMENT);
 
@@ -278,25 +245,27 @@ contract IdFactoryTest is OnchainIDSetup {
         onchainidSetup.idFactory
             .createIdentity(david, IdentityTypes.INDIVIDUAL, "sharedSalt", keys, new Structs.ModuleInstall[](0));
 
-        address anotherWallet = makeAddr("anotherWallet");
+        address anotherAccount = makeAddr("anotherAccount");
         vm.prank(deployer);
         // Salt-collision now bubbles up from Create3 as FailedDeployment().
         vm.expectRevert(OZErrors.FailedDeployment.selector);
         onchainidSetup.idFactory
-            .createIdentity(anotherWallet, IdentityTypes.INDIVIDUAL, "sharedSalt", keys, new Structs.ModuleInstall[](0));
+            .createIdentity(
+                anotherAccount, IdentityTypes.INDIVIDUAL, "sharedSalt", keys, new Structs.ModuleInstall[](0)
+            );
     }
 
-    function test_createIdentity_withNonWalletManagementKeys_revertWalletAlreadyLinked() public {
+    function test_createIdentity_withNonAccountManagementKeys_revertAccountAlreadyLinked() public {
         Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
         keys[0] = _makeECDSAKey(carol, KeyPurposes.MANAGEMENT);
 
         vm.prank(deployer);
-        vm.expectRevert(abi.encodeWithSelector(Errors.WalletAlreadyLinkedToIdentity.selector, alice));
+        vm.expectRevert(abi.encodeWithSelector(Errors.AccountAlreadyLinkedToIdentity.selector, alice));
         onchainidSetup.idFactory
             .createIdentity(alice, IdentityTypes.INDIVIDUAL, "uniqueSalt", keys, new Structs.ModuleInstall[](0));
     }
 
-    function test_createIdentity_withNonWalletManagementKeys_shouldDeployAndSetKeys() public {
+    function test_createIdentity_withNonAccountManagementKeys_shouldDeployAndSetKeys() public {
         Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
         keys[0] = _makeECDSAKey(alice, KeyPurposes.MANAGEMENT);
 
@@ -324,10 +293,10 @@ contract IdFactoryTest is OnchainIDSetup {
         address claimAdder1 = makeAddr("claimAdder1");
         address claimAdder2 = makeAddr("claimAdder2");
 
-        Structs.KeyParam[] memory keys = new Structs.KeyParam[](3);
-        keys[0] = _makeECDSAKey(david, KeyPurposes.MANAGEMENT);
-        keys[1] = _makeECDSAKey(claimAdder1, KeyPurposes.CLAIM_ADDER);
-        keys[2] = _makeECDSAKey(claimAdder2, KeyPurposes.CLAIM_ADDER);
+        // david's MANAGEMENT key is auto-injected by the factory; we only add the CLAIM_ADDER keys.
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](2);
+        keys[0] = _makeECDSAKey(claimAdder1, KeyPurposes.CLAIM_ADDER);
+        keys[1] = _makeECDSAKey(claimAdder2, KeyPurposes.CLAIM_ADDER);
 
         vm.prank(deployer);
         address identityAddr = onchainidSetup.idFactory
@@ -345,7 +314,7 @@ contract IdFactoryTest is OnchainIDSetup {
             "claimAdder2 should have CLAIM_ADDER purpose"
         );
 
-        // Verify management key is still set for wallet
+        // Verify management key is still set for account
         assertTrue(
             identity.keyHasPurpose(ClaimSignerHelper.addressToKey(david), KeyPurposes.MANAGEMENT),
             "david should have MANAGEMENT purpose"
@@ -387,7 +356,7 @@ contract IdFactoryTest is OnchainIDSetup {
                 david,
                 IdentityTypes.INDIVIDUAL,
                 "saltFactoryKey",
-                _makeSingleMgmtKeys(david),
+                new Structs.KeyParam[](0),
                 new Structs.ModuleInstall[](0)
             );
 
@@ -412,7 +381,7 @@ contract IdFactoryTest is OnchainIDSetup {
                 david,
                 IdentityTypes.SMART_CONTRACT,
                 "saltSmartContract",
-                _makeSingleMgmtKeys(david),
+                new Structs.KeyParam[](0),
                 new Structs.ModuleInstall[](0)
             );
 
@@ -428,7 +397,7 @@ contract IdFactoryTest is OnchainIDSetup {
                 david,
                 IdentityTypes.PUBLIC_AUTHORITY,
                 "saltPublicAuth",
-                _makeSingleMgmtKeys(david),
+                new Structs.KeyParam[](0),
                 new Structs.ModuleInstall[](0)
             );
 
@@ -438,24 +407,32 @@ contract IdFactoryTest is OnchainIDSetup {
 
     // ============ createIdentity with module installation ============
 
-    /// @notice createIdentity with modules should install the ERC-7579 validator module
-    function test_createIdentity_withModules_shouldInstallValidator() public {
+    /// @notice User-supplied modules are appended after the factory's auto-installed default set,
+    ///         so a fresh validator passed via `_modules` ends up installed alongside the defaults.
+    function test_createIdentity_withModules_shouldInstallUserSuppliedModule() public {
+        // Deploy a SECOND validator distinct from the one the factory auto-installs.
+        address additionalValidator = address(new ERC7579Signature());
+
         Structs.ModuleInstall[] memory modules = new Structs.ModuleInstall[](1);
         modules[0] = Structs.ModuleInstall({
             moduleType: 1, // MODULE_TYPE_VALIDATOR
-            module: address(onchainidSetup.signatureValidator),
+            module: additionalValidator,
             initData: "",
             purpose: 0
         });
 
         vm.prank(deployer);
         address identityAddr = onchainidSetup.idFactory
-            .createIdentity(david, IdentityTypes.INDIVIDUAL, "saltWithModules", _makeSingleMgmtKeys(david), modules);
+            .createIdentity(david, IdentityTypes.INDIVIDUAL, "saltWithModules", new Structs.KeyParam[](0), modules);
 
         Identity identity = Identity(payable(identityAddr));
         assertTrue(
+            identity.isModuleInstalled(1, additionalValidator, ""),
+            "user-supplied validator should be installed alongside the factory defaults"
+        );
+        assertTrue(
             identity.isModuleInstalled(1, address(onchainidSetup.signatureValidator), ""),
-            "ERC7579Signature validator should be installed"
+            "factory's default validator should also be installed"
         );
     }
 
@@ -466,14 +443,14 @@ contract IdFactoryTest is OnchainIDSetup {
         // Deploy a factory with a reverting implementation
         RevertingIdentity revertingImpl = new RevertingIdentity();
         ImplementationAuthority badAuthority = new ImplementationAuthority(address(revertingImpl), deployer);
-        IdFactory badFactory = new IdFactory(address(badAuthority), deployer);
+        IdFactory badFactory = new IdFactory(address(badAuthority), deployer, address(0), address(0), address(0));
 
         // createIdentity will try CREATE2 with IdentityProxy whose constructor
         // delegatecalls initialize() on RevertingIdentity, which reverts,
         // causing CREATE2 to return address(0) and triggering assembly revert
         vm.expectRevert();
         badFactory.createIdentity(
-            david, IdentityTypes.INDIVIDUAL, "salt1", _makeSingleMgmtKeys(david), new Structs.ModuleInstall[](0)
+            david, IdentityTypes.INDIVIDUAL, "salt1", new Structs.KeyParam[](0), new Structs.ModuleInstall[](0)
         );
     }
 

@@ -9,14 +9,11 @@ interface IIdFactory {
     // event emitted whenever a single contract is deployed by the factory
     event Deployed(address indexed _addr);
 
-    // event emitted when a wallet is linked to an ONCHAINID contract
-    event WalletLinked(address indexed wallet, address indexed identity);
+    // event emitted when a account is linked to an ONCHAINID contract
+    event AccountLinked(address indexed account, address indexed identity);
 
-    // event emitted when a token is linked to an ONCHAINID contract
-    event TokenLinked(address indexed token, address indexed identity);
-
-    // event emitted when a wallet is unlinked from an ONCHAINID contract
-    event WalletUnlinked(address indexed wallet, address indexed identity);
+    // event emitted when a account is unlinked from an ONCHAINID contract
+    event AccountUnlinked(address indexed account, address indexed identity);
 
     // event emitted when an address is registered on the factory as a Token
     // factory address, granting this address the privilege to issue
@@ -29,19 +26,24 @@ interface IIdFactory {
     /// functions
 
     /**
-     *  @dev function used to create a new Identity proxy from the factory
-     *  @param _wallet the wallet address of the primary owner of this ONCHAINID contract
-     *  @param _salt the salt used by create2 to issue the contract
-     *  @param _keys the list of keys to add to the identity (must contain at least one MANAGEMENT key)
+     *  @dev function used to create a new Identity proxy from the factory. Single entry point
+     *       for both user and token identities; the `_identityType` parameter selects the kind.
+     *
+     *       When `_identityType == IdentityTypes.ASSET`, the call may be made by a registered
+     *       token factory or by the owner, the salt is namespaced under `"Token"`, and
+     *       `getToken(identity)` will return `_account`. For any other identity type, only the
+     *       owner may call, the salt is namespaced under `"OID"`, and `getToken` returns 0.
+     *
+     *  @param _account the address bound to the identity (a user wallet, or a token contract for asset identities)
      *  @param _identityType the type of the identity (see IdentityTypes library)
-     *  requires a new salt for each deployment
-     *  _wallet cannot be linked to another ONCHAINID
-     *  only Owner can call => Owner is supposed to be a smart contract, managing the accessibility
-     *  of the function, including calls to oracles for multichain
-     *  deployment security (avoid identity theft), defining payment requirements, etc.
+     *  @param _salt the salt used by CREATE3 to issue the contract (namespaced internally per identity kind)
+     *  @param _keys the list of keys to add to the identity (must contain at least one MANAGEMENT key)
+     *  @param _modules the ERC-7579 modules to install during creation
+     *  requires a new salt within the relevant namespace for each deployment
+     *  _account cannot already be linked to an ONCHAINID
      */
     function createIdentity(
-        address _wallet,
+        address _account,
         uint256 _identityType,
         string memory _salt,
         Structs.KeyParam[] memory _keys,
@@ -49,42 +51,23 @@ interface IIdFactory {
     ) external returns (address);
 
     /**
-     *  @dev function used to create a new Token Identity proxy from the factory
-     *  @param _token the address of the token contract
-     *  @param _salt the salt used by create2 to issue the contract
-     *  @param _keys the list of keys to add to the identity (must contain at least one key)
-     *  @param _modules the ERC-7579 modules to install during creation
-     *  requires a new salt for each deployment
-     *  _token cannot be linked to another ONCHAINID
-     *  only Token factory or owner can call (owner should only use its privilege
-     *  for tokens not issued by a Token factory onchain
-     */
-    function createTokenIdentity(
-        address _token,
-        string memory _salt,
-        Structs.KeyParam[] memory _keys,
-        Structs.ModuleInstall[] memory _modules
-    ) external returns (address);
-
-    /**
-     *  @dev function used to link a new wallet to an existing identity
-     *  @param _newWallet the address of the wallet to link
+     *  @dev function used to link a new account to an existing identity
+     *  @param _newAccount the address of the account to link
      *  requires msg.sender to be linked to an existing onchainid
-     *  the _newWallet will be linked to the same OID contract as msg.sender
-     *  _newWallet cannot be linked to an OID yet
-     *  _newWallet cannot be address 0
-     *  cannot link more than 100 wallets to an OID, for gas consumption reason
+     *  the _newAccount will be linked to the same OID contract as msg.sender
+     *  _newAccount cannot be linked to an OID yet
+     *  _newAccount cannot be address 0
      */
-    function linkWallet(address _newWallet) external;
+    function linkAccount(address _newAccount) external;
 
     /**
-     *  @dev function used to unlink a wallet from an existing identity
-     *  @param _oldWallet the address of the wallet to unlink
-     *  requires msg.sender to be linked to the same onchainid as _oldWallet
-     *  msg.sender cannot be _oldWallet to keep at least 1 wallet linked to any OID
-     *  _oldWallet cannot be address 0
+     *  @dev function used to unlink a account from an existing identity
+     *  @param _oldAccount the address of the account to unlink
+     *  requires msg.sender to be linked to the same onchainid as _oldAccount
+     *  msg.sender cannot be _oldAccount to keep at least 1 account linked to any OID
+     *  _oldAccount cannot be address 0
      */
-    function unlinkWallet(address _oldWallet) external;
+    function unlinkAccount(address _oldAccount) external;
 
     /**
      *  @dev function used to register an address as a token factory
@@ -105,17 +88,26 @@ interface IIdFactory {
     function removeTokenFactory(address _factory) external;
 
     /**
-     *  @dev getter for OID contract corresponding to a wallet/token
-     *  @param _wallet the wallet/token address
+     *  @dev getter for OID contract corresponding to a account/token
+     *  @param _account the account/token address
      */
-    function getIdentity(address _wallet) external view returns (address);
+    function getIdentity(address _account) external view returns (address);
 
     /**
-     *  @dev getter to fetch the array of wallets linked to an OID contract
+     *  @dev getter to fetch the array of accounts linked to an OID contract
      *  @param _identity the address of the OID contract
      *  returns an array of addresses linked to the OID
      */
-    function getWallets(address _identity) external view returns (address[] memory);
+    function getAccounts(address _identity) external view returns (address[] memory);
+
+    /**
+     *  @dev getter to fetch the array of accounts linked to an OID contract
+     *  @param _identity the address of the OID contract
+     *  @param _start the start index of the array
+     *  @param _end the end index of the array
+     *  returns an array of addresses linked to the OID
+     */
+    function getAccounts(address _identity, uint256 _start, uint256 _end) external view returns (address[] memory);
 
     /**
      *  @dev getter to fetch the token address linked to an OID contract

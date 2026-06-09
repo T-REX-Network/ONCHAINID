@@ -66,16 +66,11 @@ contract OnchainIDSetup is Test {
         vm.stopPrank();
 
         // ClaimIssuer is now just an Identity with type CLAIM_ISSUER and the ClaimsModule installed.
+        // Factory auto-injects `_account` (claimIssuerOwner) as MANAGEMENT; we only need to supply
+        // the additional CLAIM_SIGNER purpose for the same key.
         vm.prank(deployer);
-        Structs.KeyParam[] memory issuerKeys = new Structs.KeyParam[](2);
+        Structs.KeyParam[] memory issuerKeys = new Structs.KeyParam[](1);
         issuerKeys[0] = Structs.KeyParam({
-            keyHash: keccak256(abi.encodePacked(claimIssuerOwner)),
-            purpose: KeyPurposes.MANAGEMENT,
-            keyType: KeyTypes.ECDSA,
-            signerData: abi.encodePacked(claimIssuerOwner),
-            clientData: ""
-        });
-        issuerKeys[1] = Structs.KeyParam({
             keyHash: ClaimSignerHelper.addressToKey(claimIssuerOwner),
             purpose: KeyPurposes.CLAIM_SIGNER,
             keyType: KeyTypes.ECDSA,
@@ -84,13 +79,7 @@ contract OnchainIDSetup is Test {
         });
         address claimIssuerAddr = onchainidSetup.idFactory
             .createIdentity(
-                claimIssuerOwner,
-                IdentityTypes.CLAIM_ISSUER,
-                "claimIssuer",
-                issuerKeys,
-                IdentityHelper.legacyQueueModules(
-                    address(onchainidSetup.keyApprovalModule), address(onchainidSetup.claimsModule)
-                )
+                claimIssuerOwner, IdentityTypes.CLAIM_ISSUER, "claimIssuer", issuerKeys, new Structs.ModuleInstall[](0)
             );
         claimIssuer = Identity(payable(claimIssuerAddr));
 
@@ -98,38 +87,15 @@ contract OnchainIDSetup is Test {
         // claim signature directly via `SignatureChecker` (ERC-7913 dispatch). It does not
         // round-trip through any installed validator on the issuer.
 
-        // Create alice identity via factory
+        // Create alice identity via factory. Factory auto-injects `alice` as MANAGEMENT and
+        // auto-installs the signature validator + key-approval executor + claims module, so the
+        // user-supplied arrays only need to add anything extra beyond that.
         vm.prank(deployer);
-        Structs.KeyParam[] memory aliceKeys = new Structs.KeyParam[](1);
-        aliceKeys[0] = Structs.KeyParam({
-            keyHash: keccak256(abi.encodePacked(alice)),
-            purpose: KeyPurposes.MANAGEMENT,
-            keyType: KeyTypes.ECDSA,
-            signerData: abi.encodePacked(alice),
-            clientData: ""
-        });
         address aliceIdentityAddr = onchainidSetup.idFactory
             .createIdentity(
-                alice,
-                IdentityTypes.INDIVIDUAL,
-                "alice",
-                aliceKeys,
-                IdentityHelper.legacyQueueModules(
-                    address(onchainidSetup.keyApprovalModule), address(onchainidSetup.claimsModule)
-                )
+                alice, IdentityTypes.INDIVIDUAL, "alice", new Structs.KeyParam[](0), new Structs.ModuleInstall[](0)
             );
         aliceIdentity = Identity(payable(aliceIdentityAddr));
-
-        // Install the ERC-7579 signature validator on alice's account so the ERC-1271 / 4337
-        // dispatch through the account works. (Claim verification on the issuer does NOT
-        // need this — it goes straight through SignatureChecker.)
-        vm.prank(alice);
-        aliceIdentity.installModule(
-            1,
-            /* MODULE_TYPE_VALIDATOR */
-            address(onchainidSetup.signatureValidator),
-            ""
-        );
 
         // Add carol as CLAIM_SIGNER and david as ACTION key on alice's identity
         vm.startPrank(alice);
@@ -163,25 +129,11 @@ contract OnchainIDSetup is Test {
                 aliceClaim666.uri
             );
 
-        // Create bob identity via factory
+        // Create bob identity via factory. Factory auto-injects `bob` as MANAGEMENT.
         vm.prank(deployer);
-        Structs.KeyParam[] memory bobKeys = new Structs.KeyParam[](1);
-        bobKeys[0] = Structs.KeyParam({
-            keyHash: keccak256(abi.encodePacked(bob)),
-            purpose: KeyPurposes.MANAGEMENT,
-            keyType: KeyTypes.ECDSA,
-            signerData: abi.encodePacked(bob),
-            clientData: ""
-        });
         address bobIdentityAddr = onchainidSetup.idFactory
             .createIdentity(
-                bob,
-                IdentityTypes.INDIVIDUAL,
-                "bob",
-                bobKeys,
-                IdentityHelper.legacyQueueModules(
-                    address(onchainidSetup.keyApprovalModule), address(onchainidSetup.claimsModule)
-                )
+                bob, IdentityTypes.INDIVIDUAL, "bob", new Structs.KeyParam[](0), new Structs.ModuleInstall[](0)
             );
         bobIdentity = Identity(payable(bobIdentityAddr));
 
@@ -196,13 +148,8 @@ contract OnchainIDSetup is Test {
             clientData: ""
         });
         onchainidSetup.idFactory
-            .createTokenIdentity(
-                Constants.TOKEN_ADDRESS,
-                "tokenOwner",
-                tokenKeys,
-                IdentityHelper.legacyQueueModules(
-                    address(onchainidSetup.keyApprovalModule), address(onchainidSetup.claimsModule)
-                )
+            .createIdentity(
+                Constants.TOKEN_ADDRESS, IdentityTypes.ASSET, "tokenOwner", tokenKeys, new Structs.ModuleInstall[](0)
             );
     }
 

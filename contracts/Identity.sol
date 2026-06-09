@@ -8,9 +8,12 @@ import { IIdentity } from "./interface/IIdentity.sol";
 import { Errors } from "./libraries/Errors.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
 import { KeyTypes } from "./libraries/KeyTypes.sol";
+import { Structs } from "./storage/Structs.sol";
 import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import { MODULE_TYPE_EXECUTOR, MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import { ERC165 } from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
+import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 /**
  * @title Identity
@@ -35,6 +38,9 @@ import { ERC165 } from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
  */
 contract Identity is Initializable, SmartAccount, ERC165 {
 
+    /// @dev Thrown when the account is initialized without a validator or executor module.
+    error IdentityNoValidatorOrExecutor();
+
     /// @dev Account-level identity metadata.
     /// @custom:storage-location erc7201:onchainid.identity.metadata
     struct IdentityMetadata {
@@ -47,17 +53,16 @@ contract Identity is Initializable, SmartAccount, ERC165 {
 
     /**
      * @notice Constructor of the Identity contract.
-     * @param initialManagementKey The management key address at deployment.
      * @param _isLibrary True when deploying the implementation contract behind a proxy. In that
      *        case we lock the OZ `Initializable` slot via `_disableInitializers()` so the
      *        implementation can never be initialized directly; only proxies (which run the
      *        constructor in their own context with `_isLibrary == false`) can initialize.
      */
-    constructor(address initialManagementKey, bool _isLibrary) EIP712("OnchainID", "1") {
+    constructor(bool _isLibrary) EIP712("OnchainID", "1") {
         if (_isLibrary) {
             _disableInitializers();
         } else {
-            __Identity_init(initialManagementKey);
+            __Identity_init();
         }
     }
 
@@ -65,13 +70,34 @@ contract Identity is Initializable, SmartAccount, ERC165 {
      * @notice When using this contract as an implementation for a proxy, call this initializer
      *         with a delegatecall. Sets up the initial MANAGEMENT key and the identity type, and
      *         runs the ERC-7579 module-registry initializer.
-     * @param initialManagementKey The ethereum address to be set as the management key of the ONCHAINID.
      * @param _identityType The type of the identity (see {IdentityTypes}).
      */
-    function initialize(address initialManagementKey, uint256 _identityType) external virtual initializer {
+    function initialize(
+        uint256 _identityType,
+        Structs.KeyParam[] calldata _keys,
+        Structs.ModuleInstall[] calldata modules
+    ) external virtual initializer {
         _getIdentityMetadata().identityType = _identityType;
         __AccountERC7579_init();
-        __Identity_init(initialManagementKey);
+        __Identity_init();
+        for (uint256 i = 0; i < _keys.length; i++) {
+            Structs.KeyParam memory key = _keys[i];
+            _addKeyWithData(key.keyHash, key.purpose, key.keyType, key.signerData, key.clientData);
+        }
+        require(
+            EnumerableSet.length(_getKeyStorage().keysByPurpose[KeyPurposes.MANAGEMENT]) >= 1,
+            Errors.NoManagementKeyInKeys()
+        );
+        require(_validateInitializationModules(modules), IdentityNoValidatorOrExecutor());
+        for (uint256 i = 0; i < modules.length; i++) {
+            _installModule(modules[i].moduleType, modules[i].module, modules[i].initData);
+            // If the install entry requests a purpose, register the module's address as a key
+            // with that purpose under KeyTypes.MODULE. Used e.g. to grant MANAGEMENT to the
+            // KeyApprovalModule executor so it can dispatch self-targeted calls.
+            if (modules[i].purpose != 0) {
+                _addKey(keccak256(abi.encodePacked(modules[i].module)), modules[i].purpose, KeyTypes.MODULE);
+            }
+        }
     }
 
     /// @notice Returns the identity type set at initialization.
@@ -104,15 +130,11 @@ contract Identity is Initializable, SmartAccount, ERC165 {
      *         the implementation contract are rejected.
      */
     // solhint-disable-next-line func-name-mixedcase
-    function __Identity_init(address initialManagementKey) internal {
-        require(initialManagementKey != address(0), Errors.ZeroAddress());
+    function __Identity_init() internal {
         KeyStorage storage ks = _getKeyStorage();
         require(!ks.initialized, Errors.InitialKeyAlreadySetup());
         ks.initialized = true;
         ks.canInteract = true;
-
-        bytes memory signerData = abi.encodePacked(initialManagementKey);
-        _addKeyWithData(keccak256(signerData), KeyPurposes.MANAGEMENT, KeyTypes.ECDSA, signerData, "");
     }
 
     /// @dev Returns the identity metadata storage at its ERC-7201 slot.
@@ -121,6 +143,16 @@ contract Identity is Initializable, SmartAccount, ERC165 {
         assembly ("memory-safe") {
             s.slot := slot
         }
+    }
+
+    /// @dev Validates the initialization modules and returns true if the account has a validator or executor module.
+    function _validateInitializationModules(Structs.ModuleInstall[] calldata modules) private pure returns (bool) {
+        bool hasValidatorOrExecutor;
+        for (uint256 i = 0; i < modules.length; i++) {
+            hasValidatorOrExecutor = hasValidatorOrExecutor || modules[i].moduleType == MODULE_TYPE_VALIDATOR
+                || modules[i].moduleType == MODULE_TYPE_EXECUTOR;
+        }
+        return hasValidatorOrExecutor;
     }
 
 }

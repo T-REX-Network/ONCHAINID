@@ -138,23 +138,7 @@ contract KeyManager is IERC734 {
         onlyManager
         returns (bool success)
     {
-        KeyStorage storage ks = _getKeyStorage();
-        Structs.Key storage k = ks.keys[_key];
-
-        if (k.key == bytes32(0)) {
-            k.key = _key;
-            k.keyType = _type;
-        } else {
-            // The stored type wins on re-purpose. Reject a mismatched `_type` so the emitted
-            // `KeyAdded` event can't surface a type that storage doesn't actually hold.
-            require(k.keyType == _type, Errors.KeyTypeMismatch(_key, k.keyType, _type));
-        }
-
-        require(k.purposes.add(_purpose), Errors.KeyAlreadyHasPurpose(_key, _purpose));
-        ks.keysByPurpose[_purpose].add(_key);
-
-        emit KeyAdded(_key, _purpose, _type);
-        return true;
+        return _addKey(_key, _purpose, _type);
     }
 
     /**
@@ -214,22 +198,11 @@ contract KeyManager is IERC734 {
         _addKeyWithData(_key, _purpose, _type, _signerData, _clientData);
     }
 
-    /// @dev Internal version of {addKeyWithData}. No modifiers. Used by both the external
-    ///      entry point and by initialization paths that run before any MANAGEMENT key exists.
-    function _addKeyWithData(
-        bytes32 _key,
-        uint256 _purpose,
-        uint256 _type,
-        bytes memory _signerData,
-        bytes memory _clientData
-    ) internal {
-        // The keyHash MUST commit to the signer bytes stored alongside it. Without this guard a
-        // caller could register one keyHash while attaching a different signer's bytes, which
-        // would silently corrupt any downstream lookup of `signerData`.
-        require(_key == keccak256(_signerData), Errors.InvalidSignerData());
+    // -----------------------------------------------------------------------
+    // Internals
+    // -----------------------------------------------------------------------
 
-        // Inline the addKey storage writes so we don't go through the modifier-gated public
-        // addKey from the init path.
+    function _addKey(bytes32 _key, uint256 _purpose, uint256 _type) internal virtual returns (bool success) {
         KeyStorage storage ks = _getKeyStorage();
         Structs.Key storage k = ks.keys[_key];
 
@@ -237,21 +210,36 @@ contract KeyManager is IERC734 {
             k.key = _key;
             k.keyType = _type;
         } else {
+            // The stored type wins on re-purpose. Reject a mismatched `_type` so the emitted
+            // `KeyAdded` event can't surface a type that storage doesn't actually hold.
             require(k.keyType == _type, Errors.KeyTypeMismatch(_key, k.keyType, _type));
         }
 
         require(k.purposes.add(_purpose), Errors.KeyAlreadyHasPurpose(_key, _purpose));
         ks.keysByPurpose[_purpose].add(_key);
 
-        ks.keys[_key].signerData = _signerData;
-        ks.keys[_key].clientData = _clientData;
-
         emit KeyAdded(_key, _purpose, _type);
+        return true;
     }
 
-    // -----------------------------------------------------------------------
-    // Internals
-    // -----------------------------------------------------------------------
+    function _addKeyWithData(
+        bytes32 _key,
+        uint256 _purpose,
+        uint256 _type,
+        bytes memory _signerData,
+        bytes memory _clientData
+    ) internal virtual {
+        // The keyHash MUST commit to the signer bytes stored alongside it. Without this guard a
+        // caller could register one keyHash while attaching a different signer's bytes, which
+        // would silently corrupt any downstream lookup of `signerData`.
+        require(_key == keccak256(_signerData), Errors.InvalidSignerData());
+
+        _addKey(_key, _purpose, _type);
+
+        KeyStorage storage ks = _getKeyStorage();
+        ks.keys[_key].signerData = _signerData;
+        ks.keys[_key].clientData = _clientData;
+    }
 
     function _checkDelegated() internal view {
         require(_getKeyStorage().canInteract, Errors.InteractingWithLibraryContractForbidden());

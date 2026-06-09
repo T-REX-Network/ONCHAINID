@@ -18,32 +18,23 @@ library Errors {
     /// @notice Reverts if the function is called on the sender address
     error CannotBeCalledOnSenderAddress();
 
-    /// @notice Reverts if the list of keys is empty
-    error EmptyListOfKeys();
-
-    /// @notice Reverts if the string is empty
-    error EmptyString();
-
     /// @notice Reverts if the address is not a factory
     error NotAFactory(address factory);
 
-    /// @notice Reverts if the maximum number of wallets per identity is exceeded
-    error MaxWalletsPerIdentityExceeded();
-
-    /// @notice Reverts if the only linked wallet tries to unlink
-    error OnlyLinkedWalletCanUnlink();
+    /// @notice Reverts if the only linked account tries to unlink
+    error OnlyLinkedAccountCanUnlink();
 
     /// @notice Reverts if the token is already linked
     error TokenAlreadyLinked(address token);
 
-    /// @notice Reverts if the wallet is already linked to an identity
-    error WalletAlreadyLinkedToIdentity(address wallet);
+    /// @notice Reverts if the account is already linked to an identity
+    error AccountAlreadyLinkedToIdentity(address account);
 
-    /// @notice Reverts if the wallet is also listed in management keys
-    error WalletAlsoListedInManagementKeys(address wallet);
+    /// @notice Reverts if the account is also listed in management keys
+    error AccountAlsoListedInManagementKeys(address account);
 
-    /// @notice Reverts if the wallet is not linked to an identity
-    error WalletNotLinkedToIdentity(address wallet);
+    /// @notice Reverts if the account is not linked to an identity
+    error AccountNotLinkedToIdentity(address account);
 
     /// @notice Reverts if no key with MANAGEMENT purpose is provided
     error NoManagementKeyInKeys();

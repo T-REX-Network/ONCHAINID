@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
+import { Mode, ModePayload, ModeSelector } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
+import { ERC7579Utils } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
 import {
     MODULE_TYPE_EXECUTOR,
     MODULE_TYPE_FALLBACK,
@@ -14,6 +16,7 @@ import { IIdentity } from "contracts/interface/IIdentity.sol";
 import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
+import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { ClaimsModule } from "contracts/modules/claims/ClaimsModule.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
 import { ERC7579Signature } from "contracts/modules/validators/ERC7579Signature.sol";
@@ -43,10 +46,16 @@ library IdentityHelper {
         setup.keyApprovalModule = new KeyApprovalModule();
         setup.claimsModule = new ClaimsModule();
 
-        setup.identityImplementation = new Identity(managementKey, false);
+        setup.identityImplementation = new Identity(true);
         setup.implementationAuthority =
             new ImplementationAuthority(address(setup.identityImplementation), managementKey);
-        setup.idFactory = new IdFactory(address(setup.implementationAuthority), managementKey);
+        setup.idFactory = new IdFactory(
+            address(setup.implementationAuthority),
+            managementKey,
+            address(setup.signatureValidator),
+            address(setup.keyApprovalModule),
+            address(setup.claimsModule)
+        );
     }
 
     /// @notice Builds the full default-module install list: legacy queue (execute/approve) +
@@ -160,17 +169,32 @@ library IdentityHelper {
         internal
         returns (Identity identity, ERC7579Signature signatureValidator)
     {
-        Identity impl = new Identity(initialManagementKey, false);
+        Identity impl = new Identity(true);
         ImplementationAuthority ia = new ImplementationAuthority(address(impl), initialManagementKey);
-        IdentityProxy proxy = new IdentityProxy(address(ia), initialManagementKey, identityType);
+
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
+        keys[0] = Structs.KeyParam({
+            keyHash: keccak256(abi.encodePacked(initialManagementKey)),
+            purpose: KeyPurposes.MANAGEMENT,
+            keyType: KeyTypes.ECDSA,
+            signerData: abi.encodePacked(initialManagementKey),
+            clientData: ""
+        });
+
+        // Pass the validator in initial modules so the `_validateInitializationModules`
+        // check inside `Identity.initialize` passes. Post-init installs aren't needed for
+        // the validator.
+        signatureValidator = new ERC7579Signature();
+        Structs.ModuleInstall[] memory modules = new Structs.ModuleInstall[](1);
+        modules[0] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_VALIDATOR, module: address(signatureValidator), initData: "", purpose: 0
+        });
+
+        IdentityProxy proxy = new IdentityProxy(address(ia), identityType, keys, modules);
         identity = Identity(payable(address(proxy)));
 
-        signatureValidator = new ERC7579Signature();
-        Vm vmHandle = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
-        vmHandle.prank(initialManagementKey);
-        identity.installModule(MODULE_TYPE_VALIDATOR, address(signatureValidator), "");
-
         // Install ClaimsModule so the identity exposes the ERC-735 ABI via fallback.
+        Vm vmHandle = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
         ClaimsModule claimsModule = new ClaimsModule();
         _installClaimsModule(identity, address(claimsModule), initialManagementKey, vmHandle);
     }
