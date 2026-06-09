@@ -307,12 +307,11 @@ contract ClaimsModule is IERC7579Module, IERC735 {
      * @param sig Signature produced by a CLAIM_SIGNER key of the issuer.
      * @param data Typed claim envelope that was signed.
      */
-    function isClaimValid(
-        IIdentity _identity,
-        uint256 claimTopic,
-        bytes calldata sig,
-        Structs.ClaimData calldata data
-    ) external view returns (bool) {
+    function isClaimValid(IIdentity _identity, uint256 claimTopic, bytes calldata sig, Structs.ClaimData calldata data)
+        external
+        view
+        returns (bool)
+    {
         return _getClaimStatus(msg.sender, _identity, claimTopic, sig, data) == IClaimIssuer.ClaimStatus.Valid;
     }
 

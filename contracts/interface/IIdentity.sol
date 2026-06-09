@@ -28,7 +28,10 @@ interface IIdentity is IERC734, IERC735 {
      * @param _data The structured claim data
      * @return The EIP-712 typed data hash
      */
-    function getClaimHash(address _identity, uint256 _topic, Structs.ClaimData memory _data) external view returns (bytes32);
+    function getClaimHash(address _identity, uint256 _topic, Structs.ClaimData memory _data)
+        external
+        view
+        returns (bytes32);
 
     /**
      * @dev Returns the identity type set at initialization.

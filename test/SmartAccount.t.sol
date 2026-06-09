@@ -280,8 +280,9 @@ contract SmartAccountTest is OnchainIDSetup {
         bytes memory signature =
             ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(aliceIdentity), 42, data);
 
-        bytes memory addClaimData =
-            abi.encodeCall(IERC735.addClaim, (uint256(42), uint256(1), address(aliceIdentity), signature, data, string("")));
+        bytes memory addClaimData = abi.encodeCall(
+            IERC735.addClaim, (uint256(42), uint256(1), address(aliceIdentity), signature, data, string(""))
+        );
         bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity), uint256(0), addClaimData);
 
         testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
@@ -336,8 +337,9 @@ contract SmartAccountTest is OnchainIDSetup {
         bytes memory signature =
             ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(aliceIdentity), 43, data);
 
-        bytes memory addClaimData =
-            abi.encodeCall(IERC735.addClaim, (uint256(43), uint256(1), address(aliceIdentity), signature, data, string("")));
+        bytes memory addClaimData = abi.encodeCall(
+            IERC735.addClaim, (uint256(43), uint256(1), address(aliceIdentity), signature, data, string(""))
+        );
         bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity), uint256(0), addClaimData);
 
         testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
@@ -509,8 +511,9 @@ contract SmartAccountTest is OnchainIDSetup {
         bytes memory signature =
             ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(aliceIdentity), 201, data);
 
-        bytes memory addClaimData =
-            abi.encodeCall(IERC735.addClaim, (uint256(201), uint256(1), address(aliceIdentity), signature, data, string("")));
+        bytes memory addClaimData = abi.encodeCall(
+            IERC735.addClaim, (uint256(201), uint256(1), address(aliceIdentity), signature, data, string(""))
+        );
         bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity), uint256(0), addClaimData);
 
         testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
