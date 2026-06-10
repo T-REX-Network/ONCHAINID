@@ -58,6 +58,11 @@ library Errors {
     ///         cannot be deployed-for by a role-holder.
     error CannotDeployForType(uint256 identityType);
 
+    /// @notice Reverts when {linkAccount} is called on an asset identity. An asset
+    ///         identity represents one specific token contract — adding more wallets to
+    ///         it would break the 1:1 token↔identity mapping.
+    error CannotLinkToAssetIdentity(address identity);
+
     /// @notice Reverts when a wallet is already actively linked to the calling identity.
     error WalletAlreadyLinkedToIdentity(bytes wallet);
 

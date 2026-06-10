@@ -6,6 +6,7 @@ import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 import { MockERC1271Wallet } from "../mocks/MockERC1271Wallet.sol";
 import { Constants } from "../utils/Constants.sol";
 import { AccessManager } from "@openzeppelin/contracts/access/manager/AccessManager.sol";
+import { UpgradeableBeacon } from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import { Errors as OZErrors } from "@openzeppelin/contracts/utils/Errors.sol";
 import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import { Identity } from "contracts/Identity.sol";
@@ -16,7 +17,6 @@ import { Errors } from "contracts/libraries/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
-import { ImplementationAuthority } from "contracts/proxy/ImplementationAuthority.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 import { RevertingIdentity } from "test/mocks/RevertingIdentity.sol";
 
@@ -375,11 +375,21 @@ contract IdentityFactoryTest is OnchainIDSetup {
         onchainidSetup.idFactory.linkAccount(davidAcc, sig, 0, expiry);
     }
 
-    // ============ Wallet / token collision guard ============
+    // ============ wallet / token collision (now via sticky binding) ============
 
+    /// @notice Tokens and wallets share one keyspace. Re-using an address that's
+    ///         already an ASSET identity's auto-linked wallet reverts via the
+    ///         sticky-binding rule — no separate token-collision branch needed.
     function test_createIdentity_revertWhenAccountIsAlreadyToken() public {
+        address existingTokenIdentity = onchainidSetup.idFactory.getIdentity(abi.encodePacked(Constants.TOKEN_ADDRESS));
         vm.prank(deployer);
-        vm.expectRevert(abi.encodeWithSelector(Errors.TokenAlreadyLinked.selector, Constants.TOKEN_ADDRESS));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Errors.WalletBoundToAnotherIdentity.selector,
+                abi.encodePacked(Constants.TOKEN_ADDRESS),
+                existingTokenIdentity
+            )
+        );
         onchainidSetup.idFactory
             .createIdentityFor(
                 Constants.TOKEN_ADDRESS,
@@ -483,10 +493,11 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertEq(page.length, 2);
     }
 
-    // ============ token & wallet resolution surface ============
+    // ============ unified token + wallet resolution ============
 
-    function test_getTokenIdentity_resolvesToken() public view {
-        address identity = onchainidSetup.idFactory.getTokenIdentity(Constants.TOKEN_ADDRESS);
+    /// @notice Tokens share the wallet keyspace — the same getIdentity(bytes) call works.
+    function test_getIdentity_resolvesToken() public view {
+        address identity = onchainidSetup.idFactory.getIdentity(abi.encodePacked(Constants.TOKEN_ADDRESS));
         assertTrue(identity != address(0));
     }
 
@@ -499,8 +510,8 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertEq(onchainidSetup.idFactory.getIdentity(_asAccount(makeAddr("unknown"))), address(0));
     }
 
-    function test_getTokenIdentity_unknownTokenReturnsZero() public {
-        assertEq(onchainidSetup.idFactory.getTokenIdentity(makeAddr("unknownToken")), address(0));
+    function test_getIdentity_unknownTokenReturnsZero() public {
+        assertEq(onchainidSetup.idFactory.getIdentity(abi.encodePacked(makeAddr("unknownToken"))), address(0));
     }
 
     // ============ createIdentityFor with new identity types ============
@@ -575,11 +586,11 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
     function test_createIdentity_revertWhenCreate2Fails() public {
         RevertingIdentity revertingImpl = new RevertingIdentity();
-        ImplementationAuthority badAuthority = new ImplementationAuthority(address(revertingImpl), deployer);
+        UpgradeableBeacon badBeacon = new UpgradeableBeacon(address(revertingImpl), deployer);
 
         AccessManager am = new AccessManager(deployer);
         vm.startPrank(deployer);
-        IdentityFactory badFactory = new IdentityFactory(address(badAuthority), address(am));
+        IdentityFactory badFactory = new IdentityFactory(address(badBeacon), address(am));
         badFactory.setIdentityTypeRole(IdentityTypes.INDIVIDUAL, type(uint64).max);
         badFactory.setCanDeployFor(IdentityTypes.INDIVIDUAL, true);
         vm.stopPrank();

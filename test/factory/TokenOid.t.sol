@@ -95,8 +95,10 @@ contract TokenOidTest is Test {
             .createIdentityFor(token, IdentityTypes.ASSET, "factorySalt", _makeMgmtKey(bob), _emptyModules);
 
         assertTrue(identity != address(0), "Identity should be deployed");
-        assertEq(setup.idFactory.getTokenIdentity(token), identity, "Token should map to identity");
-        assertEq(setup.idFactory.getToken(identity), token, "Identity should map to token");
+        assertEq(setup.idFactory.getIdentity(abi.encodePacked(token)), identity, "Token should map to identity");
+        bytes[] memory accs = setup.idFactory.getAccounts(identity);
+        assertEq(accs.length, 1, "Asset identity has exactly one wallet");
+        assertEq(address(bytes20(accs[0])), token, "Identity's sole wallet is the token");
     }
 
     /// @notice AccessManager admins are NOT auto-members of arbitrary roles. After the
@@ -126,7 +128,7 @@ contract TokenOidTest is Test {
         .createIdentityFor(token, IdentityTypes.ASSET, "adminSalt", _makeMgmtKey(bob), _emptyModules);
 
         assertTrue(identity != address(0));
-        assertEq(setup.idFactory.getTokenIdentity(token), identity);
+        assertEq(setup.idFactory.getIdentity(abi.encodePacked(token)), identity);
     }
 
     // ============ createIdentity (ASSET) — basic validation ============
@@ -163,13 +165,20 @@ contract TokenOidTest is Test {
         vm.prank(deployer);
         setup.idFactory.createIdentityFor(alice, IdentityTypes.ASSET, "salt1", _makeMgmtKey(bob), _emptyModules);
 
-        address tokenIdentityAddr = setup.idFactory.getTokenIdentity(alice);
+        address tokenIdentityAddr = setup.idFactory.getIdentity(abi.encodePacked(alice));
         assertTrue(tokenIdentityAddr != address(0));
-        assertEq(setup.idFactory.getToken(tokenIdentityAddr), alice);
+        bytes[] memory accs = setup.idFactory.getAccounts(tokenIdentityAddr);
+        assertEq(accs.length, 1);
+        assertEq(address(bytes20(accs[0])), alice);
 
-        // Same token address should revert before reaching Create3.
+        // Re-using the same token address now reverts via the wallet sticky-binding
+        // rule (tokens and wallets share one keyspace), not the old token-collision error.
         vm.prank(deployer);
-        vm.expectRevert(abi.encodeWithSelector(Errors.TokenAlreadyLinked.selector, alice));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Errors.WalletBoundToAnotherIdentity.selector, abi.encodePacked(alice), tokenIdentityAddr
+            )
+        );
         setup.idFactory.createIdentityFor(alice, IdentityTypes.ASSET, "salt2", _makeMgmtKey(alice), _emptyModules);
 
         // Same salt (with a different token) should revert at Create3 with FailedDeployment().

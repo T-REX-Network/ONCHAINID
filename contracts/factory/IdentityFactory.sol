@@ -8,13 +8,16 @@ import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import { SignatureChecker } from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
+import { BeaconProxy } from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
+
+import { Identity } from "../Identity.sol";
 import { KeyManager } from "../KeyManager.sol";
 import { SmartAccount } from "../SmartAccount.sol";
+import { IIdentity } from "../interface/IIdentity.sol";
 import { Errors } from "../libraries/Errors.sol";
 import { IdentityTypes } from "../libraries/IdentityTypes.sol";
 import { KeyPurposes } from "../libraries/KeyPurposes.sol";
 import { KeyTypes } from "../libraries/KeyTypes.sol";
-import { IdentityProxy } from "../proxy/IdentityProxy.sol";
 import { Structs } from "../storage/Structs.sol";
 import { Create3 } from "../vendor/utils/Create3.sol";
 import { IIdentityFactory } from "./IIdentityFactory.sol";
@@ -44,48 +47,61 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         "CreateIdentity(bytes account,uint256 identityType,string salt,bytes32 keysHash,bytes32 modulesHash,uint256 nonce,uint256 expiry)"
     );
 
-    /// @notice ImplementationAuthority used by every IdentityProxy this factory deploys.
-    address public immutable implementationAuthority;
+    /// @notice OZ UpgradeableBeacon that every BeaconProxy deployed here delegates to.
+    ///         Beacon ownership should be transferred to the AccessManager so upgrades
+    ///         flow through the same role gating as everything else.
+    address public immutable beacon;
 
-    /// @dev walletKey = keccak256(signer bytes). Never cleared — sticky binding.
-    mapping(bytes32 walletKey => address identity) private _accountIdentity;
+    /// @dev One slot per wallet, keyed by keccak256(signer bytes). identity stays set
+    ///      after revoke (sticky binding); record is written once and kept for
+    ///      getAccounts() enumeration; status starts None and is terminal once Revoked.
+    struct WalletEntry {
+        address identity;
+        AccountStatus status;
+        bytes record;
+    }
 
-    /// @dev Active / Revoked / None. Revoked is final.
-    mapping(bytes32 walletKey => AccountStatus status) private _accountStatus;
+    /// @dev Per-type policy. roleId 0 means "admin only" (the default). canDeployFor
+    ///      is off by default — admin opts each type into the createIdentityFor path
+    ///      explicitly (typically ASSET).
+    struct TypePolicy {
+        uint64 roleId;
+        bool canDeployFor;
+    }
 
-    /// @dev walletKey → original bytes, for getAccounts() enumeration. Written once.
-    mapping(bytes32 walletKey => bytes account) private _accountRecord;
+    /// @dev EIP-7201 namespaced storage. All mutable state lives here so future
+    ///      upgrades (e.g. moving to a beacon proxy) don't collide with inherited
+    ///      ancestors' slots.
+    /// @custom:storage-location erc7201:onchainid.IdentityFactory
+    struct IdentityFactoryStorage {
+        mapping(bytes32 walletKey => WalletEntry entry) wallets;
+        mapping(address identity => EnumerableSet.Bytes32Set walletKeys) accounts;
+        mapping(address identity => bool deployedByFactory) isFactoryIdentity;
+        mapping(uint256 identityType => TypePolicy policy) typePolicies;
+    }
 
-    /// @dev Active wallets per identity. O(1) link/revoke.
-    mapping(address identity => EnumerableSet.Bytes32Set walletKeys) private _accounts;
+    // keccak256(abi.encode(uint256(keccak256("onchainid.IdentityFactory")) - 1)) & ~bytes32(uint256(0xff))
+    bytes32 private constant _IDENTITY_FACTORY_STORAGE_SLOT =
+        0x2cefd7c6aca4efb6085e4a9235cc3be23e6beeb0245cf23a279c1cb689649300;
 
-    /// @dev Was this identity deployed here? linkAccount uses it to reject randos.
-    mapping(address identity => bool deployedByFactory) private _isFactoryIdentity;
+    function _storage() private pure returns (IdentityFactoryStorage storage $) {
+        bytes32 slot = _IDENTITY_FACTORY_STORAGE_SLOT;
+        assembly {
+            $.slot := slot
+        }
+    }
 
-    /// @dev Token → identity (asset path).
-    mapping(address => address) private _tokenIdentity;
-
-    /// @dev Identity → token (reverse of _tokenIdentity).
-    mapping(address => address) private _tokenAddress;
-
-    /// @dev Identity type → required AccessManager role. 0 means "admin only".
-    ///      Role ids are picked by the deployer; this contract doesn't hardcode them.
-    mapping(uint256 identityType => uint64 roleId) private _identityTypeRole;
-
-    /// @dev Types that allow createIdentityFor. Off by default; admin opts each one in.
-    mapping(uint256 identityType => bool allowed) private _canDeployFor;
-
-    /// @param implementationAuthorityAddress the {ImplementationAuthority} that resolves the
-    ///        Identity logic for every proxy this factory deploys.
+    /// @param beaconAddress the OZ UpgradeableBeacon every deployed IdentityProxy
+    ///        delegates to. Its owner should be the AccessManager.
     /// @param initialAuthority the AccessManager that backs both `restricted` and the
     ///        inline `hasRole` checks in createIdentity*.
-    constructor(address implementationAuthorityAddress, address initialAuthority)
+    constructor(address beaconAddress, address initialAuthority)
         AccessManaged(initialAuthority)
         EIP712("IdentityFactory", "1")
     {
-        require(implementationAuthorityAddress != address(0), Errors.ZeroAddress());
+        require(beaconAddress != address(0), Errors.ZeroAddress());
 
-        implementationAuthority = implementationAuthorityAddress;
+        beacon = beaconAddress;
     }
 
     // ---------------------------------------------------------------------------------------
@@ -93,14 +109,14 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
     // ---------------------------------------------------------------------------------------
 
     /// @inheritdoc IIdentityFactory
-    function setIdentityTypeRole(uint256 _identityType, uint64 _roleId) external override restricted {
-        _identityTypeRole[_identityType] = _roleId;
+    function setIdentityTypeRole(uint256 _identityType, uint64 _roleId) external restricted {
+        _storage().typePolicies[_identityType].roleId = _roleId;
         emit IdentityTypeRoleSet(_identityType, _roleId);
     }
 
     /// @inheritdoc IIdentityFactory
-    function setCanDeployFor(uint256 _identityType, bool _allowed) external override restricted {
-        _canDeployFor[_identityType] = _allowed;
+    function setCanDeployFor(uint256 _identityType, bool _allowed) external restricted {
+        _storage().typePolicies[_identityType].canDeployFor = _allowed;
         emit CanDeployForSet(_identityType, _allowed);
     }
 
@@ -114,7 +130,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         string memory _salt,
         Structs.KeyParam[] memory _keys,
         Structs.ModuleInstall[] memory _modules
-    ) external override returns (address) {
+    ) external returns (address) {
         _checkRole(_identityType, msg.sender);
         // Caller is the account. Auto-link them as the first wallet.
         return _doCreateIdentity(abi.encodePacked(msg.sender), _identityType, _salt, _keys, _modules);
@@ -130,7 +146,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         uint256 _nonce,
         uint256 _expiry,
         bytes calldata _signature
-    ) external override returns (address) {
+    ) external returns (address) {
         // Sponsor must have the role. The account proves consent with its signature.
         _checkRole(_identityType, msg.sender);
         require(block.timestamp <= _expiry, Errors.ExpiredSignature(_expiry));
@@ -166,11 +182,11 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         string memory _salt,
         Structs.KeyParam[] memory _keys,
         Structs.ModuleInstall[] memory _modules
-    ) external override returns (address) {
+    ) external returns (address) {
         _checkRole(_identityType, msg.sender);
         // Only for types the admin explicitly opted in (typically ASSET). For other
         // types, callers must go through createIdentity or createIdentityWithSignature.
-        require(_canDeployFor[_identityType], Errors.CannotDeployForType(_identityType));
+        require(_storage().typePolicies[_identityType].canDeployFor, Errors.CannotDeployForType(_identityType));
         require(_account != address(0), Errors.ZeroAddress());
         return _doCreateIdentity(abi.encodePacked(_account), _identityType, _salt, _keys, _modules);
     }
@@ -180,16 +196,19 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
     // ---------------------------------------------------------------------------------------
 
     /// @inheritdoc IIdentityFactory
-    function linkAccount(bytes calldata account, bytes calldata signature, uint256 nonce, uint256 expiry)
-        external
-        override
-    {
+    function linkAccount(bytes calldata account, bytes calldata signature, uint256 nonce, uint256 expiry) external {
         // expiry == 0 reverts (block.timestamp <= 0 is false). Forces callers to pick a window.
         require(block.timestamp <= expiry, Errors.ExpiredSignature(expiry));
 
         // Only identities this factory deployed can pull wallets in. Otherwise random
         // contracts could register themselves and feed bogus claims to T-REX modules.
-        require(_isFactoryIdentity[msg.sender], Errors.NotFactoryIdentity(msg.sender));
+        require(_storage().isFactoryIdentity[msg.sender], Errors.NotFactoryIdentity(msg.sender));
+
+        // Asset identities represent exactly one token contract. Refuse to add more
+        // wallets to them.
+        require(
+            IIdentity(msg.sender).getIdentityType() != IdentityTypes.ASSET, Errors.CannotLinkToAssetIdentity(msg.sender)
+        );
 
         bytes32 digest = _hashTypedDataV4(
             keccak256(abi.encode(_LINK_ACCOUNT_TYPEHASH, keccak256(account), msg.sender, nonce, expiry))
@@ -207,9 +226,9 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
     }
 
     /// @inheritdoc IIdentityFactory
-    function revokeAccount(bytes calldata account) external override {
+    function revokeAccount(bytes calldata account) external {
         bytes32 key = _walletKey(account);
-        require(_accountIdentity[key] == msg.sender, Errors.WalletNotLinkedToIdentity(account));
+        require(_storage().wallets[key].identity == msg.sender, Errors.WalletNotLinkedToIdentity(account));
         _revokeAccount(account, msg.sender);
     }
 
@@ -218,67 +237,53 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
     // ---------------------------------------------------------------------------------------
 
     /// @inheritdoc IIdentityFactory
-    function getIdentity(bytes calldata account) external view override returns (address) {
-        bytes32 key = _walletKey(account);
-        if (_accountStatus[key] == AccountStatus.Active) {
-            return _accountIdentity[key];
-        }
-        return address(0);
+    function getIdentity(bytes calldata account) external view returns (address) {
+        WalletEntry storage entry = _storage().wallets[_walletKey(account)];
+        return entry.status == AccountStatus.Active ? entry.identity : address(0);
     }
 
     /// @inheritdoc IIdentityFactory
     function getIdentityIncludingRevoked(bytes calldata account)
         external
         view
-        override
         returns (address identity, AccountStatus status)
     {
-        bytes32 key = _walletKey(account);
-        return (_accountIdentity[key], _accountStatus[key]);
+        WalletEntry storage entry = _storage().wallets[_walletKey(account)];
+        return (entry.identity, entry.status);
     }
 
     /// @inheritdoc IIdentityFactory
-    function getAccountStatus(bytes calldata account) external view override returns (AccountStatus) {
-        return _accountStatus[_walletKey(account)];
+    function getAccountStatus(bytes calldata account) external view returns (AccountStatus) {
+        return _storage().wallets[_walletKey(account)].status;
     }
 
     /// @inheritdoc IIdentityFactory
-    function getAccounts(address identity) external view override returns (bytes[] memory) {
-        return _accountsRange(identity, 0, _accounts[identity].length());
+    function getAccounts(address identity) external view returns (bytes[] memory) {
+        return _accountsRange(identity, 0, _storage().accounts[identity].length());
     }
 
     /// @inheritdoc IIdentityFactory
-    function getAccounts(address identity, uint256 start, uint256 end) external view override returns (bytes[] memory) {
+    function getAccounts(address identity, uint256 start, uint256 end) external view returns (bytes[] memory) {
         return _accountsRange(identity, start, end);
     }
 
     /// @inheritdoc IIdentityFactory
-    function getToken(address _identity) external view override returns (address) {
-        return _tokenAddress[_identity];
+    function getIdentityTypeRole(uint256 _identityType) external view returns (uint64) {
+        return _storage().typePolicies[_identityType].roleId;
     }
 
     /// @inheritdoc IIdentityFactory
-    function getTokenIdentity(address token) external view override returns (address) {
-        return _tokenIdentity[token];
+    function canDeployFor(uint256 _identityType) external view returns (bool) {
+        return _storage().typePolicies[_identityType].canDeployFor;
     }
 
     /// @inheritdoc IIdentityFactory
-    function getIdentityTypeRole(uint256 _identityType) external view override returns (uint64) {
-        return _identityTypeRole[_identityType];
+    function isFactoryIdentity(address identity) external view returns (bool) {
+        return _storage().isFactoryIdentity[identity];
     }
 
     /// @inheritdoc IIdentityFactory
-    function canDeployFor(uint256 _identityType) external view override returns (bool) {
-        return _canDeployFor[_identityType];
-    }
-
-    /// @inheritdoc IIdentityFactory
-    function isFactoryIdentity(address identity) external view override returns (bool) {
-        return _isFactoryIdentity[identity];
-    }
-
-    /// @inheritdoc IIdentityFactory
-    function noncesForAccount(bytes calldata account) external view override returns (uint256) {
+    function noncesForAccount(bytes calldata account) external view returns (uint256) {
         return super.nonces(_addressKeyForAccount(account));
     }
 
@@ -288,7 +293,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
 
     /// @dev Role 0 (unset) means "admin only" — types are closed by default.
     function _checkRole(uint256 _identityType, address caller) private view {
-        uint64 requiredRole = _identityTypeRole[_identityType];
+        uint64 requiredRole = _storage().typePolicies[_identityType].roleId;
         (bool isMember,) = IAccessManager(authority()).hasRole(requiredRole, caller);
         require(isMember, Errors.NotAuthorizedForIdentityType(caller, _identityType, requiredRole));
     }
@@ -311,91 +316,79 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         require(keccak256(bytes(_salt)) != keccak256(""), Errors.EmptyString());
         require(_keys.length > 0, Errors.EmptyListOfKeys());
 
+        // Asset identities are deployed for a token contract — always a 20-byte EVM address.
+        // The token is auto-linked as the identity's sole wallet like any other signer;
+        // the difference is the identity's `type`. Off-chain readers can recover the
+        // token by reading `getAccounts(identity)[0]` and checking `getIdentityType()`.
         if (_identityType == IdentityTypes.ASSET) {
-            // Asset identities are deployed for a token contract — always a 20-byte EVM address.
-            require(_account.length == 20, Errors.ZeroAddress());
-            address tokenAddr = address(bytes20(_account));
-            require(tokenAddr != address(0), Errors.ZeroAddress());
-
-            string memory tokenIdSalt = string.concat("Token", _salt);
-            require(_tokenIdentity[tokenAddr] == address(0), Errors.TokenAlreadyLinked(tokenAddr));
-
-            // Salt collisions surface as Create3 FailedDeployment().
-            address identity = _deployIdentity(tokenIdSalt, _identityType);
-
-            // CEI: write storage before _setupIdentity runs user-controlled onInstall.
-            _tokenIdentity[tokenAddr] = identity;
-            _tokenAddress[identity] = tokenAddr;
-            _isFactoryIdentity[identity] = true;
-            emit TokenLinked(tokenAddr, identity);
-
-            _setupIdentity(identity, _keys, _modules);
-
-            return identity;
+            require(_account.length == 20 && address(bytes20(_account)) != address(0), Errors.ZeroAddress());
         }
 
-        string memory oidSalt = string.concat("OID", _salt);
-        address userIdentity = _deployIdentity(oidSalt, _identityType);
+        string memory prefixedSalt = string.concat(_identityType == IdentityTypes.ASSET ? "Token" : "OID", _salt);
+
+        // Salt collisions surface as Create3 FailedDeployment().
+        address identity = _deployIdentity(prefixedSalt, _identityType);
 
         // Mark factory-deployed BEFORE linking so a re-entrant module can't pretend
         // to be a non-factory caller.
-        _isFactoryIdentity[userIdentity] = true;
-        _linkAccount(_account, userIdentity);
+        _storage().isFactoryIdentity[identity] = true;
+        _linkAccount(_account, identity);
 
-        _setupIdentity(userIdentity, _keys, _modules);
-
-        return userIdentity;
-    }
-
-    /// @dev Link rule. Enforces sticky binding, terminal revocation, and the token
-    ///      collision guard.
-    function _linkAccount(bytes memory account, address identity) internal {
-        bytes32 key = _walletKey(account);
-        AccountStatus status = _accountStatus[key];
-
-        // Once revoked, never re-linkable.
-        require(status != AccountStatus.Revoked, Errors.WalletAlreadyRevoked(account));
-
-        // If already bound, must be the same identity.
-        address bound = _accountIdentity[key];
-        require(bound == address(0) || bound == identity, Errors.WalletBoundToAnotherIdentity(account, bound));
-
-        // A 20-byte account that's also a registered token can't be a wallet. Non-EVM
-        // signers are longer and can't collide.
-        if (account.length == 20) {
-            address asAddr = address(bytes20(account));
-            require(_tokenIdentity[asAddr] == address(0), Errors.TokenAlreadyLinked(asAddr));
+        if (_identityType == IdentityTypes.ASSET) {
+            emit TokenLinked(address(bytes20(_account)), identity);
         }
 
-        require(_accounts[identity].add(key), Errors.WalletAlreadyLinkedToIdentity(account));
+        _setupIdentity(identity, _keys, _modules);
 
-        _accountIdentity[key] = identity;
-        _accountStatus[key] = AccountStatus.Active;
-        if (_accountRecord[key].length == 0) {
-            _accountRecord[key] = account;
+        return identity;
+    }
+
+    /// @dev Link rule. Enforces sticky binding and terminal revocation. Tokens and
+    ///      wallets share the same keyspace — the same address (or signer) can only
+    ///      live in one entry, so there's no separate collision check needed.
+    function _linkAccount(bytes memory account, address identity) internal {
+        bytes32 key = _walletKey(account);
+        WalletEntry storage entry = _storage().wallets[key];
+
+        // Once revoked, never re-linkable.
+        require(entry.status != AccountStatus.Revoked, Errors.WalletAlreadyRevoked(account));
+
+        // If already bound, must be the same identity.
+        require(
+            entry.identity == address(0) || entry.identity == identity,
+            Errors.WalletBoundToAnotherIdentity(account, entry.identity)
+        );
+
+        require(_storage().accounts[identity].add(key), Errors.WalletAlreadyLinkedToIdentity(account));
+
+        entry.identity = identity;
+        entry.status = AccountStatus.Active;
+        if (entry.record.length == 0) {
+            entry.record = account;
         }
 
         emit AccountLinked(account, identity);
     }
 
     /// @dev Revoke rule. Flips status to Revoked and drops the wallet from the active
-    ///      set. `_accountIdentity` and `_accountRecord` stay so the binding is visible
-    ///      via getIdentityIncludingRevoked.
+    ///      set. identity + record stay so the binding is visible via
+    ///      getIdentityIncludingRevoked.
     function _revokeAccount(bytes memory account, address identity) internal {
         bytes32 key = _walletKey(account);
-        require(_accountStatus[key] == AccountStatus.Active, Errors.WalletNotActive(account));
-        require(_accounts[identity].remove(key), Errors.WalletNotLinkedToIdentity(account));
+        WalletEntry storage entry = _storage().wallets[key];
+        require(entry.status == AccountStatus.Active, Errors.WalletNotActive(account));
+        require(_storage().accounts[identity].remove(key), Errors.WalletNotLinkedToIdentity(account));
 
-        _accountStatus[key] = AccountStatus.Revoked;
+        entry.status = AccountStatus.Revoked;
 
         emit AccountRevoked(account, identity);
     }
 
     function _accountsRange(address identity, uint256 start, uint256 end) private view returns (bytes[] memory out) {
-        bytes32[] memory keys = _accounts[identity].values(start, end);
+        bytes32[] memory keys = _storage().accounts[identity].values(start, end);
         out = new bytes[](keys.length);
         for (uint256 i = 0; i < keys.length; i++) {
-            out[i] = _accountRecord[keys[i]];
+            out[i] = _storage().wallets[keys[i]].record;
         }
     }
 
@@ -441,13 +434,15 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         );
     }
 
-    /// @dev CREATE3 deploy. Address depends only on (factory, salt), so the same salt
-    ///      gives the same identity address on every canonical EVM chain where this
-    ///      factory shares the same address.
+    /// @dev CREATE3 deploy of a fresh BeaconProxy. Address depends only on (factory,
+    ///      salt), so the same salt gives the same identity address on every canonical
+    ///      EVM chain where this factory shares the same address.
     function _deployIdentity(string memory _salt, uint256 _identityType) private returns (address) {
-        bytes memory _code = type(IdentityProxy).creationCode;
-        bytes memory _constructData = abi.encode(implementationAuthority, address(this), _identityType);
-        bytes memory bytecode = abi.encodePacked(_code, _constructData);
+        // The proxy's constructor calls beacon.implementation() and forwards this
+        // calldata via delegatecall — Identity.initialize runs in the new proxy's
+        // storage with the factory as the initial MANAGEMENT key.
+        bytes memory initData = abi.encodeCall(Identity.initialize, (address(this), _identityType));
+        bytes memory bytecode = abi.encodePacked(type(BeaconProxy).creationCode, abi.encode(beacon, initData));
 
         return Create3.deploy(0, keccak256(abi.encodePacked(_salt)), bytecode);
     }

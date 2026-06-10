@@ -7,6 +7,8 @@ import {
     MODULE_TYPE_FALLBACK,
     MODULE_TYPE_VALIDATOR
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import { BeaconProxy } from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
+import { UpgradeableBeacon } from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IdentityFactory } from "contracts/factory/IdentityFactory.sol";
 import { IClaimIssuer } from "contracts/interface/IClaimIssuer.sol";
@@ -18,8 +20,6 @@ import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { ClaimsModule } from "contracts/modules/claims/ClaimsModule.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
 import { ERC7579Signature } from "contracts/modules/validators/ERC7579Signature.sol";
-import { IdentityProxy } from "contracts/proxy/IdentityProxy.sol";
-import { ImplementationAuthority } from "contracts/proxy/ImplementationAuthority.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 import { Vm } from "forge-std/Vm.sol";
 
@@ -33,7 +33,7 @@ library IdentityHelper {
 
     struct OnchainIDSetup {
         Identity identityImplementation;
-        ImplementationAuthority implementationAuthority;
+        UpgradeableBeacon beacon;
         AccessManager accessManager;
         IdentityFactory idFactory;
         KeyApprovalModule keyApprovalModule;
@@ -56,10 +56,9 @@ library IdentityHelper {
         setup.claimsModule = new ClaimsModule();
 
         setup.identityImplementation = new Identity(managementKey, false);
-        setup.implementationAuthority =
-            new ImplementationAuthority(address(setup.identityImplementation), managementKey);
+        setup.beacon = new UpgradeableBeacon(address(setup.identityImplementation), managementKey);
         setup.accessManager = new AccessManager(managementKey);
-        setup.idFactory = new IdentityFactory(address(setup.implementationAuthority), address(setup.accessManager));
+        setup.idFactory = new IdentityFactory(address(setup.beacon), address(setup.accessManager));
 
         // Default test policy: every identity type is open to PUBLIC_ROLE, and every type
         // is in the `_canDeployFor` allowlist. This lets test setUps mint identities for
@@ -171,7 +170,7 @@ library IdentityHelper {
         });
     }
 
-    /// @notice Deploys an Identity through the custom IdentityProxy pattern and installs an
+    /// @notice Deploys an Identity through a standalone BeaconProxy and installs an
     ///         {ERC7579Signature} validator on it so it can verify ERC-1271 / 4337 signatures.
     /// @param initialManagementKey The management key for the identity.
     /// @return identity The Identity contract at the proxy address.
@@ -188,8 +187,9 @@ library IdentityHelper {
         returns (Identity identity, ERC7579Signature signatureValidator)
     {
         Identity impl = new Identity(initialManagementKey, false);
-        ImplementationAuthority ia = new ImplementationAuthority(address(impl), initialManagementKey);
-        IdentityProxy proxy = new IdentityProxy(address(ia), initialManagementKey, identityType);
+        UpgradeableBeacon b = new UpgradeableBeacon(address(impl), initialManagementKey);
+        BeaconProxy proxy =
+            new BeaconProxy(address(b), abi.encodeCall(Identity.initialize, (initialManagementKey, identityType)));
         identity = Identity(payable(address(proxy)));
 
         signatureValidator = new ERC7579Signature();

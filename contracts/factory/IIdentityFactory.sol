@@ -33,8 +33,10 @@ import { Structs } from "../storage/Structs.sol";
 ///
 ///         Bindings are permanent (sticky): once linked, a wallet can never be linked to a
 ///         different identity. Revocation flips the wallet's status to `Revoked` (terminal —
-///         the wallet can never be re-linked) but never clears the underlying record. Token
-///         addresses are resolved separately via {getToken} / {getTokenIdentity}.
+///         the wallet can never be re-linked) but never clears the underlying record. Tokens
+///         share the same keyspace as wallets: an ASSET identity's auto-linked wallet IS the
+///         token, looked up via `getIdentity(bytes)` (forward) or `getAccounts(identity)[0]`
+///         (reverse). The identity's `getIdentityType()` distinguishes ASSET from others.
 ///
 ///         Cross-chain wallet linking (distinguishing the same address on different chains
 ///         via ERC-7930 envelopes, ERC-7786 receiver for cross-chain proofs) is a follow-up.
@@ -168,14 +170,6 @@ interface IIdentityFactory {
     /// @notice Paginated variant of {getAccounts}.
     function getAccounts(address identity, uint256 start, uint256 end) external view returns (bytes[] memory);
 
-    /// @notice Token address linked to an identity (tokens are EVM-only).
-    function getToken(address _identity) external view returns (address);
-
-    /// @notice Forward lookup for tokens: resolve a token address to the identity that
-    ///         represents it. Returns `address(0)` if the token has no identity in this
-    ///         registry. Tokens live in a dedicated keyspace, separate from wallets.
-    function getTokenIdentity(address token) external view returns (address);
-
     /// @notice Returns the AccessManager role required to create identities of
     ///         `_identityType`. Returns `0` (admin-only / closed) for unset types.
     function getIdentityTypeRole(uint256 _identityType) external view returns (uint64);
@@ -193,8 +187,8 @@ interface IIdentityFactory {
     function noncesForAccount(bytes calldata account) external view returns (uint256);
 
     /**
-     * @dev getter for the implementation authority used by this factory.
+     * @dev OZ UpgradeableBeacon every BeaconProxy deployed here delegates to.
      */
-    function implementationAuthority() external view returns (address);
+    function beacon() external view returns (address);
 
 }

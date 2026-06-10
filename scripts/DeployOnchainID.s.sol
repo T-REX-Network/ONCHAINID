@@ -4,6 +4,7 @@ pragma solidity ^0.8.27;
 import { Script, console } from "forge-std/Script.sol";
 
 import { AccessManager } from "@openzeppelin/contracts/access/manager/AccessManager.sol";
+import { UpgradeableBeacon } from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import {
     ERC7913WebAuthnVerifier
 } from "@openzeppelin/contracts/utils/cryptography/verifiers/ERC7913WebAuthnVerifier.sol";
@@ -15,7 +16,6 @@ import { ClaimsModule } from "contracts/modules/claims/ClaimsModule.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
 import { ERC7579Signature } from "contracts/modules/validators/ERC7579Signature.sol";
 import { IdentityUtilitiesProxy } from "contracts/proxy/IdentityUtilitiesProxy.sol";
-import { ImplementationAuthority } from "contracts/proxy/ImplementationAuthority.sol";
 
 /**
  * @title DeployOnchainID
@@ -24,10 +24,10 @@ import { ImplementationAuthority } from "contracts/proxy/ImplementationAuthority
  * Deployment order:
  *   1. Identity implementation (library mode)
  *   2. IdentityUtilities implementation + proxy
- *   3. ImplementationAuthority (beacon pointing to Identity impl)
+ *   3. UpgradeableBeacon (points to Identity impl; owned by AccessManager)
  *   4. Module singletons (KeyApprovalModule, ClaimsModule)
  *   5. AccessManager (single source of truth for IdentityFactory permissions)
- *   6. IdentityFactory (uses ImplementationAuthority for identity proxies)
+ *   6. IdentityFactory (BeaconProxy + UpgradeableBeacon for identity proxies)
  *   7. AccessManager role wiring (per-identity-type role mapping)
  *
  * Usage:
@@ -69,9 +69,11 @@ contract DeployOnchainID is Script {
 
         // ===== Phase 2: Infrastructure =====
 
-        // 4. ImplementationAuthority (beacon for identity proxies)
-        ImplementationAuthority authority = new ImplementationAuthority(address(identityImpl), deployer);
-        console.log("ImplementationAuthority:", address(authority));
+        // 4. UpgradeableBeacon (beacon for identity proxies). Owned by the deployer
+        //    initially; transferred to the AccessManager below so upgrades go through
+        //    role gating.
+        UpgradeableBeacon beacon = new UpgradeableBeacon(address(identityImpl), deployer);
+        console.log("Beacon:", address(beacon));
 
         // 4b. Module singletons. Callers include these in their `_modules` array on
         //     `createIdentity` to opt into the legacy ERC-734 execute/approve queue
@@ -93,8 +95,12 @@ contract DeployOnchainID is Script {
         am.labelRole(ROLE_CLAIM_ISSUER_ADMIN, "CLAIM_ISSUER_ADMIN");
 
         // 6. IdentityFactory
-        IdentityFactory idFactory = new IdentityFactory(address(authority), address(am));
+        IdentityFactory idFactory = new IdentityFactory(address(beacon), address(am));
         console.log("IdentityFactory:", address(idFactory));
+
+        // Hand the beacon to the AccessManager so future implementation upgrades
+        // (`beacon.upgradeTo(newImpl)`) go through the same role gating as everything else.
+        beacon.transferOwnership(address(am));
 
         // ===== Phase 3: AccessManager role wiring =====
         // Per-identity-type creation rights. Unset types default to ADMIN_ROLE (closed),
@@ -130,7 +136,7 @@ contract DeployOnchainID is Script {
         console.log("Identity impl:          ", address(identityImpl));
         console.log("IdentityUtilities impl: ", address(utilitiesImpl));
         console.log("IdentityUtilities proxy:", address(utilitiesProxy));
-        console.log("ImplementationAuthority:", address(authority));
+        console.log("Beacon:                 ", address(beacon));
         console.log("AccessManager:          ", address(am));
         console.log("IdentityFactory:        ", address(idFactory));
         console.log("ERC7579Signature:       ", address(signatureValidator));
