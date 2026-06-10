@@ -14,6 +14,7 @@ import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/draft-ERC433
 import { CallType, ERC7579Utils, Mode } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
 import { PackedUserOperation } from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import { Execution, MODULE_TYPE_EXECUTOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import { Calldata } from "@openzeppelin/contracts/utils/Calldata.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
@@ -93,8 +94,10 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
     /// @notice ERC-4337 user op validation. Validator proves the signature, then this
     ///         function applies the per-target rule.
     /// @dev The second decode of `(signer, sig)` is intentional. The validator decoded
-    ///      it for crypto; we decode it again to read the signer for policy. This keeps
-    ///      the validator signature-only and policy on the account.
+    ///      it for crypto; we decode it again to read the signer for policy.
+    ///      Validator contract: installed validators MUST use `abi.encode(bytes signer,
+    ///      bytes sig)` and MUST bind `signer` to verification. Otherwise the keyhash
+    ///      we derive here can diverge from the identity the validator actually checked.
     function _validateUserOp(PackedUserOperation calldata userOp, bytes32 userOpHash, bytes calldata signature)
         internal
         virtual
@@ -102,8 +105,11 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         returns (uint256)
     {
         // Step 1: let the installed validator prove the signature + ACTION purpose.
+        // Validators can return a non-zero packed `validationData` that still means success
+        // (encoded time bounds, or an aggregator authorizer). Only stop on the literal
+        // failure code; otherwise the per-target rule must still run.
         uint256 baseValidation = super._validateUserOp(userOp, userOpHash, signature);
-        if (baseValidation != ERC4337Utils.SIG_VALIDATION_SUCCESS) return baseValidation;
+        if (baseValidation == ERC4337Utils.SIG_VALIDATION_FAILED) return baseValidation;
 
         // Step 2: read the signer. Safe to trust now: the validator just proved it.
         // Malformed payload reverts here; EntryPoint treats that as a failed user op.
@@ -114,7 +120,10 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         if (!_isAuthorizedForUserOpCallData(userOp.callData, signerKeyHash)) {
             return ERC4337Utils.SIG_VALIDATION_FAILED;
         }
-        return ERC4337Utils.SIG_VALIDATION_SUCCESS;
+        // Returning `SIG_VALIDATION_SUCCESS` here would strip the time bounds and
+        // aggregator the validator encoded above. Pass the original word through so
+        // the EntryPoint enforces those constraints.
+        return baseValidation;
     }
 
     /// @dev Unpacks the outer `execute(mode, data)` and forwards to `_isAuthorizedForExecution`.
@@ -187,6 +196,21 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         view
         returns (bool)
     {
+        // OZ `ERC7579Utils._call` rewrites `target == address(0)` to `address(this)` before
+        // dispatch, so a payload with target=0 lands as a self-call. Collapse the same alias
+        // here so this self-vs-external check sees what the call will actually hit.
+        if (target == address(0)) target = address(this);
+
+        // Installed fallback/executor modules trust the ERC-2771 trailing bytes appended
+        // by `_fallback()`. A direct call here skips that append, so the caller can forge
+        // the tail. Require MANAGEMENT. Legitimate use goes through fallback/executor dispatch.
+        if (
+            isModuleInstalled(MODULE_TYPE_EXECUTOR, target, Calldata.emptyBytes())
+                || (data.length >= 4 && _fallbackHandler(bytes4(data[:4])) == target)
+        ) {
+            return keyHasPurpose(keyHash, KeyPurposes.MANAGEMENT);
+        }
+
         // The policy module is whichever contract is wired as the `execute` fallback handler.
         address policy = _fallbackHandler(IKeyExecutor.execute.selector);
 

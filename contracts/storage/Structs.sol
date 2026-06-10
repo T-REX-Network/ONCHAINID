@@ -75,8 +75,26 @@ contract Structs {
         uint256 scheme;
         address issuer;
         bytes signature;
-        bytes data;
+        ClaimData data;
         string uri;
+    }
+
+    /**
+     *  @dev Typed envelope for the signed portion of a Claim.
+     *
+     *  issuedAt:   block timestamp when the issuer signed the claim. MUST be > 0.
+     *              `block.timestamp < issuedAt` means the claim is not yet valid.
+     *  validUntil: block timestamp after which the claim expires. 0 means no expiry.
+     *  payload:    topic-specific claim contents.
+     *
+     *  The EIP-712 type is nested as `ClaimData(uint256 issuedAt,uint256 validUntil,bytes payload)`
+     *  so wallets render each field legibly during typed-data signing instead of
+     *  surfacing an opaque hex blob.
+     */
+    struct ClaimData {
+        uint256 issuedAt;
+        uint256 validUntil;
+        bytes payload;
     }
 
     /**
