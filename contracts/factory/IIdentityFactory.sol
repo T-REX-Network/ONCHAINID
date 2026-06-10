@@ -13,14 +13,13 @@ import { Structs } from "../storage/Structs.sol";
 ///             gated directly through `AccessManaged.restricted` and resolved by the
 ///             connected AccessManager.
 ///
-///         There are three deploy paths, one per consent model:
+///         There are two deploy paths, one per consent model:
 ///           1. {createIdentity} — `msg.sender` deploys for themselves. The act of calling
-///              IS the consent; no signature required.
-///           2. {createIdentityWithSignature} — a sponsor deploys on behalf of an account
-///              that produced an EIP-712 authorization. Account is `bytes`, so EOAs,
-///              ERC-1271 smart wallets, and ERC-7913 verifiers (passkeys, WebAuthn, RSA, etc.)
-///              are all supported through OpenZeppelin's `SignatureChecker`.
-///           3. {createIdentityFor} — a role-holder deploys for an EVM account that cannot
+///              IS the consent; no signature required. Sponsored deploys ("user A signs,
+///              user B pays the gas") are handled at the ERC-7579/ERC-4337 smart-account
+///              layer rather than by this factory: by the time the call reaches
+///              {createIdentity}, `msg.sender` already represents the consenting account.
+///           2. {createIdentityFor} — a role-holder deploys for an EVM account that cannot
 ///              produce a signature (e.g. a token contract represented as an asset
 ///              identity). The per-type AccessManager role IS the consent; the type must
 ///              also be explicitly enabled via {setCanDeployFor}.
@@ -80,28 +79,6 @@ interface IIdentityFactory {
         string memory _salt,
         Structs.KeyParam[] memory _keys,
         Structs.ModuleInstall[] memory _modules
-    ) external returns (address);
-
-    /// @notice Sponsored deploy: `msg.sender` is a relayer / KYC provider / paymaster.
-    ///         `_account` is the signer bytes that authorized this exact deployment via
-    ///         EIP-712. Supports EOAs (20-byte address), ERC-1271 smart wallets (20-byte
-    ///         contract address), and ERC-7913 verifiers (verifier address + key data,
-    ///         e.g. WebAuthn passkeys) uniformly through `SignatureChecker`.
-    ///
-    ///         Per-type AccessManager role check applies to `msg.sender` (the sponsor).
-    ///         Consent for `_account` comes from the signature. `_account` is also
-    ///         auto-linked as the new identity's first wallet — passkeys and other
-    ///         non-EVM signers become first-class registry entries on the same footing
-    ///         as EOAs.
-    function createIdentityWithSignature(
-        bytes calldata _account,
-        uint256 _identityType,
-        string calldata _salt,
-        Structs.KeyParam[] calldata _keys,
-        Structs.ModuleInstall[] calldata _modules,
-        uint256 _nonce,
-        uint256 _expiry,
-        bytes calldata _signature
     ) external returns (address);
 
     /// @notice Role-gated deploy for an EVM account that cannot sign — typically a token

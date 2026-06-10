@@ -8,12 +8,6 @@ libs = ["dependencies"]
 solc_version = "0.8.30"
 optimizer = true
 optimizer_runs = 200
-# Required by `IdentityFactory.createIdentityWithSignature`: the function's 9
-# calldata parameters (account, identityType, salt, keys, modules, nonce,
-# expiry, signature + the implicit `msg.sender`) saturate Solidity's stack
-# budget before any locals are introduced. via-ir's improved register
-# allocation handles it cleanly. No other contract in the repo requires it.
-via_ir = true
 evm_version = "cancun"
 
 [profile.default.fmt]

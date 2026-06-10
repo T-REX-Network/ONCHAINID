@@ -25,10 +25,6 @@ contract IdentityFactoryTest is OnchainIDSetup {
     bytes32 internal constant _LINK_ACCOUNT_TYPEHASH =
         keccak256("LinkAccount(bytes account,address identity,uint256 nonce,uint256 expiry)");
 
-    bytes32 internal constant _CREATE_IDENTITY_TYPEHASH = keccak256(
-        "CreateIdentity(bytes account,uint256 identityType,string salt,bytes32 keysHash,bytes32 modulesHash,uint256 nonce,uint256 expiry)"
-    );
-
     // ---- generic helpers ----
 
     function _makeECDSAKey(address addr, uint256 purpose) internal pure returns (Structs.KeyParam memory) {
@@ -612,89 +608,6 @@ contract IdentityFactoryTest is OnchainIDSetup {
             );
         assertTrue(identityAddr != address(0));
         assertEq(onchainidSetup.idFactory.getIdentity(_asAccount(eoa)), identityAddr, "self-deployer auto-linked");
-    }
-
-    // ============ createIdentityWithSignature (sponsored) ============
-
-    function _signCreate(
-        uint256 signerPk,
-        bytes memory account,
-        uint256 identityType,
-        string memory salt,
-        Structs.KeyParam[] memory keys,
-        Structs.ModuleInstall[] memory modules,
-        uint256 nonce,
-        uint256 expiry
-    ) internal view returns (bytes memory) {
-        bytes32 structHash = keccak256(
-            abi.encode(
-                _CREATE_IDENTITY_TYPEHASH,
-                keccak256(account),
-                identityType,
-                keccak256(bytes(salt)),
-                keccak256(abi.encode(keys)),
-                keccak256(abi.encode(modules)),
-                nonce,
-                expiry
-            )
-        );
-        bytes32 digest =
-            MessageHashUtils.toTypedDataHash(_domainSeparator(address(onchainidSetup.idFactory)), structHash);
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerPk, digest);
-        return abi.encodePacked(r, s, v);
-    }
-
-    function test_createIdentityWithSignature_eoaSponsoredDeployAutoLinks() public {
-        (address newOwner, uint256 newOwnerPk) = makeAddrAndKey("sponsoredEoa");
-        bytes memory account = _asAccount(newOwner);
-        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(newOwner);
-        Structs.ModuleInstall[] memory modules = new Structs.ModuleInstall[](0);
-        uint256 expiry = block.timestamp + 1 hours;
-        uint256 nonce = onchainidSetup.idFactory.noncesForAccount(account);
-        bytes memory sig =
-            _signCreate(newOwnerPk, account, IdentityTypes.INDIVIDUAL, "sponsoredSalt", keys, modules, nonce, expiry);
-
-        vm.prank(deployer);
-        address identityAddr = onchainidSetup.idFactory
-            .createIdentityWithSignature(
-                account, IdentityTypes.INDIVIDUAL, "sponsoredSalt", keys, modules, nonce, expiry, sig
-            );
-        assertTrue(identityAddr != address(0));
-        // Auto-linked as the new identity's first wallet.
-        assertEq(onchainidSetup.idFactory.getIdentity(account), identityAddr);
-        bytes[] memory accs = onchainidSetup.idFactory.getAccounts(identityAddr);
-        assertEq(accs.length, 1);
-    }
-
-    function test_createIdentityWithSignature_revertExpiryZero() public {
-        (address newOwner, uint256 newOwnerPk) = makeAddrAndKey("sponsoredEoa2");
-        bytes memory account = _asAccount(newOwner);
-        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(newOwner);
-        Structs.ModuleInstall[] memory modules = new Structs.ModuleInstall[](0);
-        bytes memory sig = _signCreate(newOwnerPk, account, IdentityTypes.INDIVIDUAL, "x", keys, modules, 0, 0);
-
-        vm.prank(deployer);
-        vm.expectRevert(abi.encodeWithSelector(Errors.ExpiredSignature.selector, uint256(0)));
-        onchainidSetup.idFactory
-            .createIdentityWithSignature(account, IdentityTypes.INDIVIDUAL, "x", keys, modules, 0, 0, sig);
-    }
-
-    function test_createIdentityWithSignature_revertBadSignature() public {
-        (address newOwner, uint256 newOwnerPk) = makeAddrAndKey("sponsoredEoa3");
-        bytes memory account = _asAccount(newOwner);
-        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(newOwner);
-        Structs.ModuleInstall[] memory modules = new Structs.ModuleInstall[](0);
-        uint256 expiry = block.timestamp + 1 hours;
-        uint256 nonce = onchainidSetup.idFactory.noncesForAccount(account);
-        bytes memory sig =
-            _signCreate(newOwnerPk, account, IdentityTypes.INDIVIDUAL, "wrongSalt", keys, modules, nonce, expiry);
-
-        vm.prank(deployer);
-        vm.expectRevert(Errors.InvalidSignature.selector);
-        onchainidSetup.idFactory
-            .createIdentityWithSignature(
-                account, IdentityTypes.INDIVIDUAL, "differentSalt", keys, modules, nonce, expiry, sig
-            );
     }
 
 }

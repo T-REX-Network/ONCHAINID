@@ -24,13 +24,15 @@ import { IIdentityFactory } from "./IIdentityFactory.sol";
 
 /// @title IdentityFactory
 /// @notice Deploys ONCHAINID identity proxies. Permissions go through an AccessManager.
-///         Three deploy paths:
-///         - createIdentity: caller deploys for themselves.
-///         - createIdentityWithSignature: sponsor deploys, account proves consent via EIP-712.
-///           Account is `bytes` so EOA, ERC-1271 and ERC-7913 (passkey, WebAuthn) all work.
+///         Two deploy paths:
+///         - createIdentity: caller deploys for themselves. msg.sender becomes the
+///           first auto-linked wallet. Sponsored deploys ("user A signs, user B pays
+///           gas") are handled at the ERC-7579/ERC-4337 smart-account layer — by the
+///           time we hit the factory, msg.sender already represents the consenting
+///           account.
 ///         - createIdentityFor: role-holder deploys for an EVM account that can't sign
 ///           (a token, a vault). Type must be in the canDeployFor allowlist.
-///         All three need msg.sender to hold the per-type role (closed by default).
+///         Both need msg.sender to hold the per-type role (closed by default).
 ///         Wallets use the same bytes shape as signers. Bindings are sticky and revocation
 ///         is terminal. Cross-chain wallet linking (ERC-7930/ERC-7786) is a follow-up.
 contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
@@ -40,12 +42,6 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
     /// @dev EIP-712 typehash for wallet → identity link.
     bytes32 private constant _LINK_ACCOUNT_TYPEHASH =
         keccak256("LinkAccount(bytes account,address identity,uint256 nonce,uint256 expiry)");
-
-    /// @dev EIP-712 typehash for sponsored-deploy authorization. keysHash/modulesHash
-    ///      lock the bootstrap so a relayer can't swap MANAGEMENT keys after signing.
-    bytes32 private constant _CREATE_IDENTITY_TYPEHASH = keccak256(
-        "CreateIdentity(bytes account,uint256 identityType,string salt,bytes32 keysHash,bytes32 modulesHash,uint256 nonce,uint256 expiry)"
-    );
 
     /// @notice OZ UpgradeableBeacon that every BeaconProxy deployed here delegates to.
     ///         Beacon ownership should be transferred to the AccessManager so upgrades
@@ -94,7 +90,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
     /// @param beaconAddress the OZ UpgradeableBeacon every deployed IdentityProxy
     ///        delegates to. Its owner should be the AccessManager.
     /// @param initialAuthority the AccessManager that backs both `restricted` and the
-    ///        inline `hasRole` checks in createIdentity*.
+    ///        inline `hasRole` checks in the createIdentity paths.
     constructor(address beaconAddress, address initialAuthority)
         AccessManaged(initialAuthority)
         EIP712("IdentityFactory", "1")
@@ -137,45 +133,6 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
     }
 
     /// @inheritdoc IIdentityFactory
-    function createIdentityWithSignature(
-        bytes calldata _account,
-        uint256 _identityType,
-        string calldata _salt,
-        Structs.KeyParam[] calldata _keys,
-        Structs.ModuleInstall[] calldata _modules,
-        uint256 _nonce,
-        uint256 _expiry,
-        bytes calldata _signature
-    ) external returns (address) {
-        // Sponsor must have the role. The account proves consent with its signature.
-        _checkRole(_identityType, msg.sender);
-        require(block.timestamp <= _expiry, Errors.ExpiredSignature(_expiry));
-
-        // Hash keys + modules into the digest so the relayer can't swap them after signing.
-        bytes32 digest = _hashTypedDataV4(
-            keccak256(
-                abi.encode(
-                    _CREATE_IDENTITY_TYPEHASH,
-                    keccak256(_account),
-                    _identityType,
-                    keccak256(bytes(_salt)),
-                    keccak256(abi.encode(_keys)),
-                    keccak256(abi.encode(_modules)),
-                    _nonce,
-                    _expiry
-                )
-            )
-        );
-
-        // One call covers EOA, ERC-1271 smart wallets, and ERC-7913 verifiers.
-        require(SignatureChecker.isValidSignatureNow(_account, digest, _signature), Errors.InvalidSignature());
-        _useCheckedNonce(_addressKeyForAccount(_account), _nonce);
-
-        // Auto-link the signer as the first wallet. Bytes shape doesn't matter here.
-        return _doCreateIdentity(_account, _identityType, _salt, _keys, _modules);
-    }
-
-    /// @inheritdoc IIdentityFactory
     function createIdentityFor(
         address _account,
         uint256 _identityType,
@@ -185,7 +142,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
     ) external returns (address) {
         _checkRole(_identityType, msg.sender);
         // Only for types the admin explicitly opted in (typically ASSET). For other
-        // types, callers must go through createIdentity or createIdentityWithSignature.
+        // types, callers must go through createIdentity.
         require(_storage().typePolicies[_identityType].canDeployFor, Errors.CannotDeployForType(_identityType));
         require(_account != address(0), Errors.ZeroAddress());
         return _doCreateIdentity(abi.encodePacked(_account), _identityType, _salt, _keys, _modules);
