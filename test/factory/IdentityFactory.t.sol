@@ -4,10 +4,11 @@ pragma solidity ^0.8.27;
 import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 import { Constants } from "../utils/Constants.sol";
-import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
+import { AccessManager } from "@openzeppelin/contracts/access/manager/AccessManager.sol";
 import { Errors as OZErrors } from "@openzeppelin/contracts/utils/Errors.sol";
 import { Identity } from "contracts/Identity.sol";
-import { IdFactory } from "contracts/factory/IdFactory.sol";
+import { IdentityFactory } from "contracts/factory/IdentityFactory.sol";
+import { IIdentityFactory } from "contracts/factory/IIdentityFactory.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
@@ -16,7 +17,7 @@ import { ImplementationAuthority } from "contracts/proxy/ImplementationAuthority
 import { Structs } from "contracts/storage/Structs.sol";
 import { RevertingIdentity } from "test/mocks/RevertingIdentity.sol";
 
-contract IdFactoryTest is OnchainIDSetup {
+contract IdentityFactoryTest is OnchainIDSetup {
 
     // ---- helpers ----
 
@@ -36,25 +37,87 @@ contract IdFactoryTest is OnchainIDSetup {
         keys[0] = _makeECDSAKey(addr, KeyPurposes.MANAGEMENT);
     }
 
-    // ============ createIdentity ============
+    // ============ constructor ============
 
     function test_revertBecauseAuthorityIsZeroAddress() public {
         vm.expectRevert(Errors.ZeroAddress.selector);
-        new IdFactory(address(0), deployer);
+        new IdentityFactory(address(0), address(onchainidSetup.accessManager));
     }
 
-    function test_revertBecauseSenderNotAllowedToCreateIdentities() public {
+    // ============ AccessManager gating of createIdentity ============
+
+    /// @notice An identity type that has never been opened defaults to ADMIN_ROLE (closed).
+    ///         A non-admin caller cannot create such an identity.
+    function test_createIdentity_revertWhenTypeNotOpened() public {
+        // Use a synthetic type id that the test setUp does not pre-open.
+        uint256 unopenedType = 9999;
+
+        vm.prank(deployer);
+        onchainidSetup.idFactory.setIdentityTypeRole(unopenedType, 0); // explicit closed (admin-only)
+
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
+        vm.expectRevert(
+            abi.encodeWithSelector(Errors.NotAuthorizedForIdentityType.selector, alice, unopenedType, uint64(0))
+        );
         onchainidSetup.idFactory
-            .createIdentity(
-                address(0),
-                IdentityTypes.INDIVIDUAL,
-                "salt1",
-                _makeSingleMgmtKeys(address(0)),
-                new Structs.ModuleInstall[](0)
-            );
+            .createIdentity(david, unopenedType, "salt9999", _makeSingleMgmtKeys(david), new Structs.ModuleInstall[](0));
     }
+
+    /// @notice The AccessManager admin can create identities of a closed type because
+    ///         closed types map to `ADMIN_ROLE` (id 0) and the admin is, by definition,
+    ///         a member of that role. This is the only case where the admin can mint
+    ///         directly — for any other role-gated type the admin must grant themselves
+    ///         that role first (least privilege).
+    function test_createIdentity_adminCanCreateClosedType() public {
+        uint256 unopenedType = 9999;
+        vm.prank(deployer);
+        onchainidSetup.idFactory.setIdentityTypeRole(unopenedType, 0);
+
+        // deployer is the initial AccessManager admin
+        vm.prank(deployer);
+        address identityAddr = onchainidSetup.idFactory
+            .createIdentity(
+                david, unopenedType, "saltAdminClosed", _makeSingleMgmtKeys(david), new Structs.ModuleInstall[](0)
+            );
+        assertTrue(identityAddr != address(0));
+    }
+
+    /// @notice Granting a non-admin a specific role allows that role's holder to create the matching type.
+    function test_createIdentity_nonAdminWithRoleCanCreate() public {
+        uint64 issuerRole = 42;
+        // Map CLAIM_ISSUER to a custom role and grant it to alice.
+        vm.startPrank(deployer);
+        onchainidSetup.idFactory.setIdentityTypeRole(IdentityTypes.CLAIM_ISSUER, issuerRole);
+        onchainidSetup.accessManager.grantRole(issuerRole, alice, 0);
+        vm.stopPrank();
+
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(david);
+        vm.prank(alice);
+        address identityAddr = onchainidSetup.idFactory
+            .createIdentity(
+                david, IdentityTypes.CLAIM_ISSUER, "saltAliceIssuer", keys, new Structs.ModuleInstall[](0)
+            );
+        assertTrue(identityAddr != address(0));
+    }
+
+    /// @notice setIdentityTypeRole itself is gated by AccessManager (defaults to ADMIN_ROLE).
+    function test_setIdentityTypeRole_revertForNonAdmin() public {
+        vm.prank(alice);
+        // AccessManager's `restricted` modifier reverts with AccessManagedUnauthorized(caller).
+        vm.expectRevert();
+        onchainidSetup.idFactory.setIdentityTypeRole(IdentityTypes.INDIVIDUAL, 7);
+    }
+
+    /// @notice setIdentityTypeRole emits the IdentityTypeRoleSet event.
+    function test_setIdentityTypeRole_emitsEvent() public {
+        vm.prank(deployer);
+        vm.expectEmit(true, true, false, false, address(onchainidSetup.idFactory));
+        emit IIdentityFactory.IdentityTypeRoleSet(IdentityTypes.INDIVIDUAL, 123);
+        onchainidSetup.idFactory.setIdentityTypeRole(IdentityTypes.INDIVIDUAL, 123);
+        assertEq(onchainidSetup.idFactory.getIdentityTypeRole(IdentityTypes.INDIVIDUAL), 123);
+    }
+
+    // ============ createIdentity (validation) ============
 
     function test_revertBecauseWalletCannotBeZeroAddress() public {
         vm.prank(deployer);
@@ -466,7 +529,14 @@ contract IdFactoryTest is OnchainIDSetup {
         // Deploy a factory with a reverting implementation
         RevertingIdentity revertingImpl = new RevertingIdentity();
         ImplementationAuthority badAuthority = new ImplementationAuthority(address(revertingImpl), deployer);
-        IdFactory badFactory = new IdFactory(address(badAuthority), deployer);
+
+        // Build an AccessManager that opens INDIVIDUAL to PUBLIC_ROLE so this test can isolate
+        // the deployment failure path (not auth).
+        AccessManager am = new AccessManager(deployer);
+        vm.startPrank(deployer);
+        IdentityFactory badFactory = new IdentityFactory(address(badAuthority), address(am));
+        badFactory.setIdentityTypeRole(IdentityTypes.INDIVIDUAL, type(uint64).max);
+        vm.stopPrank();
 
         // createIdentity will try CREATE2 with IdentityProxy whose constructor
         // delegatecalls initialize() on RevertingIdentity, which reverts,

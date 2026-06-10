@@ -3,13 +3,14 @@ pragma solidity ^0.8.27;
 
 import { Script, console } from "forge-std/Script.sol";
 
+import { AccessManager } from "@openzeppelin/contracts/access/manager/AccessManager.sol";
 import {
     ERC7913WebAuthnVerifier
 } from "@openzeppelin/contracts/utils/cryptography/verifiers/ERC7913WebAuthnVerifier.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IdentityUtilities } from "contracts/IdentityUtilities.sol";
-import { IdFactory } from "contracts/factory/IdFactory.sol";
-import { Gateway } from "contracts/gateway/Gateway.sol";
+import { IdentityFactory } from "contracts/factory/IdentityFactory.sol";
+import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { ClaimsModule } from "contracts/modules/claims/ClaimsModule.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
 import { ERC7579Signature } from "contracts/modules/validators/ERC7579Signature.sol";
@@ -25,20 +26,21 @@ import { ImplementationAuthority } from "contracts/proxy/ImplementationAuthority
  *   2. IdentityUtilities implementation + proxy
  *   3. ImplementationAuthority (beacon pointing to Identity impl)
  *   4. Module singletons (KeyApprovalModule, ClaimsModule)
- *   5. IdFactory (uses ImplementationAuthority for identity proxies)
- *   6. Gateway (entry point for signed identity deployments)
+ *   5. AccessManager (single source of truth for IdentityFactory permissions)
+ *   6. IdentityFactory (uses ImplementationAuthority for identity proxies)
+ *   7. AccessManager role wiring (per-identity-type role mapping)
  *
  * Usage:
  *   forge script scripts/DeployOnchainID.s.sol --rpc-url <RPC> --private-key <PK> --broadcast --verify
  */
 contract DeployOnchainID is Script {
 
-    function run() external {
-        // Gateway signers — hardcode as needed
-        address[] memory gatewaySigners = new address[](2);
-        gatewaySigners[0] = 0x927eCbf77127C423642e6e3459CFc0B2c08BeC0c;
-        gatewaySigners[1] = 0xc756c27486d07112bc11AA6d3f53DA3Ca9aAf2ca;
+    /// @dev Conventional, deployer-chosen role ids. Names are labeled on-chain via
+    ///      {AccessManager.labelRole} for explorer/dashboard discoverability.
+    uint64 internal constant ROLE_TOKEN_FACTORY = 1;
+    uint64 internal constant ROLE_CLAIM_ISSUER_ADMIN = 2;
 
+    function run() external {
         vm.startBroadcast();
 
         address deployer = msg.sender;
@@ -79,21 +81,38 @@ contract DeployOnchainID is Script {
         ClaimsModule claimsModule = new ClaimsModule();
         console.log("ClaimsModule:", address(claimsModule));
 
-        // 5. IdFactory
-        IdFactory idFactory = new IdFactory(address(authority), deployer);
-        console.log("IdFactory:", address(idFactory));
+        // 5. AccessManager — single source of truth for IdentityFactory permissions.
+        //    The deployer starts as the AccessManager admin (`ADMIN_ROLE = 0`). Production
+        //    deployments should rotate this to a multisig immediately via
+        //    `am.grantRole(0, multisig, 0); am.revokeRole(0, deployer);`.
+        AccessManager am = new AccessManager(deployer);
+        console.log("AccessManager:", address(am));
 
-        // 7. Gateway
-        Gateway gateway = new Gateway(address(idFactory), gatewaySigners, deployer);
-        console.log("Gateway:", address(gateway));
+        // Label roles so explorers and ops dashboards can show human names.
+        am.labelRole(ROLE_TOKEN_FACTORY, "TOKEN_FACTORY");
+        am.labelRole(ROLE_CLAIM_ISSUER_ADMIN, "CLAIM_ISSUER_ADMIN");
 
-        // 8. ERC-7913 WebAuthn Verifier (stateless — verifies P-256 WebAuthn assertions on-chain)
+        // 6. IdentityFactory
+        IdentityFactory idFactory = new IdentityFactory(address(authority), address(am));
+        console.log("IdentityFactory:", address(idFactory));
+
+        // ===== Phase 3: AccessManager role wiring =====
+        // Per-identity-type creation rights. Unset types default to ADMIN_ROLE (closed),
+        // so any new identity type must be explicitly opened by the admin.
+        //
+        // Default policy:
+        //   - ASSET           -> ROLE_TOKEN_FACTORY (only registered token factories)
+        //   - CLAIM_ISSUER    -> ROLE_CLAIM_ISSUER_ADMIN (only pre-approved issuers)
+        //   - All other types -> closed (admin-only) until the operator opens them.
+        //
+        // Operators that want certain types open to everyone can run
+        // `idFactory.setIdentityTypeRole(<TYPE>, am.PUBLIC_ROLE())` later.
+        idFactory.setIdentityTypeRole(IdentityTypes.ASSET, ROLE_TOKEN_FACTORY);
+        idFactory.setIdentityTypeRole(IdentityTypes.CLAIM_ISSUER, ROLE_CLAIM_ISSUER_ADMIN);
+
+        // 7. ERC-7913 WebAuthn Verifier (stateless — verifies P-256 WebAuthn assertions on-chain)
         ERC7913WebAuthnVerifier webAuthnVerifier = new ERC7913WebAuthnVerifier();
         console.log("ERC7913WebAuthnVerifier:", address(webAuthnVerifier));
-
-        // Transfer IdFactory ownership to Gateway so it can deploy identities
-        idFactory.transferOwnership(address(gateway));
-        console.log("IdFactory ownership transferred to Gateway");
 
         vm.stopBroadcast();
 
@@ -104,11 +123,11 @@ contract DeployOnchainID is Script {
         console.log("IdentityUtilities impl: ", address(utilitiesImpl));
         console.log("IdentityUtilities proxy:", address(utilitiesProxy));
         console.log("ImplementationAuthority:", address(authority));
-        console.log("IdFactory:              ", address(idFactory));
+        console.log("AccessManager:          ", address(am));
+        console.log("IdentityFactory:        ", address(idFactory));
         console.log("ERC7579Signature:       ", address(signatureValidator));
         console.log("KeyApprovalModule:      ", address(keyApprovalModule));
         console.log("ClaimsModule:           ", address(claimsModule));
-        console.log("Gateway:                ", address(gateway));
         console.log("ERC7913WebAuthnVerifier:", address(webAuthnVerifier));
         console.log("=========================================");
     }

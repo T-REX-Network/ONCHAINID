@@ -5,7 +5,7 @@ import { Constants } from "../utils/Constants.sol";
 import { ClaimSignerHelper } from "./ClaimSignerHelper.sol";
 import { IdentityHelper } from "./IdentityHelper.sol";
 import { Identity } from "contracts/Identity.sol";
-import { IdFactory } from "contracts/factory/IdFactory.sol";
+import { IdentityFactory } from "contracts/factory/IdentityFactory.sol";
 import { IIdentity } from "contracts/interface/IIdentity.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
@@ -196,8 +196,9 @@ contract OnchainIDSetup is Test {
             clientData: ""
         });
         onchainidSetup.idFactory
-            .createTokenIdentity(
+            .createIdentity(
                 Constants.TOKEN_ADDRESS,
+                IdentityTypes.ASSET,
                 "tokenOwner",
                 tokenKeys,
                 IdentityHelper.legacyQueueModules(
@@ -208,7 +209,7 @@ contract OnchainIDSetup is Test {
 
     // ---- Convenience getters ----
 
-    function getIdFactory() public view returns (IdFactory) {
+    function getIdFactory() public view returns (IdentityFactory) {
         return onchainidSetup.idFactory;
     }
 

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
-import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
+import { AccessManaged } from "@openzeppelin/contracts/access/manager/AccessManaged.sol";
+import { IAccessManager } from "@openzeppelin/contracts/access/manager/IAccessManager.sol";
 
 import { KeyManager } from "../KeyManager.sol";
 import { SmartAccount } from "../SmartAccount.sol";
@@ -12,14 +13,29 @@ import { KeyTypes } from "../libraries/KeyTypes.sol";
 import { IdentityProxy } from "../proxy/IdentityProxy.sol";
 import { Structs } from "../storage/Structs.sol";
 import { Create3 } from "../vendor/utils/Create3.sol";
-import { IIdFactory } from "./IIdFactory.sol";
+import { IIdentityFactory } from "./IIdentityFactory.sol";
 
-contract IdFactory is IIdFactory, Ownable {
+/// @title IdentityFactory
+/// @notice Factory for ONCHAINID identity proxies. Authorization is delegated to an
+///         OpenZeppelin AccessManager (see {AccessManaged}):
+///
+///         - {createIdentity} resolves `_identityType -> roleId` from {getIdentityTypeRole}
+///           and checks membership inline via `IAccessManager.hasRole`. Types that have
+///           never been opened via {setIdentityTypeRole} default to `ADMIN_ROLE`
+///           (closed), so deployment of a brand-new identity type requires an explicit
+///           admin action.
+///         - {setIdentityTypeRole} is marked `restricted`, so it follows the standard
+///           AccessManager flow (per-target admin delay, scheduling, guardians).
+///
+///         The factory orchestrates bootstrap directly: it holds a transient MANAGEMENT
+///         key on the freshly deployed identity, installs caller-supplied keys and
+///         modules, grants module purposes, and finally drops its bootstrap key. The
+///         post-setup invariant guarantees the identity exits with at least one
+///         MANAGEMENT key it does not itself hold.
+contract IdentityFactory is IIdentityFactory, AccessManaged {
 
     // address of the _implementationAuthority contract making the link to the implementation contract
     address public immutable implementationAuthority;
-
-    mapping(address => bool) private _tokenFactories;
 
     // ONCHAINID of the wallet owner
     mapping(address => address) private _userIdentity;
@@ -33,99 +49,84 @@ contract IdFactory is IIdFactory, Ownable {
     // token linked to an ONCHAINID
     mapping(address => address) private _tokenAddress;
 
-    // setting
-    constructor(address implementationAuthorityAddress, address owner) Ownable(owner) {
+    /// @dev Identity-type to AccessManager role mapping. A zero entry means the type
+    ///      defaults to `ADMIN_ROLE` (closed). The factory does not hardcode role ids;
+    ///      they are deployer-chosen `uint64`s wired by the AccessManager admin.
+    mapping(uint256 identityType => uint64 roleId) private _identityTypeRole;
+
+    /// @param implementationAuthorityAddress the {ImplementationAuthority} that resolves the
+    ///        Identity logic for every proxy deployed by this factory.
+    /// @param initialAuthority the {AccessManager} address that will gate all `restricted`
+    ///        functions and back the `IAccessManager.hasRole` checks inside {createIdentity}.
+    constructor(address implementationAuthorityAddress, address initialAuthority) AccessManaged(initialAuthority) {
         require(implementationAuthorityAddress != address(0), Errors.ZeroAddress());
 
         implementationAuthority = implementationAuthorityAddress;
     }
 
-    /**
-     *  @dev See {IdFactory-addTokenFactory}.
-     */
-    function addTokenFactory(address _factory) external override onlyOwner {
-        require(_factory != address(0), Errors.ZeroAddress());
-        require(!isTokenFactory(_factory), Errors.AlreadyAFactory(_factory));
-        _tokenFactories[_factory] = true;
-        emit TokenFactoryAdded(_factory);
+    /// @inheritdoc IIdentityFactory
+    function setIdentityTypeRole(uint256 _identityType, uint64 _roleId) external override restricted {
+        _identityTypeRole[_identityType] = _roleId;
+        emit IdentityTypeRoleSet(_identityType, _roleId);
     }
 
-    /**
-     *  @dev See {IdFactory-removeTokenFactory}.
-     */
-    function removeTokenFactory(address _factory) external override onlyOwner {
-        require(_factory != address(0), Errors.ZeroAddress());
-        require(isTokenFactory(_factory), Errors.NotAFactory(_factory));
-        _tokenFactories[_factory] = false;
-        emit TokenFactoryRemoved(_factory);
-    }
-
-    /**
-     *  @dev See {IIdFactory-createIdentity}.
-     */
+    /// @inheritdoc IIdentityFactory
     function createIdentity(
-        address _wallet,
+        address _subject,
         uint256 _identityType,
         string memory _salt,
         Structs.KeyParam[] memory _keys,
         Structs.ModuleInstall[] memory _modules
-    ) external override onlyOwner returns (address) {
-        require(_wallet != address(0), Errors.ZeroAddress());
+    ) external override returns (address) {
+        // Per-type AccessManager gate. `_identityTypeRole[_identityType] == 0` means
+        // "never opened" => only ADMIN_ROLE (id 0) may create this type.
+        uint64 requiredRole = _identityTypeRole[_identityType];
+        (bool isMember,) = IAccessManager(authority()).hasRole(requiredRole, msg.sender);
+        require(isMember, Errors.NotAuthorizedForIdentityType(msg.sender, _identityType, requiredRole));
+
+        require(_subject != address(0), Errors.ZeroAddress());
         require(keccak256(bytes(_salt)) != keccak256(""), Errors.EmptyString());
-        string memory oidSalt = string.concat("OID", _salt);
-        require(_userIdentity[_wallet] == address(0), Errors.WalletAlreadyLinkedToIdentity(_wallet));
         require(_keys.length > 0, Errors.EmptyListOfKeys());
+
+        if (_identityType == IdentityTypes.ASSET) {
+            string memory tokenIdSalt = string.concat("Token", _salt);
+            require(_tokenIdentity[_subject] == address(0), Errors.TokenAlreadyLinked(_subject));
+
+            // Salt-collision protection comes from Create3: reverts with `FailedDeployment()`
+            // if `tokenIdSalt` has already been used on this factory.
+            address identity = _deployIdentity(tokenIdSalt, _identityType);
+
+            // Checks-effects-interactions: commit storage BEFORE `_setupIdentity` runs user-controlled `onInstall`.
+            _tokenIdentity[_subject] = identity;
+            _tokenAddress[identity] = _subject;
+            emit TokenLinked(_subject, identity);
+
+            _setupIdentity(identity, _keys, _modules);
+
+            return identity;
+        }
+
+        string memory oidSalt = string.concat("OID", _salt);
+        require(_userIdentity[_subject] == address(0), Errors.WalletAlreadyLinkedToIdentity(_subject));
 
         // Salt-collision protection comes from Create3 itself: `_deployIdentity` reverts with
         // `FailedDeployment()` if `oidSalt` has already been used on this factory.
-        address identity = _deployIdentity(oidSalt, _identityType);
+        address userIdentity = _deployIdentity(oidSalt, _identityType);
 
         // Checks-effects-interactions: commit storage BEFORE any user-controlled `onInstall`
         // runs in `_setupIdentity`. A malicious module re-entering `createIdentity` for the
-        // same wallet now hits `_userIdentity[_wallet] != 0` and reverts before a second
+        // same wallet now hits `_userIdentity[_subject] != 0` and reverts before a second
         // deployment can occur.
-        _userIdentity[_wallet] = identity;
-        _wallets[identity].push(_wallet);
-        emit WalletLinked(_wallet, identity);
+        _userIdentity[_subject] = userIdentity;
+        _wallets[userIdentity].push(_subject);
+        emit WalletLinked(_subject, userIdentity);
 
-        _setupIdentity(identity, _keys, _modules);
+        _setupIdentity(userIdentity, _keys, _modules);
 
-        return identity;
+        return userIdentity;
     }
 
-    /**
-     *  @dev See {IIdFactory-createTokenIdentity}.
-     */
-    function createTokenIdentity(
-        address _token,
-        string memory _salt,
-        Structs.KeyParam[] memory _keys,
-        Structs.ModuleInstall[] memory _modules
-    ) external override returns (address) {
-        require(isTokenFactory(msg.sender) || msg.sender == owner(), Ownable.OwnableUnauthorizedAccount(msg.sender));
-        require(_token != address(0), Errors.ZeroAddress());
-        require(keccak256(bytes(_salt)) != keccak256(""), Errors.EmptyString());
-        require(_keys.length > 0, Errors.EmptyListOfKeys());
-        string memory tokenIdSalt = string.concat("Token", _salt);
-        require(_tokenIdentity[_token] == address(0), Errors.TokenAlreadyLinked(_token));
-
-        // Salt-collision protection comes from Create3: reverts with `FailedDeployment()`
-        // if `tokenIdSalt` has already been used on this factory.
-        address identity = _deployIdentity(tokenIdSalt, IdentityTypes.ASSET);
-
-        // Checks-effects-interactions: commit storage BEFORE `_setupIdentity` runs user-controlled `onInstall`.
-        _tokenIdentity[_token] = identity;
-        _tokenAddress[identity] = _token;
-        emit TokenLinked(_token, identity);
-
-        _setupIdentity(identity, _keys, _modules);
-
-        return identity;
-    }
-
-    /**
-     *  @dev See {IdFactory-linkWallet}.
-     */
+    /// @inheritdoc IIdentityFactory
     function linkWallet(address _newWallet) external override {
         require(_newWallet != address(0), Errors.ZeroAddress());
         require(_userIdentity[msg.sender] != address(0), Errors.WalletNotLinkedToIdentity(msg.sender));
@@ -138,9 +139,7 @@ contract IdFactory is IIdFactory, Ownable {
         emit WalletLinked(_newWallet, identity);
     }
 
-    /**
-     *  @dev See {IdFactory-unlinkWallet}.
-     */
+    /// @inheritdoc IIdentityFactory
     function unlinkWallet(address _oldWallet) external override {
         require(_oldWallet != address(0), Errors.ZeroAddress());
         require(_oldWallet != msg.sender, Errors.CannotBeCalledOnSenderAddress());
@@ -158,9 +157,7 @@ contract IdFactory is IIdFactory, Ownable {
         emit WalletUnlinked(_oldWallet, _identity);
     }
 
-    /**
-     *  @dev See {IdFactory-getIdentity}.
-     */
+    /// @inheritdoc IIdentityFactory
     function getIdentity(address _wallet) external view override returns (address) {
         if (_tokenIdentity[_wallet] != address(0)) {
             return _tokenIdentity[_wallet];
@@ -169,37 +166,31 @@ contract IdFactory is IIdFactory, Ownable {
         return _userIdentity[_wallet];
     }
 
-    /**
-     *  @dev See {IdFactory-getWallets}.
-     */
+    /// @inheritdoc IIdentityFactory
     function getWallets(address _identity) external view override returns (address[] memory) {
         return _wallets[_identity];
     }
 
-    /**
-     *  @dev See {IdFactory-getToken}.
-     */
+    /// @inheritdoc IIdentityFactory
     function getToken(address _identity) external view override returns (address) {
         return _tokenAddress[_identity];
     }
 
-    /**
-     *  @dev See {IdFactory-isTokenFactory}.
-     */
-    function isTokenFactory(address _factory) public view override returns (bool) {
-        return _tokenFactories[_factory];
+    /// @inheritdoc IIdentityFactory
+    function getIdentityTypeRole(uint256 _identityType) external view override returns (uint64) {
+        return _identityTypeRole[_identityType];
     }
 
     /// @dev Bootstraps a freshly-deployed identity:
     ///      1. Adds user-supplied keys (factory holds bootstrap MANAGEMENT).
-    ///      2. Auto-installs {KeyApprovalModule} so the legacy ERC-734 `execute`/`approve` ABI
-    ///         keeps resolving on the identity (option (b) on the IIdentity ABI question).
-    ///      3. Installs any caller-supplied modules.
-    ///      4. Removes the factory's bootstrap MANAGEMENT key.
+    ///      2. Installs caller-supplied modules and, when requested, registers each
+    ///         module address as a `MODULE`-type key under the requested purpose so it
+    ///         can dispatch through {SmartAccount.executeFromExecutor}.
+    ///      3. Removes the factory's bootstrap MANAGEMENT key.
     ///
     ///      Module installation goes through {SmartAccount.installModule}, which is
-    ///      gated by `onlyManager` — the factory still holds MANAGEMENT at this point. This
-    ///      avoids the OZ default `onlyEntryPointOrSelf` chicken-and-egg at deployment time.
+    ///      gated by `onlyManager` (see the NatSpec there for why the OZ default
+    ///      `onlyEntryPointOrSelf` is deliberately not used during bootstrap).
     function _setupIdentity(address _identity, Structs.KeyParam[] memory _keys, Structs.ModuleInstall[] memory _modules)
         private
     {

@@ -10,10 +10,7 @@ library Errors {
     /// @notice Reverts if the address is zero
     error ZeroAddress();
 
-    /* ----- IdFactory ----- */
-
-    /// @notice Reverts if the factory is already registered
-    error AlreadyAFactory(address factory);
+    /* ----- IdentityFactory ----- */
 
     /// @notice Reverts if the function is called on the sender address
     error CannotBeCalledOnSenderAddress();
@@ -24,11 +21,15 @@ library Errors {
     /// @notice Reverts if the string is empty
     error EmptyString();
 
-    /// @notice Reverts if the address is not a factory
-    error NotAFactory(address factory);
-
     /// @notice Reverts if the maximum number of wallets per identity is exceeded
     error MaxWalletsPerIdentityExceeded();
+
+    /// @notice Reverts when {createIdentity} is called by an account that does not hold the
+    ///         AccessManager role required for the requested identity type.
+    /// @param caller the address that attempted to create the identity.
+    /// @param identityType the identity type that was requested.
+    /// @param requiredRole the AccessManager role id required for that type (0 = admin-only).
+    error NotAuthorizedForIdentityType(address caller, uint256 identityType, uint64 requiredRole);
 
     /// @notice Reverts if the only linked wallet tries to unlink
     error OnlyLinkedWalletCanUnlink();
@@ -47,35 +48,6 @@ library Errors {
 
     /// @notice Reverts if no key with MANAGEMENT purpose is provided
     error NoManagementKeyInKeys();
-
-    /* ----- Gateway ----- */
-
-    /// @notice The maximum number of signers was reached at deployment.
-    error TooManySigners();
-
-    /// @notice The signed attempted to add was already approved.
-    error SignerAlreadyApproved(address signer);
-
-    /// @notice The signed attempted to remove was not approved.
-    error SignerAlreadyNotApproved(address signer);
-
-    /// @notice A requested ONCHAINID deployment was requested and signer by a non approved signer.
-    error UnapprovedSigner(address signer);
-
-    /// @notice A requested ONCHAINID deployment was requested with a signature revoked.
-    error RevokedSignature(bytes signature);
-
-    /// @notice A requested ONCHAINID deployment was requested with a signature that expired.
-    error ExpiredSignature(bytes signature);
-
-    /// @notice Attempted to revoke a signature that was already revoked.
-    error SignatureAlreadyRevoked(bytes signature);
-
-    /// @notice Attempted to approve a signature that was not revoked.
-    error SignatureNotRevoked(bytes signature);
-
-    /// @notice A call to the factory failed.
-    error CallToFactoryFailed();
 
     /* ----- Verifier ----- */
 

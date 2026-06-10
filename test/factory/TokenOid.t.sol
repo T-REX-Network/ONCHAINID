@@ -3,17 +3,25 @@ pragma solidity ^0.8.27;
 
 import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { IdentityHelper } from "../helpers/IdentityHelper.sol";
-import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { Errors as OZErrors } from "@openzeppelin/contracts/utils/Errors.sol";
 import { Identity } from "contracts/Identity.sol";
-import { IdFactory } from "contracts/factory/IdFactory.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
+import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 import { Test } from "forge-std/Test.sol";
 
+/// @notice Tests for the asset-identity (ex `createTokenIdentity`) path on {IdentityFactory}.
+///         The legacy `addTokenFactory`/`removeTokenFactory`/`isTokenFactory` surface no longer
+///         exists; "is this caller allowed to mint asset identities" is now a question for the
+///         attached AccessManager. The deployer-as-admin can either mint asset identities
+///         directly (because admins bypass the type role) or grant a `ROLE_TOKEN_FACTORY` to a
+///         specific address and let that address mint.
 contract TokenOidTest is Test {
+
+    /// @dev Local role id used by tests that need a non-admin token-factory caller.
+    uint64 internal constant ROLE_TOKEN_FACTORY = 1;
 
     IdentityHelper.OnchainIDSetup internal setup;
 
@@ -50,117 +58,108 @@ contract TokenOidTest is Test {
         keys[0] = _makeECDSAKey(addr, KeyPurposes.MANAGEMENT);
     }
 
-    // ============ addTokenFactory ============
+    /// @dev Switch the ASSET identity type from PUBLIC_ROLE (the default test-helper config) to
+    ///      `ROLE_TOKEN_FACTORY`, mirroring a production deployment where only role holders may
+    ///      mint asset identities.
+    function _restrictAssetToTokenFactoryRole() internal {
+        vm.prank(deployer);
+        setup.idFactory.setIdentityTypeRole(IdentityTypes.ASSET, ROLE_TOKEN_FACTORY);
+    }
 
-    function test_addTokenFactory_revertNotOwner() public {
+    // ============ AccessManager-gated asset creation ============
+
+    /// @notice Without the ASSET role, a non-admin caller cannot mint an asset identity.
+    function test_createAssetIdentity_revertWhenCallerLacksRole() public {
+        _restrictAssetToTokenFactoryRole();
+
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
-        setup.idFactory.addTokenFactory(alice);
+        vm.expectRevert(
+            abi.encodeWithSelector(Errors.NotAuthorizedForIdentityType.selector, alice, IdentityTypes.ASSET, ROLE_TOKEN_FACTORY)
+        );
+        setup.idFactory.createIdentity(alice, IdentityTypes.ASSET, "TST", _makeMgmtKey(alice), _emptyModules);
     }
 
-    function test_addTokenFactory_revertZeroAddress() public {
+    /// @notice Once granted the ASSET role, a non-admin caller can mint asset identities.
+    function test_createAssetIdentity_succeedsWhenCallerHasRole() public {
+        _restrictAssetToTokenFactoryRole();
+
+        // deployer is the AccessManager admin; grant alice the ASSET role.
         vm.prank(deployer);
-        vm.expectRevert(Errors.ZeroAddress.selector);
-        setup.idFactory.addTokenFactory(address(0));
-    }
-
-    function test_addTokenFactory_shouldAdd() public {
-        vm.prank(deployer);
-        setup.idFactory.addTokenFactory(alice);
-        assertTrue(setup.idFactory.isTokenFactory(alice));
-    }
-
-    function test_addTokenFactory_revertAlreadyFactory() public {
-        vm.prank(deployer);
-        setup.idFactory.addTokenFactory(alice);
-
-        vm.prank(deployer);
-        vm.expectRevert(abi.encodeWithSelector(Errors.AlreadyAFactory.selector, alice));
-        setup.idFactory.addTokenFactory(alice);
-    }
-
-    // ============ removeTokenFactory ============
-
-    function test_removeTokenFactory_revertNotOwner() public {
-        vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
-        setup.idFactory.removeTokenFactory(bob);
-    }
-
-    function test_removeTokenFactory_revertZeroAddress() public {
-        vm.prank(deployer);
-        vm.expectRevert(Errors.ZeroAddress.selector);
-        setup.idFactory.removeTokenFactory(address(0));
-    }
-
-    function test_removeTokenFactory_revertNotFactory() public {
-        vm.prank(deployer);
-        vm.expectRevert(abi.encodeWithSelector(Errors.NotAFactory.selector, bob));
-        setup.idFactory.removeTokenFactory(bob);
-    }
-
-    function test_removeTokenFactory_shouldRemove() public {
-        vm.prank(deployer);
-        setup.idFactory.addTokenFactory(alice);
-
-        vm.prank(deployer);
-        setup.idFactory.removeTokenFactory(alice);
-        assertFalse(setup.idFactory.isTokenFactory(alice));
-    }
-
-    // ============ createTokenIdentity ============
-
-    function test_createTokenIdentity_revertNotAuthorized() public {
-        vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
-        setup.idFactory.createTokenIdentity(alice, "TST", _makeMgmtKey(alice), _emptyModules);
-    }
-
-    function test_createTokenIdentity_revertTokenZeroAddress() public {
-        vm.prank(deployer);
-        vm.expectRevert(Errors.ZeroAddress.selector);
-        setup.idFactory.createTokenIdentity(address(0), "TST", _makeMgmtKey(alice), _emptyModules);
-    }
-
-    function test_createTokenIdentity_revertEmptySalt() public {
-        vm.prank(deployer);
-        vm.expectRevert(Errors.EmptyString.selector);
-        setup.idFactory.createTokenIdentity(alice, "", _makeMgmtKey(alice), _emptyModules);
-    }
-
-    function test_createTokenIdentity_revertEmptyKeys() public {
-        vm.prank(deployer);
-        vm.expectRevert(Errors.EmptyListOfKeys.selector);
-        setup.idFactory.createTokenIdentity(alice, "TST", new Structs.KeyParam[](0), _emptyModules);
-    }
-
-    /// @notice At least one MANAGEMENT key must be supplied — bootstrap removal rejects it otherwise.
-    function test_createTokenIdentity_revertNoManagementKey() public {
-        Structs.KeyParam[] memory actionOnly = new Structs.KeyParam[](1);
-        actionOnly[0] = _makeECDSAKey(bob, KeyPurposes.ACTION);
-
-        vm.prank(deployer);
-        vm.expectRevert(Errors.CannotRemoveLastManagementKey.selector);
-        setup.idFactory.createTokenIdentity(alice, "TST", actionOnly, _emptyModules);
-    }
-
-    /// @notice Token factory should be able to create token identity
-    function test_createTokenIdentity_viaTokenFactory_shouldCreate() public {
-        vm.prank(deployer);
-        setup.idFactory.addTokenFactory(alice);
+        setup.accessManager.grantRole(ROLE_TOKEN_FACTORY, alice, 0);
 
         address token = makeAddr("tokenAddr");
         vm.prank(alice);
-        address identity = setup.idFactory.createTokenIdentity(token, "factorySalt", _makeMgmtKey(bob), _emptyModules);
+        address identity = setup.idFactory
+            .createIdentity(token, IdentityTypes.ASSET, "factorySalt", _makeMgmtKey(bob), _emptyModules);
 
         assertTrue(identity != address(0), "Identity should be deployed");
         assertEq(setup.idFactory.getIdentity(token), identity, "Token should map to identity");
         assertEq(setup.idFactory.getToken(identity), token, "Identity should map to token");
     }
 
-    function test_createTokenIdentity_shouldCreateAndRevertDuplicate() public {
+    /// @notice AccessManager admins are NOT auto-members of arbitrary roles. After the
+    ///         deployer restricts ASSET to ROLE_TOKEN_FACTORY, they must grant themselves
+    ///         that role explicitly to keep minting. This codifies least-privilege:
+    ///         "admin" only governs the role graph; it does not bypass it.
+    function test_createAssetIdentity_adminMustGrantSelfRoleToMint() public {
+        _restrictAssetToTokenFactoryRole();
+
+        address token = makeAddr("adminToken");
+
+        // Without the role: the deployer (admin) cannot mint asset identities.
         vm.prank(deployer);
-        setup.idFactory.createTokenIdentity(alice, "salt1", _makeMgmtKey(bob), _emptyModules);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Errors.NotAuthorizedForIdentityType.selector, deployer, IdentityTypes.ASSET, ROLE_TOKEN_FACTORY
+            )
+        );
+        setup.idFactory.createIdentity(token, IdentityTypes.ASSET, "adminSalt", _makeMgmtKey(bob), _emptyModules);
+
+        // Grant themselves the role, then minting works.
+        vm.prank(deployer);
+        setup.accessManager.grantRole(ROLE_TOKEN_FACTORY, deployer, 0);
+
+        vm.prank(deployer);
+        address identity =
+            setup.idFactory.createIdentity(token, IdentityTypes.ASSET, "adminSalt", _makeMgmtKey(bob), _emptyModules);
+
+        assertTrue(identity != address(0));
+        assertEq(setup.idFactory.getIdentity(token), identity);
+    }
+
+    // ============ createIdentity (ASSET) — basic validation ============
+
+    function test_createAssetIdentity_revertTokenZeroAddress() public {
+        vm.prank(deployer);
+        vm.expectRevert(Errors.ZeroAddress.selector);
+        setup.idFactory.createIdentity(address(0), IdentityTypes.ASSET, "TST", _makeMgmtKey(alice), _emptyModules);
+    }
+
+    function test_createAssetIdentity_revertEmptySalt() public {
+        vm.prank(deployer);
+        vm.expectRevert(Errors.EmptyString.selector);
+        setup.idFactory.createIdentity(alice, IdentityTypes.ASSET, "", _makeMgmtKey(alice), _emptyModules);
+    }
+
+    function test_createAssetIdentity_revertEmptyKeys() public {
+        vm.prank(deployer);
+        vm.expectRevert(Errors.EmptyListOfKeys.selector);
+        setup.idFactory.createIdentity(alice, IdentityTypes.ASSET, "TST", new Structs.KeyParam[](0), _emptyModules);
+    }
+
+    /// @notice At least one MANAGEMENT key must be supplied — bootstrap removal rejects it otherwise.
+    function test_createAssetIdentity_revertNoManagementKey() public {
+        Structs.KeyParam[] memory actionOnly = new Structs.KeyParam[](1);
+        actionOnly[0] = _makeECDSAKey(bob, KeyPurposes.ACTION);
+
+        vm.prank(deployer);
+        vm.expectRevert(Errors.CannotRemoveLastManagementKey.selector);
+        setup.idFactory.createIdentity(alice, IdentityTypes.ASSET, "TST", actionOnly, _emptyModules);
+    }
+
+    function test_createAssetIdentity_shouldCreateAndRevertDuplicate() public {
+        vm.prank(deployer);
+        setup.idFactory.createIdentity(alice, IdentityTypes.ASSET, "salt1", _makeMgmtKey(bob), _emptyModules);
 
         address tokenIdentityAddr = setup.idFactory.getIdentity(alice);
         assertTrue(tokenIdentityAddr != address(0));
@@ -169,16 +168,16 @@ contract TokenOidTest is Test {
         // Same token address should revert before reaching Create3.
         vm.prank(deployer);
         vm.expectRevert(abi.encodeWithSelector(Errors.TokenAlreadyLinked.selector, alice));
-        setup.idFactory.createTokenIdentity(alice, "salt2", _makeMgmtKey(alice), _emptyModules);
+        setup.idFactory.createIdentity(alice, IdentityTypes.ASSET, "salt2", _makeMgmtKey(alice), _emptyModules);
 
         // Same salt (with a different token) should revert at Create3 with FailedDeployment().
         vm.prank(deployer);
         vm.expectRevert(OZErrors.FailedDeployment.selector);
-        setup.idFactory.createTokenIdentity(bob, "salt1", _makeMgmtKey(alice), _emptyModules);
+        setup.idFactory.createIdentity(bob, IdentityTypes.ASSET, "salt1", _makeMgmtKey(alice), _emptyModules);
     }
 
-    /// @notice createTokenIdentity with multiple key types should set all keys
-    function test_createTokenIdentity_withMultipleKeys_shouldSetKeys() public {
+    /// @notice Asset identity with multiple key types should set all keys.
+    function test_createAssetIdentity_withMultipleKeys_shouldSetKeys() public {
         address claimAdder = makeAddr("tokenClaimAdder");
 
         Structs.KeyParam[] memory keys = new Structs.KeyParam[](2);
@@ -187,7 +186,8 @@ contract TokenOidTest is Test {
 
         address token = makeAddr("tokenWithKeys");
         vm.prank(deployer);
-        address identityAddr = setup.idFactory.createTokenIdentity(token, "saltKeys", keys, _emptyModules);
+        address identityAddr =
+            setup.idFactory.createIdentity(token, IdentityTypes.ASSET, "saltKeys", keys, _emptyModules);
 
         Identity identity = Identity(payable(identityAddr));
 

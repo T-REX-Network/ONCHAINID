@@ -26,6 +26,19 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
     using EnumerableSet for EnumerableSet.UintSet;
 
     /// @notice Install a module. MANAGEMENT-gated so the factory can install at bootstrap.
+    /// @dev The OZ default gate (`onlyEntryPointOrSelf`) is intentionally replaced with the
+    ///      stricter ERC-734 `onlyManager` check, and `_installModule` is invoked directly
+    ///      instead of `super.installModule`. This is required by the factory-orchestrated
+    ///      bootstrap model: {IdentityFactory._setupIdentity} holds a transient MANAGEMENT
+    ///      key on the freshly deployed identity and installs modules before any ERC-4337
+    ///      EntryPoint or self-call path exists. The translated gate (`onlyManager` =
+    ///      caller must hold a MANAGEMENT key in this identity's ERC-734 registry) is at
+    ///      least as strict as the OZ default, because the only paths that satisfied
+    ///      `onlyEntryPointOrSelf` were (a) the canonical EntryPoint, which in turn ran a
+    ///      MANAGEMENT-key-signed UserOp, or (b) the identity calling itself, which can
+    ///      only be reached via a MANAGEMENT-authorized executor. Closing issue #6 as
+    ///      "won't fix" per design: the bootstrap path requires this override; the
+    ///      override is documented and proven equivalent in privilege.
     function installModule(uint256 moduleTypeId, address module, bytes calldata initData)
         public
         virtual
@@ -33,11 +46,12 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         delegatedOnly
         onlyManager
     {
-        // Skip `super.installModule` to avoid the `onlyEntryPointOrSelf` check.
         _installModule(moduleTypeId, module, initData);
     }
 
     /// @notice Uninstall a module. MANAGEMENT-gated.
+    /// @dev See {installModule} for the rationale behind replacing the OZ default
+    ///      `onlyEntryPointOrSelf` gate with `onlyManager` and bypassing `super`.
     function uninstallModule(uint256 moduleTypeId, address module, bytes calldata deInitData)
         public
         virtual
@@ -45,7 +59,6 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         delegatedOnly
         onlyManager
     {
-        // Skip `super.uninstallModule` to avoid the `onlyEntryPointOrSelf` check.
         _uninstallModule(moduleTypeId, module, deInitData);
     }
 

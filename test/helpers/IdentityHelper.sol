@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
+import { AccessManager } from "@openzeppelin/contracts/access/manager/AccessManager.sol";
 import {
     MODULE_TYPE_EXECUTOR,
     MODULE_TYPE_FALLBACK,
     MODULE_TYPE_VALIDATOR
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { Identity } from "contracts/Identity.sol";
-import { IdFactory } from "contracts/factory/IdFactory.sol";
+import { IdentityFactory } from "contracts/factory/IdentityFactory.sol";
 import { IClaimIssuer } from "contracts/interface/IClaimIssuer.sol";
 import { IERC735 } from "contracts/interface/IERC735.sol";
 import { IIdentity } from "contracts/interface/IIdentity.sol";
@@ -25,17 +26,28 @@ import { Vm } from "forge-std/Vm.sol";
 /// @notice Helper library for deploying OnchainID Identity Factory infrastructure
 library IdentityHelper {
 
+    /// @dev AccessManager built-in role id; equivalent to `AccessManager.PUBLIC_ROLE()` but
+    ///      exposed as a constant here so the test setup does not need to invoke `vm.prank`
+    ///      semantics just to read it.
+    uint64 internal constant PUBLIC_ROLE = type(uint64).max;
+
     struct OnchainIDSetup {
         Identity identityImplementation;
         ImplementationAuthority implementationAuthority;
-        IdFactory idFactory;
+        AccessManager accessManager;
+        IdentityFactory idFactory;
         KeyApprovalModule keyApprovalModule;
         ERC7579Signature signatureValidator;
         ClaimsModule claimsModule;
     }
 
-    /// @notice Deploys complete Identity Factory infrastructure
-    /// @param managementKey The initial management key address
+    /// @notice Deploys complete Identity Factory infrastructure. Wires an AccessManager
+    ///         whose initial admin is `managementKey` and opens every identity type to
+    ///         `PUBLIC_ROLE` so that existing tests (which expect the deployer to be able
+    ///         to mint identities of any type) keep working without per-test plumbing.
+    ///         Tests that exercise the gating itself should redeploy with a custom config.
+    /// @param managementKey The initial management key address (also initial admin of the
+    ///        AccessManager).
     /// @return setup Struct containing all deployed contracts
     function deployFactory(address managementKey) internal returns (OnchainIDSetup memory setup) {
         // Deploy module singletons
@@ -46,7 +58,26 @@ library IdentityHelper {
         setup.identityImplementation = new Identity(managementKey, false);
         setup.implementationAuthority =
             new ImplementationAuthority(address(setup.identityImplementation), managementKey);
-        setup.idFactory = new IdFactory(address(setup.implementationAuthority), managementKey);
+        setup.accessManager = new AccessManager(managementKey);
+        setup.idFactory = new IdentityFactory(address(setup.implementationAuthority), address(setup.accessManager));
+
+        // Default test policy: every identity type is open. The deployer (managementKey) is
+        // the initial admin, so it can immediately call `setIdentityTypeRole`.
+        // We loop over the types in IdentityTypes; if/when new types are added, extend this
+        // loop or use a per-test setup function.
+        uint256[8] memory types = [
+            IdentityTypes.ASSET,
+            IdentityTypes.INDIVIDUAL,
+            IdentityTypes.CORPORATE,
+            IdentityTypes.IOT,
+            IdentityTypes.CLAIM_ISSUER,
+            IdentityTypes.SMART_CONTRACT,
+            IdentityTypes.PUBLIC_AUTHORITY,
+            IdentityTypes.AI_AGENT
+        ];
+        for (uint256 i = 0; i < types.length; i++) {
+            setup.idFactory.setIdentityTypeRole(types[i], PUBLIC_ROLE);
+        }
     }
 
     /// @notice Builds the full default-module install list: legacy queue (execute/approve) +
