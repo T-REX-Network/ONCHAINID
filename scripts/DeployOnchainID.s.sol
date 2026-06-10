@@ -101,14 +101,22 @@ contract DeployOnchainID is Script {
         // so any new identity type must be explicitly opened by the admin.
         //
         // Default policy:
+        //   - INDIVIDUAL      -> PUBLIC_ROLE (anyone can self-deploy their personal identity)
         //   - ASSET           -> ROLE_TOKEN_FACTORY (only registered token factories)
         //   - CLAIM_ISSUER    -> ROLE_CLAIM_ISSUER_ADMIN (only pre-approved issuers)
         //   - All other types -> closed (admin-only) until the operator opens them.
         //
-        // Operators that want certain types open to everyone can run
-        // `idFactory.setIdentityTypeRole(<TYPE>, am.PUBLIC_ROLE())` later.
+        // Operators can flip any of these later via `setIdentityTypeRole`.
+        idFactory.setIdentityTypeRole(IdentityTypes.INDIVIDUAL, am.PUBLIC_ROLE());
         idFactory.setIdentityTypeRole(IdentityTypes.ASSET, ROLE_TOKEN_FACTORY);
         idFactory.setIdentityTypeRole(IdentityTypes.CLAIM_ISSUER, ROLE_CLAIM_ISSUER_ADMIN);
+
+        // {createIdentityFor} allowlist. Only types whose accounts cannot sign for
+        // themselves should be in this set. Default: just ASSET (a token contract can't
+        // produce signatures; its TokenFactory mints the asset identity on its behalf).
+        // For non-allowlisted types, callers must use {createIdentity} (self-deploy)
+        // or {createIdentityWithSignature} (sponsored deploy with consent).
+        idFactory.setCanDeployFor(IdentityTypes.ASSET, true);
 
         // 7. ERC-7913 WebAuthn Verifier (stateless — verifies P-256 WebAuthn assertions on-chain)
         ERC7913WebAuthnVerifier webAuthnVerifier = new ERC7913WebAuthnVerifier();

@@ -12,17 +12,11 @@ library Errors {
 
     /* ----- IdentityFactory ----- */
 
-    /// @notice Reverts if the function is called on the sender address
-    error CannotBeCalledOnSenderAddress();
-
     /// @notice Reverts if the list of keys is empty
     error EmptyListOfKeys();
 
     /// @notice Reverts if the string is empty
     error EmptyString();
-
-    /// @notice Reverts if the maximum number of wallets per identity is exceeded
-    error MaxWalletsPerIdentityExceeded();
 
     /// @notice Reverts when {createIdentity} is called by an account that does not hold the
     ///         AccessManager role required for the requested identity type.
@@ -31,23 +25,45 @@ library Errors {
     /// @param requiredRole the AccessManager role id required for that type (0 = admin-only).
     error NotAuthorizedForIdentityType(address caller, uint256 identityType, uint64 requiredRole);
 
-    /// @notice Reverts if the only linked wallet tries to unlink
-    error OnlyLinkedWalletCanUnlink();
-
     /// @notice Reverts if the token is already linked
     error TokenAlreadyLinked(address token);
 
-    /// @notice Reverts if the wallet is already linked to an identity
-    error WalletAlreadyLinkedToIdentity(address wallet);
-
-    /// @notice Reverts if the wallet is also listed in management keys
-    error WalletAlsoListedInManagementKeys(address wallet);
-
-    /// @notice Reverts if the wallet is not linked to an identity
-    error WalletNotLinkedToIdentity(address wallet);
-
     /// @notice Reverts if no key with MANAGEMENT purpose is provided
     error NoManagementKeyInKeys();
+
+    /// @notice Reverts when a wallet is already linked to a different identity than the one
+    ///         currently trying to claim it. Sticky binding: a wallet can be re-linked only to
+    ///         its original identity, never to another.
+    error WalletBoundToAnotherIdentity(bytes wallet, address boundIdentity);
+
+    /// @notice Reverts when a wallet that was previously revoked is presented to {linkAccount}.
+    ///         Revocation is terminal — a wallet cannot be re-linked after being revoked.
+    error WalletAlreadyRevoked(bytes wallet);
+
+    /// @notice Reverts when an operation requires the wallet to be in the `Active` lifecycle
+    ///         state (e.g. {revokeAccount}) but it is not.
+    error WalletNotActive(bytes wallet);
+
+    /// @notice Reverts when {linkAccount} is called by a contract that was not deployed by
+    ///         this factory. Only factory-deployed identities can pull wallets in.
+    error NotFactoryIdentity(address caller);
+
+    /// @notice Reverts when an EIP-712 link signature is presented after its `expiry`, or
+    ///         when `expiry == 0` (callers must set freshness explicitly).
+    error ExpiredSignature(uint256 expiry);
+
+    /// @notice Reverts when {createIdentityFor} is called for an identity type that has not
+    ///         been enabled in the {canDeployFor} allowlist. Types that haven't opted in
+    ///         require explicit consent from the account (self-call or signature) and
+    ///         cannot be deployed-for by a role-holder.
+    error CannotDeployForType(uint256 identityType);
+
+    /// @notice Reverts when a wallet is already actively linked to the calling identity.
+    error WalletAlreadyLinkedToIdentity(bytes wallet);
+
+    /// @notice Reverts when an operation references a wallet that has never been linked, or
+    ///         is not currently part of the calling identity's active set.
+    error WalletNotLinkedToIdentity(bytes wallet);
 
     /* ----- Verifier ----- */
 

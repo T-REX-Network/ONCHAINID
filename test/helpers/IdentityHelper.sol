@@ -61,10 +61,11 @@ library IdentityHelper {
         setup.accessManager = new AccessManager(managementKey);
         setup.idFactory = new IdentityFactory(address(setup.implementationAuthority), address(setup.accessManager));
 
-        // Default test policy: every identity type is open. The deployer (managementKey) is
-        // the initial admin, so it can immediately call `setIdentityTypeRole`.
-        // We loop over the types in IdentityTypes; if/when new types are added, extend this
-        // loop or use a per-test setup function.
+        // Default test policy: every identity type is open to PUBLIC_ROLE, and every type
+        // is in the `_canDeployFor` allowlist. This lets test setUps mint identities for
+        // arbitrary addresses (the typical pattern: a deployer wallet creates identities for
+        // alice/bob/carol/etc.) without needing per-test plumbing. Production deployments
+        // use a stricter policy — see `scripts/DeployOnchainID.s.sol`.
         uint256[8] memory types = [
             IdentityTypes.ASSET,
             IdentityTypes.INDIVIDUAL,
@@ -77,6 +78,7 @@ library IdentityHelper {
         ];
         for (uint256 i = 0; i < types.length; i++) {
             setup.idFactory.setIdentityTypeRole(types[i], PUBLIC_ROLE);
+            setup.idFactory.setCanDeployFor(types[i], true);
         }
     }
 

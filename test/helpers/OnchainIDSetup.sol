@@ -83,7 +83,7 @@ contract OnchainIDSetup is Test {
             clientData: ""
         });
         address claimIssuerAddr = onchainidSetup.idFactory
-            .createIdentity(
+            .createIdentityFor(
                 claimIssuerOwner,
                 IdentityTypes.CLAIM_ISSUER,
                 "claimIssuer",
@@ -109,7 +109,7 @@ contract OnchainIDSetup is Test {
             clientData: ""
         });
         address aliceIdentityAddr = onchainidSetup.idFactory
-            .createIdentity(
+            .createIdentityFor(
                 alice,
                 IdentityTypes.INDIVIDUAL,
                 "alice",
@@ -174,7 +174,7 @@ contract OnchainIDSetup is Test {
             clientData: ""
         });
         address bobIdentityAddr = onchainidSetup.idFactory
-            .createIdentity(
+            .createIdentityFor(
                 bob,
                 IdentityTypes.INDIVIDUAL,
                 "bob",
@@ -196,7 +196,7 @@ contract OnchainIDSetup is Test {
             clientData: ""
         });
         onchainidSetup.idFactory
-            .createIdentity(
+            .createIdentityFor(
                 Constants.TOKEN_ADDRESS,
                 IdentityTypes.ASSET,
                 "tokenOwner",
