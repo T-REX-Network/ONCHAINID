@@ -1,8 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
+import { Structs } from "../storage/Structs.sol";
+
 /**
  * @dev interface of the ERC735 (Claim Holder) standard as defined in the EIP.
+ *
+ * Note on ABI: this interface follows the EIP-735 shape, with one OnchainID-specific
+ * adjustment: the claim's signed payload (`data`) is structured as `Structs.ClaimData`
+ * (`issuedAt`, `validUntil`, `payload`) instead of raw bytes. This makes typed-data
+ * signing legible to wallets and lets claims carry time bounds without convention.
  */
 interface IERC735 {
 
@@ -17,7 +24,7 @@ interface IERC735 {
         uint256 scheme,
         address indexed issuer,
         bytes signature,
-        bytes data,
+        Structs.ClaimData data,
         string uri
     );
 
@@ -32,7 +39,7 @@ interface IERC735 {
         uint256 scheme,
         address indexed issuer,
         bytes signature,
-        bytes data,
+        Structs.ClaimData data,
         string uri
     );
 
@@ -47,7 +54,7 @@ interface IERC735 {
         uint256 scheme,
         address indexed issuer,
         bytes signature,
-        bytes data,
+        Structs.ClaimData data,
         string uri
     );
 
@@ -59,7 +66,9 @@ interface IERC735 {
      * Specification: Add or update a claim from an issuer.
      *
      * _signature is over an EIP-712 typed data hash computed by the issuer contract's `getClaimHash()`.
-     * The EIP-712 struct is: `Claim(address identity, uint256 topic, bytes data)`.
+     * The EIP-712 type is:
+     *   `Claim(uint256 topic,address subject,ClaimData data)`
+     *   `ClaimData(uint256 issuedAt,uint256 validUntil,bytes payload)`
      * Claim IDs are generated using `keccak256(abi.encode(address issuer_address, uint256 topic))`.
      */
     function addClaim(
@@ -67,7 +76,7 @@ interface IERC735 {
         uint256 _scheme,
         address issuer,
         bytes calldata _signature,
-        bytes calldata _data,
+        Structs.ClaimData calldata _data,
         string calldata _uri
     ) external returns (bytes32 claimRequestId);
 
@@ -77,6 +86,8 @@ interface IERC735 {
      * Triggers Event: `ClaimRemoved`
      *
      * Claim IDs are generated using `keccak256(abi.encode(address issuer_address, uint256 topic))`.
+     * The removed claim's EIP-712 digest is marked spent, so the exact same `(issuer, topic, data)`
+     * cannot be re-added.
      */
     function removeClaim(bytes32 _claimId) external returns (bool success);
 
@@ -93,7 +104,7 @@ interface IERC735 {
             uint256 scheme,
             address issuer,
             bytes memory signature,
-            bytes memory data,
+            Structs.ClaimData memory data,
             string memory uri
         );
 

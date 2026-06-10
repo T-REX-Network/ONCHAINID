@@ -6,6 +6,7 @@ import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 import { IIdentity } from "contracts/interface/IIdentity.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
+import { Structs } from "contracts/storage/Structs.sol";
 
 contract VersionUpgradeTest is OnchainIDSetup {
 
@@ -21,7 +22,8 @@ contract VersionUpgradeTest is OnchainIDSetup {
         assertEq(aliceIdentity.version(), "3.0.0");
 
         uint256 claimTopic = uint256(keccak256(bytes("test")));
-        bytes memory claimData = bytes("test data");
+        Structs.ClaimData memory claimData =
+            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: bytes("test data") });
         string memory claimUri = "https://example.com";
 
         // Add CLAIM_SIGNER key for alice on her identity
@@ -40,12 +42,12 @@ contract VersionUpgradeTest is OnchainIDSetup {
 
         // Verify claim
         bytes32 claimId = keccak256(abi.encode(address(aliceIdentity), claimTopic));
-        (uint256 topic,, address returnedIssuer,, bytes memory data, string memory uri) =
+        (uint256 topic,, address returnedIssuer,, Structs.ClaimData memory data, string memory uri) =
             IIdentity(address(aliceIdentity)).getClaim(claimId);
 
         assertEq(topic, claimTopic);
         assertEq(returnedIssuer, address(aliceIdentity));
-        assertEq(data, claimData);
+        assertEq(data.payload, claimData.payload);
         assertEq(uri, claimUri);
     }
 

@@ -3,6 +3,7 @@ pragma solidity ^0.8.27;
 
 import { IdentityUtilities } from "contracts/IdentityUtilities.sol";
 import { IIdentity } from "contracts/interface/IIdentity.sol";
+import { Structs } from "contracts/storage/Structs.sol";
 
 contract TestIdentityUtilities is IdentityUtilities {
 
@@ -11,7 +12,7 @@ contract TestIdentityUtilities is IdentityUtilities {
         uint256 topicId,
         address issuer,
         bytes memory signature,
-        bytes memory data
+        Structs.ClaimData memory data
     ) external view returns (bool) {
         return _isClaimValid(identity, topicId, issuer, signature, data);
     }

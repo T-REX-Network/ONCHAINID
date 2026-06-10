@@ -11,6 +11,7 @@ import { IIdentityUtilities } from "contracts/interface/IIdentityUtilities.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { IdentityUtilitiesProxy } from "contracts/proxy/IdentityUtilitiesProxy.sol";
+import { Structs } from "contracts/storage/Structs.sol";
 import { Test } from "forge-std/Test.sol";
 import { Test as TestContract } from "test/mocks/Test.sol";
 import { TestIdentityUtilities } from "test/mocks/TestIdentityUtilities.sol";
@@ -890,8 +891,10 @@ contract IdentityUtilitiesTest is Test {
         identity.addKey(ClaimSignerHelper.addressToKey(claimSigner), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
 
         // Build claims
-        bytes memory claimData1 = abi.encode("verified");
-        bytes memory claimData2 = abi.encode(uint8(2));
+        Structs.ClaimData memory claimData1 =
+            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: abi.encode("verified") });
+        Structs.ClaimData memory claimData2 =
+            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: abi.encode(uint8(2)) });
 
         bytes memory sig1 = ClaimSignerHelper.signClaim(
             claimIssuerOwnerPk, claimIssuerOwner, address(ci), address(identity), 1001, claimData1
@@ -918,7 +921,7 @@ contract IdentityUtilitiesTest is Test {
         assertEq(result[0].scheme, 1);
         assertEq(result[0].issuer, address(ci));
         assertTrue(result[0].isValid);
-        assertEq(result[0].data, claimData1);
+        assertEq(result[0].data.payload, claimData1.payload);
         assertEq(result[0].uri, "https://example.com/kyc");
         assertEq(result[0].topic.name, "KYC");
         assertEq(result[0].topic.encodedFieldNames, _encodeNames(_singleStringArray("status")));
@@ -928,16 +931,16 @@ contract IdentityUtilitiesTest is Test {
         assertEq(result[1].scheme, 1);
         assertEq(result[1].issuer, address(ci));
         assertTrue(result[1].isValid);
-        assertEq(result[1].data, claimData2);
+        assertEq(result[1].data.payload, claimData2.payload);
         assertEq(result[1].uri, "https://example.com/aml");
         assertEq(result[1].topic.name, "AML");
         assertEq(result[1].topic.encodedFieldNames, _encodeNames(_singleStringArray("level")));
         assertEq(result[1].topic.encodedFieldTypes, _encodeTypes(_singleStringArray("uint8")));
 
-        // Decode and verify claim data
-        string memory decodedKyc = abi.decode(result[0].data, (string));
+        // Decode and verify claim payload
+        string memory decodedKyc = abi.decode(result[0].data.payload, (string));
         assertEq(decodedKyc, "verified");
-        uint8 decodedAml = abi.decode(result[1].data, (uint8));
+        uint8 decodedAml = abi.decode(result[1].data.payload, (uint8));
         assertEq(decodedAml, 2);
     }
 
@@ -953,7 +956,8 @@ contract IdentityUtilitiesTest is Test {
         identity.addKey(ClaimSignerHelper.addressToKey(admin), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
 
         // Sign claim properly for self-attested claim
-        bytes memory claimData = hex"";
+        Structs.ClaimData memory claimData =
+            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: hex"" });
         bytes memory signature =
             ClaimSignerHelper.signClaim(adminPk, admin, address(identity), address(identity), 3004, claimData);
 
@@ -979,7 +983,8 @@ contract IdentityUtilitiesTest is Test {
         TestIdentityUtilities testUtil = new TestIdentityUtilities();
         (Identity identity,) = IdentityHelper.deployIdentityWithProxy(admin);
 
-        bool result = testUtil.checkIsClaimValid(address(identity), 3007, address(0), hex"", hex"");
+        Structs.ClaimData memory emptyData = Structs.ClaimData({ issuedAt: 0, validUntil: 0, payload: hex"" });
+        bool result = testUtil.checkIsClaimValid(address(identity), 3007, address(0), hex"", emptyData);
         assertFalse(result);
     }
 
@@ -990,7 +995,8 @@ contract IdentityUtilitiesTest is Test {
         // Deploy a contract that does not implement isClaimValid (catches and returns false)
         TestContract invalidContract = new TestContract();
 
-        bool result = testUtil.checkIsClaimValid(address(identity), 3008, address(invalidContract), hex"", hex"");
+        Structs.ClaimData memory emptyData = Structs.ClaimData({ issuedAt: 0, validUntil: 0, payload: hex"" });
+        bool result = testUtil.checkIsClaimValid(address(identity), 3008, address(invalidContract), hex"", emptyData);
         assertFalse(result);
     }
 
