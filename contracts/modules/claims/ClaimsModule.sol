@@ -472,17 +472,12 @@ contract ClaimsModule is IERC7579Module, IERC735 {
 
     /**
      * @dev Require the off-chain caller to hold a claim key on `account`.
-     *      Self-calls (caller == account) are allowed — these arrive through `executeFromExecutor`
-     *      paths where the upstream `SmartAccount` per-target rule already enforced the right
-     *      purpose. Removing this shortcut would break the documented executor-with-claim-key flow.
      * @param account Identity whose keys are checked.
      * @param caller Off-chain caller, read from the ERC-2771 calldata tail.
      * @param onlyClaimSigner If true, accept CLAIM_SIGNER only (used by `removeClaim`).
      *        If false, accept CLAIM_SIGNER or CLAIM_ADDER (used by `addClaim`).
      */
     function _requireClaimKey(address account, address caller, bool onlyClaimSigner) internal view {
-        if (caller == account) return;
-
         bytes32 keyHash = keccak256(abi.encodePacked(caller));
 
         // CLAIM_SIGNER is always enough; it covers both add and remove.
@@ -497,12 +492,10 @@ contract ClaimsModule is IERC7579Module, IERC735 {
 
     /**
      * @dev Require the off-chain caller to hold MANAGEMENT on `account`.
-     *      Self-calls are allowed for the same reason as in `_requireClaimKey`.
      * @param account Identity whose keys are checked.
      * @param caller Off-chain caller, read from the ERC-2771 calldata tail.
      */
     function _requireManagement(address account, address caller) internal view {
-        if (caller == account) return;
         require(
             IERC734(account).keyHasPurpose(keccak256(abi.encodePacked(caller)), KeyPurposes.MANAGEMENT),
             Errors.SenderDoesNotHaveManagementKey()

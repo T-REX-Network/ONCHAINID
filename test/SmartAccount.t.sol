@@ -266,8 +266,11 @@ contract SmartAccountTest is OnchainIDSetup {
     //   / removeClaim; CLAIM_ADDER on self: addClaim.
     // -----------------------------------------------------------------------
 
-    /// @notice An executor whose key holds CLAIM_SIGNER can dispatch `addClaim` on self.
-    function test_executeFromExecutor_claimSignerExecutor_canAddClaimOnSelf() public {
+    /// @notice An executor whose key holds CLAIM_SIGNER CANNOT dispatch `addClaim` on self.
+    ///         The self-call exemption in `_requireClaimKey` was removed (H-04), so the module
+    ///         enforces purpose checks against the calldata-tail caller — which is the account
+    ///         itself in the executor flow, and the account does not hold a CLAIM_SIGNER key.
+    function test_executeFromExecutor_claimSignerExecutor_cannotAddClaimOnSelf() public {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
@@ -285,11 +288,14 @@ contract SmartAccountTest is OnchainIDSetup {
         );
         bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity), uint256(0), addClaimData);
 
+        vm.expectRevert();
         testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
     }
 
-    /// @notice An executor whose key holds CLAIM_SIGNER can dispatch `removeClaim` on self.
-    function test_executeFromExecutor_claimSignerExecutor_canRemoveClaimOnSelf() public {
+    /// @notice An executor whose key holds CLAIM_SIGNER CANNOT dispatch `removeClaim` on self.
+    ///         Same reason as above — the self-call exemption is gone, and the account itself
+    ///         is not a CLAIM_SIGNER on its own registry.
+    function test_executeFromExecutor_claimSignerExecutor_cannotRemoveClaimOnSelf() public {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
@@ -301,6 +307,7 @@ contract SmartAccountTest is OnchainIDSetup {
         bytes memory removeClaimData = abi.encodeWithSignature("removeClaim(bytes32)", claimId);
         bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity), uint256(0), removeClaimData);
 
+        vm.expectRevert();
         testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
     }
 
@@ -322,9 +329,10 @@ contract SmartAccountTest is OnchainIDSetup {
         testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
     }
 
-    /// @notice An executor whose key holds CLAIM_ADDER can dispatch `addClaim` on self,
-    ///         provided the claim carries a valid signature from a CLAIM_SIGNER on the identity.
-    function test_executeFromExecutor_claimAdderExecutor_canAddClaimOnSelf() public {
+    /// @notice An executor whose key holds CLAIM_ADDER CANNOT dispatch `addClaim` on self.
+    ///         Same reason as the CLAIM_SIGNER variants — H-04 removed the self-call exemption,
+    ///         so the account being the calldata-tail caller no longer skips the purpose check.
+    function test_executeFromExecutor_claimAdderExecutor_cannotAddClaimOnSelf() public {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
@@ -342,6 +350,7 @@ contract SmartAccountTest is OnchainIDSetup {
         );
         bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity), uint256(0), addClaimData);
 
+        vm.expectRevert();
         testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
     }
 
@@ -377,40 +386,6 @@ contract SmartAccountTest is OnchainIDSetup {
 
         vm.expectRevert(Errors.ExecutorPurposeNotAuthorized.selector);
         testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
-    }
-
-    /// @notice BATCH path: a CLAIM_SIGNER executor can dispatch `[addClaim, removeClaim]` on self.
-    function test_executeFromExecutor_claimSignerExecutor_batchAddRemoveOnSelf() public {
-        TestExecutor testExec = new TestExecutor();
-        vm.startPrank(alice);
-        aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
-        vm.stopPrank();
-
-        // Self-issued claims now require a valid signature from one of the identity's CLAIM_SIGNER keys.
-        Structs.ClaimData memory data =
-            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: bytes("payload") });
-        bytes memory signature =
-            ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(aliceIdentity), 99, data);
-
-        Execution[] memory batch = new Execution[](2);
-        batch[0] = Execution({
-            target: address(aliceIdentity),
-            value: 0,
-            callData: abi.encodeCall(
-                IERC735.addClaim, (uint256(99), uint256(1), address(aliceIdentity), signature, data, string(""))
-            )
-        });
-        batch[1] = Execution({
-            target: address(aliceIdentity),
-            value: 0,
-            callData: abi.encodeWithSignature(
-                "removeClaim(bytes32)", keccak256(abi.encode(address(claimIssuer), aliceClaim666.topic))
-            )
-        });
-
-        bytes32 batchMode = bytes32(uint256(0x01) << 248); // CALLTYPE_BATCH in mode byte
-        testExec.callExecuteFromExecutor(address(aliceIdentity), batchMode, abi.encode(batch));
     }
 
     /// @notice BATCH path: any non-claim selector in a CLAIM_SIGNER's batch poisons the whole batch.
@@ -493,30 +468,6 @@ contract SmartAccountTest is OnchainIDSetup {
         // Query under an arbitrary EOA — `msg.sender` is that EOA, not aliceIdentity.
         vm.expectRevert(Errors.UnauthorizedPolicyQuery.selector);
         kam.canAutoApprove(address(aliceIdentity), keccak256(abi.encodePacked(alice)), address(0), "");
-    }
-
-    /// @notice Module-installed path: `_isKeyAuthorizedToCallTarget` delegates to the queue
-    ///         module, so a CLAIM_SIGNER-only executor can dispatch `addClaim` on self.
-    ///         Regression for the existing claim-signer flow under the consolidated design.
-    function test_executeFromExecutor_path_consultsKeyApprovalModule() public {
-        TestExecutor testExec = new TestExecutor();
-        vm.startPrank(alice);
-        aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
-        vm.stopPrank();
-
-        // Self-issued claims now require a valid signature from one of the identity's CLAIM_SIGNER keys.
-        Structs.ClaimData memory data =
-            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: bytes("payload") });
-        bytes memory signature =
-            ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(aliceIdentity), 201, data);
-
-        bytes memory addClaimData = abi.encodeCall(
-            IERC735.addClaim, (uint256(201), uint256(1), address(aliceIdentity), signature, data, string(""))
-        );
-        bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity), uint256(0), addClaimData);
-
-        testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
     }
 
     /// @notice No-policy strict fallback: with `KeyApprovalModule` uninstalled, an ACTION
