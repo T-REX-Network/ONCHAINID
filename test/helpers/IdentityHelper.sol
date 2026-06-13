@@ -10,6 +10,7 @@ import {
 import { BeaconProxy } from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
 import { UpgradeableBeacon } from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import { Identity } from "contracts/Identity.sol";
+import { IIdentityFactory } from "contracts/factory/IIdentityFactory.sol";
 import { IdentityFactory } from "contracts/factory/IdentityFactory.sol";
 import { IClaimIssuer } from "contracts/interface/IClaimIssuer.sol";
 import { IERC735 } from "contracts/interface/IERC735.sol";
@@ -60,25 +61,13 @@ library IdentityHelper {
         setup.accessManager = new AccessManager(managementKey);
         setup.idFactory = new IdentityFactory(address(setup.beacon), address(setup.accessManager));
 
-        // Default test policy: every identity type is open to PUBLIC_ROLE, and every type
-        // is in the `_canDeployFor` allowlist. This lets test setUps mint identities for
-        // arbitrary addresses (the typical pattern: a deployer wallet creates identities for
-        // alice/bob/carol/etc.) without needing per-test plumbing. Production deployments
+        // Default test policy: both deploy paths open to PUBLIC_ROLE so test setUps can mint
+        // identities for arbitrary addresses without per-test plumbing. Production deployments
         // use a stricter policy — see `scripts/DeployOnchainID.s.sol`.
-        uint256[8] memory types = [
-            IdentityTypes.ASSET,
-            IdentityTypes.INDIVIDUAL,
-            IdentityTypes.CORPORATE,
-            IdentityTypes.IOT,
-            IdentityTypes.CLAIM_ISSUER,
-            IdentityTypes.SMART_CONTRACT,
-            IdentityTypes.PUBLIC_AUTHORITY,
-            IdentityTypes.AI_AGENT
-        ];
-        for (uint256 i = 0; i < types.length; i++) {
-            setup.idFactory.setIdentityTypeRole(types[i], PUBLIC_ROLE);
-            setup.idFactory.setCanDeployFor(types[i], true);
-        }
+        bytes4[] memory deploySelectors = new bytes4[](2);
+        deploySelectors[0] = IIdentityFactory.createIdentity.selector;
+        deploySelectors[1] = IIdentityFactory.createIdentityFor.selector;
+        setup.accessManager.setTargetFunctionRole(address(setup.idFactory), deploySelectors, PUBLIC_ROLE);
     }
 
     /// @notice Builds the full default-module install list: legacy queue (execute/approve) +

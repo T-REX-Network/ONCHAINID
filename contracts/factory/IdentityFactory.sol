@@ -2,7 +2,6 @@
 pragma solidity ^0.8.27;
 
 import { AccessManaged } from "@openzeppelin/contracts/access/manager/AccessManaged.sol";
-import { IAccessManager } from "@openzeppelin/contracts/access/manager/IAccessManager.sol";
 import { Nonces } from "@openzeppelin/contracts/utils/Nonces.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import { SignatureChecker } from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
@@ -23,18 +22,15 @@ import { Create3 } from "../vendor/utils/Create3.sol";
 import { IIdentityFactory } from "./IIdentityFactory.sol";
 
 /// @title IdentityFactory
-/// @notice Deploys ONCHAINID identity proxies. Permissions go through an AccessManager.
-///         Two deploy paths:
-///         - createIdentity: caller deploys for themselves. msg.sender becomes the
-///           first auto-linked wallet. Sponsored deploys ("user A signs, user B pays
-///           gas") are handled at the ERC-7579/ERC-4337 smart-account layer — by the
-///           time we hit the factory, msg.sender already represents the consenting
-///           account.
-///         - createIdentityFor: role-holder deploys for an EVM account that can't sign
-///           (a token, a vault). Type must be in the canDeployFor allowlist.
-///         Both need msg.sender to hold the per-type role (closed by default).
-///         Wallets use the same bytes shape as signers. Bindings are sticky and revocation
-///         is terminal. Cross-chain wallet linking (ERC-7930/ERC-7786) is a follow-up.
+/// @notice Deploys ONCHAINID identity proxies. Both deploy paths are gated by the
+///         AccessManager through `restricted`.
+///         createIdentity: caller deploys for themselves and is auto-linked as the
+///         first wallet.
+///         createIdentityFor: caller deploys for an EVM account that cannot sign
+///         (a token, a vault).
+///         Admin configures access per selector via `setTargetFunctionRole` on the AM.
+///         Wallets and signers share the same bytes shape. Bindings are sticky and
+///         revocation is terminal.
 contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
 
     using EnumerableSet for EnumerableSet.Bytes32Set;
@@ -43,37 +39,26 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
     bytes32 private constant _LINK_ACCOUNT_TYPEHASH =
         keccak256("LinkAccount(bytes account,address identity,uint256 nonce,uint256 expiry)");
 
-    /// @notice OZ UpgradeableBeacon that every BeaconProxy deployed here delegates to.
-    ///         Beacon ownership should be transferred to the AccessManager so upgrades
-    ///         flow through the same role gating as everything else.
+    /// @notice OZ UpgradeableBeacon that every BeaconProxy delegates to. Its owner
+    ///         should be the AccessManager so upgrades go through the same role gating.
     address public immutable beacon;
 
     /// @dev One slot per wallet, keyed by keccak256(signer bytes). identity stays set
-    ///      after revoke (sticky binding); record is written once and kept for
-    ///      getAccounts() enumeration; status starts None and is terminal once Revoked.
+    ///      after revoke (sticky binding). record is written once for getAccounts()
+    ///      enumeration. status starts at None and is terminal once Revoked.
     struct WalletEntry {
         address identity;
         AccountStatus status;
         bytes record;
     }
 
-    /// @dev Per-type policy. roleId 0 means "admin only" (the default). canDeployFor
-    ///      is off by default — admin opts each type into the createIdentityFor path
-    ///      explicitly (typically ASSET).
-    struct TypePolicy {
-        uint64 roleId;
-        bool canDeployFor;
-    }
-
-    /// @dev EIP-7201 namespaced storage. All mutable state lives here so future
-    ///      upgrades (e.g. moving to a beacon proxy) don't collide with inherited
-    ///      ancestors' slots.
+    /// @dev EIP-7201 namespaced storage. All mutable state lives here so a future
+    ///      upgrade won't collide with inherited slots.
     /// @custom:storage-location erc7201:onchainid.IdentityFactory
     struct IdentityFactoryStorage {
         mapping(bytes32 walletKey => WalletEntry entry) wallets;
         mapping(address identity => EnumerableSet.Bytes32Set walletKeys) accounts;
         mapping(address identity => bool deployedByFactory) isFactoryIdentity;
-        mapping(uint256 identityType => TypePolicy policy) typePolicies;
     }
 
     // keccak256(abi.encode(uint256(keccak256("onchainid.IdentityFactory")) - 1)) & ~bytes32(uint256(0xff))
@@ -87,10 +72,8 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         }
     }
 
-    /// @param beaconAddress the OZ UpgradeableBeacon every deployed IdentityProxy
-    ///        delegates to. Its owner should be the AccessManager.
-    /// @param initialAuthority the AccessManager that backs both `restricted` and the
-    ///        inline `hasRole` checks in the createIdentity paths.
+    /// @param beaconAddress OZ UpgradeableBeacon every deployed proxy delegates to.
+    /// @param initialAuthority AccessManager that backs every `restricted` function here.
     constructor(address beaconAddress, address initialAuthority)
         AccessManaged(initialAuthority)
         EIP712("IdentityFactory", "1")
@@ -98,22 +81,6 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         require(beaconAddress != address(0), Errors.ZeroAddress());
 
         beacon = beaconAddress;
-    }
-
-    // ---------------------------------------------------------------------------------------
-    // Admin
-    // ---------------------------------------------------------------------------------------
-
-    /// @inheritdoc IIdentityFactory
-    function setIdentityTypeRole(uint256 _identityType, uint64 _roleId) external restricted {
-        _storage().typePolicies[_identityType].roleId = _roleId;
-        emit IdentityTypeRoleSet(_identityType, _roleId);
-    }
-
-    /// @inheritdoc IIdentityFactory
-    function setCanDeployFor(uint256 _identityType, bool _allowed) external restricted {
-        _storage().typePolicies[_identityType].canDeployFor = _allowed;
-        emit CanDeployForSet(_identityType, _allowed);
     }
 
     // ---------------------------------------------------------------------------------------
@@ -126,8 +93,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         string memory _salt,
         Structs.KeyParam[] memory _keys,
         Structs.ModuleInstall[] memory _modules
-    ) external returns (address) {
-        _checkRole(_identityType, msg.sender);
+    ) external restricted returns (address) {
         // Caller is the account. Auto-link them as the first wallet.
         return _doCreateIdentity(abi.encodePacked(msg.sender), _identityType, _salt, _keys, _modules);
     }
@@ -139,11 +105,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         string memory _salt,
         Structs.KeyParam[] memory _keys,
         Structs.ModuleInstall[] memory _modules
-    ) external returns (address) {
-        _checkRole(_identityType, msg.sender);
-        // Only for types the admin explicitly opted in (typically ASSET). For other
-        // types, callers must go through createIdentity.
-        require(_storage().typePolicies[_identityType].canDeployFor, Errors.CannotDeployForType(_identityType));
+    ) external restricted returns (address) {
         require(_account != address(0), Errors.ZeroAddress());
         return _doCreateIdentity(abi.encodePacked(_account), _identityType, _salt, _keys, _modules);
     }
@@ -171,8 +133,8 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
             keccak256(abi.encode(_LINK_ACCOUNT_TYPEHASH, keccak256(account), msg.sender, nonce, expiry))
         );
 
-        // SignatureChecker dispatch — EOA (ECDSA), ERC-1271 (smart wallet), or
-        // ERC-7913 (passkey / custom verifier) — one call.
+        // SignatureChecker dispatch covers EOA (ECDSA), ERC-1271 (smart wallet), and
+        // ERC-7913 (passkey, custom verifier) in one call.
         require(SignatureChecker.isValidSignatureNow(account, digest, signature), Errors.InvalidSignature());
 
         // Nonce keyed by keccak256(account) cast to address so EVM and non-EVM signers
@@ -225,16 +187,6 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
     }
 
     /// @inheritdoc IIdentityFactory
-    function getIdentityTypeRole(uint256 _identityType) external view returns (uint64) {
-        return _storage().typePolicies[_identityType].roleId;
-    }
-
-    /// @inheritdoc IIdentityFactory
-    function canDeployFor(uint256 _identityType) external view returns (bool) {
-        return _storage().typePolicies[_identityType].canDeployFor;
-    }
-
-    /// @inheritdoc IIdentityFactory
     function isFactoryIdentity(address identity) external view returns (bool) {
         return _storage().isFactoryIdentity[identity];
     }
@@ -248,16 +200,9 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
     // Internal helpers
     // ---------------------------------------------------------------------------------------
 
-    /// @dev Role 0 (unset) means "admin only" — types are closed by default.
-    function _checkRole(uint256 _identityType, address caller) private view {
-        uint64 requiredRole = _storage().typePolicies[_identityType].roleId;
-        (bool isMember,) = IAccessManager(authority()).hasRole(requiredRole, caller);
-        require(isMember, Errors.NotAuthorizedForIdentityType(caller, _identityType, requiredRole));
-    }
-
     /// @dev keccak256(account) cast to address. Used as the nonce key so OZ Nonces
     ///      (address-keyed) works for ERC-7913 signers (passkeys etc.). Not a real
-    ///      account — just a unique slot.
+    ///      account, just a unique slot.
     function _addressKeyForAccount(bytes memory account) private pure returns (address) {
         return address(uint160(uint256(keccak256(account))));
     }
@@ -273,7 +218,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         require(keccak256(bytes(_salt)) != keccak256(""), Errors.EmptyString());
         require(_keys.length > 0, Errors.EmptyListOfKeys());
 
-        // Asset identities are deployed for a token contract — always a 20-byte EVM address.
+        // Asset identities are deployed for a token contract, always a 20-byte EVM address.
         // The token is auto-linked as the identity's sole wallet like any other signer;
         // the difference is the identity's `type`. Off-chain readers can recover the
         // token by reading `getAccounts(identity)[0]` and checking `getIdentityType()`.
@@ -301,7 +246,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
     }
 
     /// @dev Link rule. Enforces sticky binding and terminal revocation. Tokens and
-    ///      wallets share the same keyspace — the same address (or signer) can only
+    ///      wallets share the same keyspace, so the same address or signer can only
     ///      live in one entry, so there's no separate collision check needed.
     function _linkAccount(bytes memory account, address identity) internal {
         bytes32 key = _walletKey(account);
@@ -356,7 +301,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
     /// @dev Bootstraps a freshly-deployed identity: add user keys, install modules
     ///      (and grant their MODULE purposes), then drop the factory's bootstrap
     ///      MANAGEMENT key. installModule uses `onlyManager` (not OZ's default
-    ///      `onlyEntryPointOrSelf`) — see the NatSpec on SmartAccount.installModule
+    ///      `onlyEntryPointOrSelf`). See the NatSpec on SmartAccount.installModule
     ///      for why.
     function _setupIdentity(address _identity, Structs.KeyParam[] memory _keys, Structs.ModuleInstall[] memory _modules)
         private
@@ -369,7 +314,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
                 );
         }
 
-        // 2. Modules. The factory has no opinion on what to install — including the
+        // 2. Modules. The factory has no opinion on what to install, including the
         //    legacy ERC-734 execute/approve queue. Callers who want that ABI pass in
         //    the four install entries and grant MANAGEMENT via the install's `purpose`.
         for (uint256 i = 0; i < _modules.length; i++) {
@@ -396,7 +341,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
     ///      EVM chain where this factory shares the same address.
     function _deployIdentity(string memory _salt, uint256 _identityType) private returns (address) {
         // The proxy's constructor calls beacon.implementation() and forwards this
-        // calldata via delegatecall — Identity.initialize runs in the new proxy's
+        // calldata via delegatecall, so Identity.initialize runs in the new proxy's
         // storage with the factory as the initial MANAGEMENT key.
         bytes memory initData = abi.encodeCall(Identity.initialize, (address(this), _identityType));
         bytes memory bytecode = abi.encodePacked(type(BeaconProxy).creationCode, abi.encode(beacon, initData));

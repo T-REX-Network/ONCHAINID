@@ -18,13 +18,6 @@ library Errors {
     /// @notice Reverts if the string is empty
     error EmptyString();
 
-    /// @notice Reverts when {createIdentity} is called by an account that does not hold the
-    ///         AccessManager role required for the requested identity type.
-    /// @param caller the address that attempted to create the identity.
-    /// @param identityType the identity type that was requested.
-    /// @param requiredRole the AccessManager role id required for that type (0 = admin-only).
-    error NotAuthorizedForIdentityType(address caller, uint256 identityType, uint64 requiredRole);
-
     /// @notice Reverts if the token is already linked
     error TokenAlreadyLinked(address token);
 
@@ -37,7 +30,7 @@ library Errors {
     error WalletBoundToAnotherIdentity(bytes wallet, address boundIdentity);
 
     /// @notice Reverts when a wallet that was previously revoked is presented to {linkAccount}.
-    ///         Revocation is terminal — a wallet cannot be re-linked after being revoked.
+    ///         Revocation is terminal. A wallet cannot be re-linked after being revoked.
     error WalletAlreadyRevoked(bytes wallet);
 
     /// @notice Reverts when an operation requires the wallet to be in the `Active` lifecycle
@@ -52,14 +45,8 @@ library Errors {
     ///         when `expiry == 0` (callers must set freshness explicitly).
     error ExpiredSignature(uint256 expiry);
 
-    /// @notice Reverts when {createIdentityFor} is called for an identity type that has not
-    ///         been enabled in the {canDeployFor} allowlist. Types that haven't opted in
-    ///         require explicit consent from the account (self-call or signature) and
-    ///         cannot be deployed-for by a role-holder.
-    error CannotDeployForType(uint256 identityType);
-
     /// @notice Reverts when {linkAccount} is called on an asset identity. An asset
-    ///         identity represents one specific token contract — adding more wallets to
+    ///         identity represents one specific token contract. Adding more wallets to
     ///         it would break the 1:1 token↔identity mapping.
     error CannotLinkToAssetIdentity(address identity);
 

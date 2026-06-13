@@ -5,44 +5,22 @@ import { Structs } from "../storage/Structs.sol";
 
 /// @title IIdentityFactory
 /// @notice Factory for ONCHAINID identity proxies, gated by an OpenZeppelin AccessManager.
-///         Access policy is split across two layers:
-///           - Per-identity-type creation rights are held in AccessManager roles, with the
-///             type→role mapping kept locally via {setIdentityTypeRole}. An unset type
-///             defaults to `ADMIN_ROLE` (closed) — new types must be explicitly opened.
-///           - Administrative functions ({setIdentityTypeRole}, {setCanDeployFor}) are
-///             gated directly through `AccessManaged.restricted` and resolved by the
-///             connected AccessManager.
+///         Both {createIdentity} and {createIdentityFor} are `restricted`. Admin wires
+///         access per selector with `AccessManager.setTargetFunctionRole`.
 ///
-///         There are two deploy paths, one per consent model:
-///           1. {createIdentity} — `msg.sender` deploys for themselves. The act of calling
-///              IS the consent; no signature required. Sponsored deploys ("user A signs,
-///              user B pays the gas") are handled at the ERC-7579/ERC-4337 smart-account
-///              layer rather than by this factory: by the time the call reaches
-///              {createIdentity}, `msg.sender` already represents the consenting account.
-///           2. {createIdentityFor} — a role-holder deploys for an EVM account that cannot
-///              produce a signature (e.g. a token contract represented as an asset
-///              identity). The per-type AccessManager role IS the consent; the type must
-///              also be explicitly enabled via {setCanDeployFor}.
+///         Wallets are addressed as `bytes`. EVM addresses pass `abi.encodePacked(addr)`.
+///         ERC-7913 signers (passkeys, WebAuthn, custom verifiers) pass their raw signer
+///         blob. The registry treats signers and wallets the same; whatever can sign for
+///         an identity can also be linked as a wallet on it.
 ///
-///         Wallets are addressed as `bytes`. EVM-shaped wallets pass `abi.encodePacked(addr)`
-///         (20 bytes). ERC-7913 signers (passkeys, WebAuthn, custom verifiers) pass their
-///         raw signer blob — the same bytes `SignatureChecker` accepts. The registry treats
-///         these uniformly: whatever can sign for an identity can also be linked as a
-///         wallet on that identity. There is no separate "signer vs wallet" concept.
-///
-///         Bindings are permanent (sticky): once linked, a wallet can never be linked to a
-///         different identity. Revocation flips the wallet's status to `Revoked` (terminal —
-///         the wallet can never be re-linked) but never clears the underlying record. Tokens
-///         share the same keyspace as wallets: an ASSET identity's auto-linked wallet IS the
-///         token, looked up via `getIdentity(bytes)` (forward) or `getAccounts(identity)[0]`
-///         (reverse). The identity's `getIdentityType()` distinguishes ASSET from others.
-///
-///         Cross-chain wallet linking (distinguishing the same address on different chains
-///         via ERC-7930 envelopes, ERC-7786 receiver for cross-chain proofs) is a follow-up.
+///         Bindings are sticky: once linked, a wallet stays bound to that identity.
+///         Revocation flips the status to `Revoked` permanently. Tokens share the same
+///         keyspace as wallets: an ASSET identity's auto-linked wallet is the token,
+///         looked up via `getIdentity(bytes)` or `getAccounts(identity)[0]`.
 interface IIdentityFactory {
 
-    /// @notice Lifecycle state of a wallet entry. `None` distinguishes "never seen" from
-    ///         the post-revocation state (which keeps `_userIdentity` populated).
+    /// @notice Lifecycle state of a wallet entry. `None` means "never seen" and is
+    ///         distinct from `Revoked` (which keeps the binding on-chain).
     enum AccountStatus {
         None,
         Active,
@@ -58,22 +36,8 @@ interface IIdentityFactory {
     // event emitted when a token is linked to an ONCHAINID contract (tokens are EVM-only)
     event TokenLinked(address indexed token, address indexed identity);
 
-    /// @notice Emitted whenever the AccessManager role required to create a given
-    ///         identity type is updated. A `roleId == 0` (admin) means the type is
-    ///         closed to non-admin callers.
-    event IdentityTypeRoleSet(uint256 indexed identityType, uint64 indexed roleId);
-
-    /// @notice Emitted when the "can deploy for someone else" flag is flipped for an
-    ///         identity type. When true, {createIdentityFor} accepts that type; otherwise
-    ///         only {createIdentity} / {createIdentityWithSignature} are valid for it.
-    event CanDeployForSet(uint256 indexed identityType, bool allowed);
-
-    /// @notice Self-deploy: caller is also the account being deployed for. The call
-    ///         itself IS the consent. `msg.sender` is auto-linked as the new identity's
-    ///         first wallet (stored as `abi.encodePacked(msg.sender)`).
-    ///
-    ///         `msg.sender` must hold the AccessManager role mapped to `_identityType`
-    ///         via {setIdentityTypeRole}.
+    /// @notice Self-deploy. Caller is the account being deployed for and is auto-linked
+    ///         as the new identity's first wallet. Gated by the AccessManager.
     function createIdentity(
         uint256 _identityType,
         string memory _salt,
@@ -81,16 +45,9 @@ interface IIdentityFactory {
         Structs.ModuleInstall[] memory _modules
     ) external returns (address);
 
-    /// @notice Role-gated deploy for an EVM account that cannot sign — typically a token
-    ///         contract being given an asset identity, or any other smart contract whose
-    ///         owner role is on the calling factory (e.g. T-REX `TokenFactory`).
-    ///
-    ///         Two-layer authorization:
-    ///           - `msg.sender` must hold the per-type AccessManager role for `_identityType`.
-    ///           - `_identityType` must be enabled in the {canDeployFor} allowlist.
-    ///
-    ///         The account is auto-linked as the identity's first wallet, stored as
-    ///         `abi.encodePacked(_account)`.
+    /// @notice Deploy for an EVM account that cannot sign (a token, a vault). The
+    ///         account is auto-linked as the identity's first wallet. Gated by the
+    ///         AccessManager.
     function createIdentityFor(
         address _account,
         uint256 _identityType,
@@ -104,13 +61,13 @@ interface IIdentityFactory {
     ///         EOAs, ERC-1271 smart wallets, and ERC-7913 verifiers (passkeys, etc.)
     ///         uniformly via `SignatureChecker`.
     ///
-    /// @param account signer bytes — `abi.encodePacked(address)` for EOAs and ERC-1271
+    /// @param account signer bytes. `abi.encodePacked(address)` for EOAs and ERC-1271
     ///         smart wallets, raw ERC-7913 signer blob for passkeys / custom verifiers.
     /// @param signature EIP-712 signature produced by `account` over
     ///         `LinkAccount(bytes account,address identity,uint256 nonce,uint256 expiry)`.
     /// @param nonce current nonce for `account` (see {noncesForAccount}).
     /// @param expiry unix timestamp after which the signature is invalid. `expiry == 0`
-    ///         reverts — callers must set freshness explicitly because the binding is
+    ///         reverts. Callers must set freshness explicitly because the binding is
     ///         permanent once consumed.
     function linkAccount(bytes calldata account, bytes calldata signature, uint256 nonce, uint256 expiry) external;
 
@@ -118,14 +75,6 @@ interface IIdentityFactory {
     ///         remains on-chain; status flips to `Revoked`. A revoked wallet can never
     ///         be re-linked (terminal revocation).
     function revokeAccount(bytes calldata account) external;
-
-    /// @notice Set (or replace) the AccessManager role required to create identities
-    ///         of `_identityType`. Pass `roleId == 0` to force the type back to
-    ///         admin-only (closed). Restricted via AccessManager.
-    function setIdentityTypeRole(uint256 _identityType, uint64 _roleId) external;
-
-    /// @notice Enable or disable the {createIdentityFor} path for `_identityType`.
-    function setCanDeployFor(uint256 _identityType, bool _allowed) external;
 
     /// @notice Resolve a wallet to its bound identity. Returns `address(0)` when the
     ///         wallet's status is not `Active` (never linked, or revoked).
@@ -146,14 +95,6 @@ interface IIdentityFactory {
 
     /// @notice Paginated variant of {getAccounts}.
     function getAccounts(address identity, uint256 start, uint256 end) external view returns (bytes[] memory);
-
-    /// @notice Returns the AccessManager role required to create identities of
-    ///         `_identityType`. Returns `0` (admin-only / closed) for unset types.
-    function getIdentityTypeRole(uint256 _identityType) external view returns (uint64);
-
-    /// @notice Returns true iff {createIdentityFor} accepts `_identityType`. Off by
-    ///         default; admin enables per-type via {setCanDeployFor}.
-    function canDeployFor(uint256 _identityType) external view returns (bool);
 
     /// @notice Returns true iff `identity` was deployed by this factory. Used by
     ///         {linkAccount} to reject pulls into non-OnchainID contracts.

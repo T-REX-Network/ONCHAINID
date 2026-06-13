@@ -108,70 +108,81 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
     // ============ AccessManager gating ============
 
-    function test_createIdentity_revertWhenTypeNotOpened() public {
-        uint256 unopenedType = 9999;
+    /// @dev Re-point a deploy selector at a fresh role and grant that role to no one.
+    ///      Every non-admin caller now reverts via the `restricted` modifier.
+    function _restrictDeployToFreshRole(bytes4 selector) internal returns (uint64 role) {
+        role = 999;
+        bytes4[] memory selectors = new bytes4[](1);
+        selectors[0] = selector;
         vm.prank(deployer);
-        onchainidSetup.idFactory.setIdentityTypeRole(unopenedType, 0);
+        onchainidSetup.accessManager.setTargetFunctionRole(address(onchainidSetup.idFactory), selectors, role);
+    }
+
+    function test_createIdentityFor_revertWhenCallerLacksRole() public {
+        _restrictDeployToFreshRole(IIdentityFactory.createIdentityFor.selector);
 
         vm.prank(alice);
-        vm.expectRevert(
-            abi.encodeWithSelector(Errors.NotAuthorizedForIdentityType.selector, alice, unopenedType, uint64(0))
-        );
+        vm.expectRevert(); // AccessManagerUnauthorizedCall
         onchainidSetup.idFactory
             .createIdentityFor(
-                david, unopenedType, "salt9999", _makeSingleMgmtKeys(david), new Structs.ModuleInstall[](0)
+                david, IdentityTypes.INDIVIDUAL, "noRole", _makeSingleMgmtKeys(david), new Structs.ModuleInstall[](0)
             );
     }
 
-    function test_createIdentity_adminCanCreateClosedType() public {
-        uint256 unopenedType = 9999;
-        vm.startPrank(deployer);
-        onchainidSetup.idFactory.setIdentityTypeRole(unopenedType, 0);
-        onchainidSetup.idFactory.setCanDeployFor(unopenedType, true);
-        vm.stopPrank();
+    function test_createIdentityFor_adminMustGrantSelfRoleToCall() public {
+        // Lock the path down to a fresh role.
+        uint64 role = _restrictDeployToFreshRole(IIdentityFactory.createIdentityFor.selector);
 
+        // OZ AccessManager has no admin bypass on target-function checks — admin sets the
+        // role graph but must still hold the configured role to call.
+        vm.prank(deployer);
+        vm.expectRevert();
+        onchainidSetup.idFactory
+            .createIdentityFor(
+                david,
+                IdentityTypes.INDIVIDUAL,
+                "adminNoRole",
+                _makeSingleMgmtKeys(david),
+                new Structs.ModuleInstall[](0)
+            );
+
+        // Once admin grants themselves the role, the call succeeds.
+        vm.prank(deployer);
+        onchainidSetup.accessManager.grantRole(role, deployer, 0);
         vm.prank(deployer);
         address identityAddr = onchainidSetup.idFactory
             .createIdentityFor(
-                david, unopenedType, "saltAdminClosed", _makeSingleMgmtKeys(david), new Structs.ModuleInstall[](0)
+                david,
+                IdentityTypes.INDIVIDUAL,
+                "adminWithRole",
+                _makeSingleMgmtKeys(david),
+                new Structs.ModuleInstall[](0)
             );
         assertTrue(identityAddr != address(0));
     }
 
-    function test_createIdentity_nonAdminWithRoleCanCreate() public {
-        uint64 issuerRole = 42;
-        vm.startPrank(deployer);
-        onchainidSetup.idFactory.setIdentityTypeRole(IdentityTypes.CLAIM_ISSUER, issuerRole);
-        onchainidSetup.accessManager.grantRole(issuerRole, alice, 0);
-        vm.stopPrank();
+    function test_createIdentityFor_nonAdminWithRoleCanCall() public {
+        uint64 role = _restrictDeployToFreshRole(IIdentityFactory.createIdentityFor.selector);
+
+        vm.prank(deployer);
+        onchainidSetup.accessManager.grantRole(role, alice, 0);
 
         Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(david);
         vm.prank(alice);
         address identityAddr = onchainidSetup.idFactory
-            .createIdentityFor(
-                david, IdentityTypes.CLAIM_ISSUER, "saltAliceIssuer", keys, new Structs.ModuleInstall[](0)
-            );
+            .createIdentityFor(david, IdentityTypes.CLAIM_ISSUER, "aliceRole", keys, new Structs.ModuleInstall[](0));
         assertTrue(identityAddr != address(0));
     }
 
-    function test_setIdentityTypeRole_revertForNonAdmin() public {
-        vm.prank(alice);
-        vm.expectRevert();
-        onchainidSetup.idFactory.setIdentityTypeRole(IdentityTypes.INDIVIDUAL, 7);
-    }
+    function test_createIdentity_revertWhenCallerLacksRole() public {
+        _restrictDeployToFreshRole(IIdentityFactory.createIdentity.selector);
 
-    function test_setIdentityTypeRole_emitsEvent() public {
-        vm.prank(deployer);
-        vm.expectEmit(true, true, false, false, address(onchainidSetup.idFactory));
-        emit IIdentityFactory.IdentityTypeRoleSet(IdentityTypes.INDIVIDUAL, 123);
-        onchainidSetup.idFactory.setIdentityTypeRole(IdentityTypes.INDIVIDUAL, 123);
-        assertEq(onchainidSetup.idFactory.getIdentityTypeRole(IdentityTypes.INDIVIDUAL), 123);
-    }
-
-    function test_setCanDeployFor_revertForNonAdmin() public {
         vm.prank(alice);
-        vm.expectRevert();
-        onchainidSetup.idFactory.setCanDeployFor(IdentityTypes.INDIVIDUAL, true);
+        vm.expectRevert(); // AccessManagerUnauthorizedCall
+        onchainidSetup.idFactory
+            .createIdentity(
+                IdentityTypes.INDIVIDUAL, "noSelfRole", _makeSingleMgmtKeys(alice), new Structs.ModuleInstall[](0)
+            );
     }
 
     // ============ createIdentityFor (validation) ============
@@ -585,12 +596,10 @@ contract IdentityFactoryTest is OnchainIDSetup {
         UpgradeableBeacon badBeacon = new UpgradeableBeacon(address(revertingImpl), deployer);
 
         AccessManager am = new AccessManager(deployer);
-        vm.startPrank(deployer);
         IdentityFactory badFactory = new IdentityFactory(address(badBeacon), address(am));
-        badFactory.setIdentityTypeRole(IdentityTypes.INDIVIDUAL, type(uint64).max);
-        badFactory.setCanDeployFor(IdentityTypes.INDIVIDUAL, true);
-        vm.stopPrank();
 
+        // deployer is AM admin — bypasses the `restricted` gate on createIdentityFor.
+        vm.prank(deployer);
         vm.expectRevert();
         badFactory.createIdentityFor(
             david, IdentityTypes.INDIVIDUAL, "salt1", _makeSingleMgmtKeys(david), new Structs.ModuleInstall[](0)

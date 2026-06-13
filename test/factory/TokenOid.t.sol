@@ -5,6 +5,7 @@ import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { IdentityHelper } from "../helpers/IdentityHelper.sol";
 import { Errors as OZErrors } from "@openzeppelin/contracts/utils/Errors.sol";
 import { Identity } from "contracts/Identity.sol";
+import { IIdentityFactory } from "contracts/factory/IIdentityFactory.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
@@ -12,12 +13,10 @@ import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 import { Test } from "forge-std/Test.sol";
 
-/// @notice Tests for the asset-identity (ex `createTokenIdentity`) path on {IdentityFactory}.
-///         The legacy `addTokenFactory`/`removeTokenFactory`/`isTokenFactory` surface no longer
-///         exists; "is this caller allowed to mint asset identities" is now a question for the
-///         attached AccessManager. The deployer-as-admin can either mint asset identities
-///         directly (because admins bypass the type role) or grant a `ROLE_TOKEN_FACTORY` to a
-///         specific address and let that address mint.
+/// @notice Tests for the asset-identity path on {IdentityFactory}. Whether a caller can
+///         mint asset identities is governed by the attached AccessManager: the admin
+///         configures which role is allowed to call `createIdentityFor` via
+///         `setTargetFunctionRole` and grants that role to the intended callers.
 contract TokenOidTest is Test {
 
     /// @dev Local role id used by tests that need a non-admin token-factory caller.
@@ -58,34 +57,31 @@ contract TokenOidTest is Test {
         keys[0] = _makeECDSAKey(addr, KeyPurposes.MANAGEMENT);
     }
 
-    /// @dev Switch the ASSET identity type from PUBLIC_ROLE (the default test-helper config) to
-    ///      `ROLE_TOKEN_FACTORY`, mirroring a production deployment where only role holders may
-    ///      mint asset identities.
-    function _restrictAssetToTokenFactoryRole() internal {
+    /// @dev Re-point `createIdentityFor` at `ROLE_TOKEN_FACTORY`, mirroring a production
+    ///      deployment where only registered token factories may mint asset identities.
+    function _restrictCreateForToTokenFactoryRole() internal {
+        bytes4[] memory selectors = new bytes4[](1);
+        selectors[0] = IIdentityFactory.createIdentityFor.selector;
         vm.prank(deployer);
-        setup.idFactory.setIdentityTypeRole(IdentityTypes.ASSET, ROLE_TOKEN_FACTORY);
+        setup.accessManager.setTargetFunctionRole(address(setup.idFactory), selectors, ROLE_TOKEN_FACTORY);
     }
 
     // ============ AccessManager-gated asset creation ============
 
-    /// @notice Without the ASSET role, a non-admin caller cannot mint an asset identity.
+    /// @notice Without the configured role, a non-admin caller cannot mint an asset identity.
     function test_createAssetIdentity_revertWhenCallerLacksRole() public {
-        _restrictAssetToTokenFactoryRole();
+        _restrictCreateForToTokenFactoryRole();
 
         vm.prank(alice);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                Errors.NotAuthorizedForIdentityType.selector, alice, IdentityTypes.ASSET, ROLE_TOKEN_FACTORY
-            )
-        );
+        vm.expectRevert(); // AccessManagerUnauthorizedCall
         setup.idFactory.createIdentityFor(alice, IdentityTypes.ASSET, "TST", _makeMgmtKey(alice), _emptyModules);
     }
 
-    /// @notice Once granted the ASSET role, a non-admin caller can mint asset identities.
+    /// @notice Once granted the configured role, a non-admin caller can mint asset identities.
     function test_createAssetIdentity_succeedsWhenCallerHasRole() public {
-        _restrictAssetToTokenFactoryRole();
+        _restrictCreateForToTokenFactoryRole();
 
-        // deployer is the AccessManager admin; grant alice the ASSET role.
+        // deployer is the AccessManager admin; grant alice the deploy role.
         vm.prank(deployer);
         setup.accessManager.grantRole(ROLE_TOKEN_FACTORY, alice, 0);
 
@@ -102,21 +98,17 @@ contract TokenOidTest is Test {
     }
 
     /// @notice AccessManager admins are NOT auto-members of arbitrary roles. After the
-    ///         deployer restricts ASSET to ROLE_TOKEN_FACTORY, they must grant themselves
-    ///         that role explicitly to keep minting. This codifies least-privilege:
-    ///         "admin" only governs the role graph; it does not bypass it.
+    ///         deployer restricts createIdentityFor to ROLE_TOKEN_FACTORY, they must grant
+    ///         themselves that role explicitly to keep minting. This codifies
+    ///         least-privilege: "admin" only governs the role graph; it does not bypass it.
     function test_createAssetIdentity_adminMustGrantSelfRoleToMint() public {
-        _restrictAssetToTokenFactoryRole();
+        _restrictCreateForToTokenFactoryRole();
 
         address token = makeAddr("adminToken");
 
         // Without the role: the deployer (admin) cannot mint asset identities.
         vm.prank(deployer);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                Errors.NotAuthorizedForIdentityType.selector, deployer, IdentityTypes.ASSET, ROLE_TOKEN_FACTORY
-            )
-        );
+        vm.expectRevert();
         setup.idFactory.createIdentityFor(token, IdentityTypes.ASSET, "adminSalt", _makeMgmtKey(bob), _emptyModules);
 
         // Grant themselves the role, then minting works.
@@ -210,6 +202,77 @@ contract TokenOidTest is Test {
             identity.keyHasPurpose(ClaimSignerHelper.addressToKey(bob), KeyPurposes.MANAGEMENT),
             "bob should have MANAGEMENT purpose"
         );
+    }
+
+    // ============ ACCESS_MANAGER as MGMT key (AssetID governance pattern) ============
+
+    /// @dev Build a single MGMT key entry tagged as `ACCESS_MANAGER`. signerData is the AM
+    ///      address packed as 20 bytes so its keyHash matches `keccak256(abi.encodePacked(am))`
+    ///      (what `onlyManager` compares against when `msg.sender == am`).
+    function _makeAccessManagerMgmtKey(address am) internal pure returns (Structs.KeyParam[] memory keys) {
+        keys = new Structs.KeyParam[](1);
+        keys[0] = Structs.KeyParam({
+            keyHash: keccak256(abi.encodePacked(am)),
+            purpose: KeyPurposes.MANAGEMENT,
+            keyType: KeyTypes.ACCESS_MANAGER,
+            signerData: abi.encodePacked(am),
+            clientData: ""
+        });
+    }
+
+    /// @notice An AssetID can be deployed with an AccessManager registered as its MANAGEMENT
+    ///         key, tagged with the new `ACCESS_MANAGER` type so off-chain readers know the
+    ///         key is a contract governed by a role table, not an EOA.
+    function test_assetIdentity_canRegisterAccessManagerAsMgmtKey() public {
+        address am = makeAddr("assetGovernor");
+        address token = makeAddr("amGovernedToken");
+
+        vm.prank(deployer);
+        address identityAddr = setup.idFactory
+            .createIdentityFor(token, IdentityTypes.ASSET, "amKey", _makeAccessManagerMgmtKey(am), _emptyModules);
+
+        Identity identity = Identity(payable(identityAddr));
+        bytes32 amKeyHash = keccak256(abi.encodePacked(am));
+
+        (uint256[] memory purposes, uint256 keyType, bytes32 storedKey) = identity.getKey(amKeyHash);
+        assertEq(keyType, KeyTypes.ACCESS_MANAGER, "key should be tagged ACCESS_MANAGER");
+        assertEq(storedKey, amKeyHash, "stored key hash should match");
+        assertEq(purposes.length, 1, "exactly one purpose");
+        assertEq(purposes[0], KeyPurposes.MANAGEMENT, "the purpose is MANAGEMENT");
+        assertTrue(identity.keyHasPurpose(amKeyHash, KeyPurposes.MANAGEMENT), "AM passes MANAGEMENT check");
+    }
+
+    /// @notice The AccessManager, registered as a MGMT key, can drive the AssetID directly.
+    ///         `am.execute(identity, addKey(...))` lands at the identity with
+    ///         `msg.sender == am`, satisfying `onlyManager`. We simulate that with vm.prank.
+    function test_assetIdentity_accessManagerCanCallOnlyManager() public {
+        address am = makeAddr("assetGovernor2");
+        address token = makeAddr("amGovernedToken2");
+
+        vm.prank(deployer);
+        address identityAddr = setup.idFactory
+            .createIdentityFor(token, IdentityTypes.ASSET, "amGov", _makeAccessManagerMgmtKey(am), _emptyModules);
+
+        Identity identity = Identity(payable(identityAddr));
+
+        // AM (as msg.sender) can add a new CLAIM_SIGNER key. This is what
+        // `am.execute(identity, addKey(...))` produces on-chain.
+        address claimSigner = makeAddr("claimSignerEoa");
+        bytes32 claimSignerKey = keccak256(abi.encodePacked(claimSigner));
+
+        vm.prank(am);
+        identity.addKey(claimSignerKey, KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+
+        assertTrue(
+            identity.keyHasPurpose(claimSignerKey, KeyPurposes.CLAIM_SIGNER),
+            "AM-added claim signer should be registered"
+        );
+
+        // An unrelated EOA holds no key on the identity and cannot drive it.
+        address stranger = makeAddr("stranger");
+        vm.prank(stranger);
+        vm.expectRevert(Errors.SenderDoesNotHaveManagementKey.selector);
+        identity.addKey(keccak256(abi.encodePacked(stranger)), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
     }
 
 }

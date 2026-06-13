@@ -10,8 +10,8 @@ import {
 } from "@openzeppelin/contracts/utils/cryptography/verifiers/ERC7913WebAuthnVerifier.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IdentityUtilities } from "contracts/IdentityUtilities.sol";
+import { IIdentityFactory } from "contracts/factory/IIdentityFactory.sol";
 import { IdentityFactory } from "contracts/factory/IdentityFactory.sol";
-import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { ClaimsModule } from "contracts/modules/claims/ClaimsModule.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
 import { ERC7579Signature } from "contracts/modules/validators/ERC7579Signature.sol";
@@ -102,27 +102,19 @@ contract DeployOnchainID is Script {
         // (`beacon.upgradeTo(newImpl)`) go through the same role gating as everything else.
         beacon.transferOwnership(address(am));
 
-        // ===== Phase 3: AccessManager role wiring =====
-        // Per-identity-type creation rights. Unset types default to ADMIN_ROLE (closed),
-        // so any new identity type must be explicitly opened by the admin.
-        //
-        // Default policy:
-        //   - INDIVIDUAL      -> PUBLIC_ROLE (anyone can self-deploy their personal identity)
-        //   - ASSET           -> ROLE_TOKEN_FACTORY (only registered token factories)
-        //   - CLAIM_ISSUER    -> ROLE_CLAIM_ISSUER_ADMIN (only pre-approved issuers)
-        //   - All other types -> closed (admin-only) until the operator opens them.
-        //
-        // Operators can flip any of these later via `setIdentityTypeRole`.
-        idFactory.setIdentityTypeRole(IdentityTypes.INDIVIDUAL, am.PUBLIC_ROLE());
-        idFactory.setIdentityTypeRole(IdentityTypes.ASSET, ROLE_TOKEN_FACTORY);
-        idFactory.setIdentityTypeRole(IdentityTypes.CLAIM_ISSUER, ROLE_CLAIM_ISSUER_ADMIN);
+        // ===== Phase 3: AccessManager target-function wiring =====
+        // The factory's two deploy paths are both `restricted`. Gating happens at the
+        // AM via `setTargetFunctionRole(target, [selector], roleId)`:
+        //   - createIdentity (self-deploy) -> PUBLIC_ROLE (anyone can self-deploy).
+        //   - createIdentityFor            -> ROLE_TOKEN_FACTORY (only registered factories).
+        // Operators can re-point either selector at a different role later.
+        bytes4[] memory createSelector = new bytes4[](1);
+        createSelector[0] = IIdentityFactory.createIdentity.selector;
+        am.setTargetFunctionRole(address(idFactory), createSelector, am.PUBLIC_ROLE());
 
-        // {createIdentityFor} allowlist. Only types whose accounts cannot sign for
-        // themselves should be in this set. Default: just ASSET (a token contract can't
-        // produce signatures; its TokenFactory mints the asset identity on its behalf).
-        // For non-allowlisted types, callers must use {createIdentity} (self-deploy)
-        // or {createIdentityWithSignature} (sponsored deploy with consent).
-        idFactory.setCanDeployFor(IdentityTypes.ASSET, true);
+        bytes4[] memory createForSelector = new bytes4[](1);
+        createForSelector[0] = IIdentityFactory.createIdentityFor.selector;
+        am.setTargetFunctionRole(address(idFactory), createForSelector, ROLE_TOKEN_FACTORY);
 
         // 7. ERC-7913 WebAuthn Verifier (stateless — verifies P-256 WebAuthn assertions on-chain)
         ERC7913WebAuthnVerifier webAuthnVerifier = new ERC7913WebAuthnVerifier();
