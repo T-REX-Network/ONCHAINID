@@ -91,10 +91,6 @@ contract ClaimsModule is IERC7579Module, IERC735 {
     /// @notice Emitted when `addClaimTo` successfully writes a claim to another identity.
     event ClaimAddedTo(address indexed identity, uint256 topic, bytes signature, Structs.ClaimData data);
 
-    // -----------------------------------------------------------------------
-    // ERC-7579 module metadata
-    // -----------------------------------------------------------------------
-
     /**
      * @inheritdoc IERC7579Module
      * @return True when `moduleTypeId` is `MODULE_TYPE_EXECUTOR` or `MODULE_TYPE_FALLBACK`.
@@ -115,10 +111,6 @@ contract ClaimsModule is IERC7579Module, IERC735 {
      *      place so re-installing the module does not silently un-revoke previously revoked digests.
      */
     function onUninstall(bytes calldata) external pure { }
-
-    // -----------------------------------------------------------------------
-    // ERC-735 ABI — reached through the identity's fallback handler
-    // -----------------------------------------------------------------------
 
     /**
      * @inheritdoc IERC735
@@ -270,10 +262,6 @@ contract ClaimsModule is IERC7579Module, IERC735 {
         return _state[msg.sender].claimsByTopic[_topic].values(start, end);
     }
 
-    // -----------------------------------------------------------------------
-    // ClaimIssuer extras
-    // -----------------------------------------------------------------------
-
     /**
      * @notice Mark a claim digest as revoked. Canonical issuer-side revocation entry point — the
      *         issuer already knows the digest (or computed it via `getClaimHash`), so no claim
@@ -376,10 +364,6 @@ contract ClaimsModule is IERC7579Module, IERC735 {
         _identity.addClaim(_topic, _scheme, account, _signature, _data, _uri);
         emit ClaimAddedTo(address(_identity), _topic, _signature, _data);
     }
-
-    // -----------------------------------------------------------------------
-    // Internals
-    // -----------------------------------------------------------------------
 
     /**
      * @dev Build the EIP-712 claim digest using the calling identity's domain.

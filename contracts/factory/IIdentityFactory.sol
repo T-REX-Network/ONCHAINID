@@ -4,9 +4,14 @@ pragma solidity ^0.8.27;
 import { Structs } from "../storage/Structs.sol";
 
 /// @title IIdentityFactory
-/// @notice Factory for ONCHAINID identity proxies, gated by an OpenZeppelin AccessManager.
-///         Both {createIdentity} and {createIdentityFor} are `restricted`. Admin wires
-///         access per selector with `AccessManager.setTargetFunctionRole`.
+/// @notice Factory for ONCHAINID identity proxies. Deployment is gated per identity type
+///         using an OpenZeppelin AccessManager as the role oracle.
+///
+///         Each type maps to an AM role via {setIdentityTypeRole}. A type with role 0 is
+///         open: anyone may deploy it. A type with a non-zero role can only be deployed
+///         by callers who hold that role on the AM.
+///
+///         {setIdentityTypeRole} itself is `restricted` (resolved by the AM).
 ///
 ///         Wallets are addressed as `bytes`. EVM addresses pass `abi.encodePacked(addr)`.
 ///         ERC-7913 signers (passkeys, WebAuthn, custom verifiers) pass their raw signer
@@ -36,8 +41,14 @@ interface IIdentityFactory {
     // event emitted when a token is linked to an ONCHAINID contract (tokens are EVM-only)
     event TokenLinked(address indexed token, address indexed identity);
 
+    /// @notice Emitted when the AM role required to deploy a given identity type changes.
+    ///         `roleId == 0` means the type is open (no role required).
+    event IdentityTypeRoleSet(uint256 indexed identityType, uint64 indexed roleId);
+
     /// @notice Self-deploy. Caller is the account being deployed for and is auto-linked
-    ///         as the new identity's first wallet. Gated by the AccessManager.
+    ///         as the new identity's first wallet. Open to anyone for any type: the
+    ///         caller can only deploy an identity for themselves, so no per-type gate
+    ///         is needed here.
     function createIdentity(
         uint256 _identityType,
         string memory _salt,
@@ -46,8 +57,8 @@ interface IIdentityFactory {
     ) external returns (address);
 
     /// @notice Deploy for an EVM account that cannot sign (a token, a vault). The
-    ///         account is auto-linked as the identity's first wallet. Gated by the
-    ///         AccessManager.
+    ///         account is auto-linked as the identity's first wallet. Caller must hold
+    ///         the role configured for `_identityType` (or any caller if the type is open).
     function createIdentityFor(
         address _account,
         uint256 _identityType,
@@ -55,6 +66,13 @@ interface IIdentityFactory {
         Structs.KeyParam[] memory _keys,
         Structs.ModuleInstall[] memory _modules
     ) external returns (address);
+
+    /// @notice Set the AM role required to deploy identities of `_identityType`. Pass
+    ///         `roleId == 0` to mark the type as open. `restricted` via the AM.
+    function setIdentityTypeRole(uint256 _identityType, uint64 _roleId) external;
+
+    /// @notice AM role required to deploy `_identityType`. 0 means open.
+    function getIdentityTypeRole(uint256 _identityType) external view returns (uint64);
 
     /// @notice Link a wallet (signer bytes) to the calling identity. The wallet
     ///         authorizes the link via an EIP-712 `LinkAccount` signature. Supports

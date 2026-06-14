@@ -5,7 +5,6 @@ import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { IdentityHelper } from "../helpers/IdentityHelper.sol";
 import { Errors as OZErrors } from "@openzeppelin/contracts/utils/Errors.sol";
 import { Identity } from "contracts/Identity.sol";
-import { IIdentityFactory } from "contracts/factory/IIdentityFactory.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
@@ -14,9 +13,9 @@ import { Structs } from "contracts/storage/Structs.sol";
 import { Test } from "forge-std/Test.sol";
 
 /// @notice Tests for the asset-identity path on {IdentityFactory}. Whether a caller can
-///         mint asset identities is governed by the attached AccessManager: the admin
-///         configures which role is allowed to call `createIdentityFor` via
-///         `setTargetFunctionRole` and grants that role to the intended callers.
+///         mint asset identities depends on the per-type role configured on the factory
+///         via `setIdentityTypeRole`. ASSET is open by default; production deployments
+///         gate it behind a TOKEN_FACTORY role.
 contract TokenOidTest is Test {
 
     /// @dev Local role id used by tests that need a non-admin token-factory caller.
@@ -57,31 +56,32 @@ contract TokenOidTest is Test {
         keys[0] = _makeECDSAKey(addr, KeyPurposes.MANAGEMENT);
     }
 
-    /// @dev Re-point `createIdentityFor` at `ROLE_TOKEN_FACTORY`, mirroring a production
+    /// @dev Gate the ASSET type behind `ROLE_TOKEN_FACTORY`, mirroring a production
     ///      deployment where only registered token factories may mint asset identities.
-    function _restrictCreateForToTokenFactoryRole() internal {
-        bytes4[] memory selectors = new bytes4[](1);
-        selectors[0] = IIdentityFactory.createIdentityFor.selector;
+    function _restrictAssetToTokenFactoryRole() internal {
         vm.prank(deployer);
-        setup.accessManager.setTargetFunctionRole(address(setup.idFactory), selectors, ROLE_TOKEN_FACTORY);
+        setup.idFactory.setIdentityTypeRole(IdentityTypes.ASSET, ROLE_TOKEN_FACTORY);
     }
 
-    // ============ AccessManager-gated asset creation ============
+    // ============ Per-identity-type gated asset creation ============
 
-    /// @notice Without the configured role, a non-admin caller cannot mint an asset identity.
+    /// @notice Without the ASSET role, a non-admin caller cannot mint an asset identity.
     function test_createAssetIdentity_revertWhenCallerLacksRole() public {
-        _restrictCreateForToTokenFactoryRole();
+        _restrictAssetToTokenFactoryRole();
 
         vm.prank(alice);
-        vm.expectRevert(); // AccessManagerUnauthorizedCall
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Errors.NotAuthorizedForIdentityType.selector, alice, IdentityTypes.ASSET, ROLE_TOKEN_FACTORY
+            )
+        );
         setup.idFactory.createIdentityFor(alice, IdentityTypes.ASSET, "TST", _makeMgmtKey(alice), _emptyModules);
     }
 
-    /// @notice Once granted the configured role, a non-admin caller can mint asset identities.
+    /// @notice Once granted the ASSET role, a non-admin caller can mint asset identities.
     function test_createAssetIdentity_succeedsWhenCallerHasRole() public {
-        _restrictCreateForToTokenFactoryRole();
+        _restrictAssetToTokenFactoryRole();
 
-        // deployer is the AccessManager admin; grant alice the deploy role.
         vm.prank(deployer);
         setup.accessManager.grantRole(ROLE_TOKEN_FACTORY, alice, 0);
 
@@ -98,20 +98,21 @@ contract TokenOidTest is Test {
     }
 
     /// @notice AccessManager admins are NOT auto-members of arbitrary roles. After the
-    ///         deployer restricts createIdentityFor to ROLE_TOKEN_FACTORY, they must grant
-    ///         themselves that role explicitly to keep minting. This codifies
-    ///         least-privilege: "admin" only governs the role graph; it does not bypass it.
+    ///         deployer gates ASSET behind ROLE_TOKEN_FACTORY, they must grant themselves
+    ///         that role explicitly to keep minting.
     function test_createAssetIdentity_adminMustGrantSelfRoleToMint() public {
-        _restrictCreateForToTokenFactoryRole();
+        _restrictAssetToTokenFactoryRole();
 
         address token = makeAddr("adminToken");
 
-        // Without the role: the deployer (admin) cannot mint asset identities.
         vm.prank(deployer);
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Errors.NotAuthorizedForIdentityType.selector, deployer, IdentityTypes.ASSET, ROLE_TOKEN_FACTORY
+            )
+        );
         setup.idFactory.createIdentityFor(token, IdentityTypes.ASSET, "adminSalt", _makeMgmtKey(bob), _emptyModules);
 
-        // Grant themselves the role, then minting works.
         vm.prank(deployer);
         setup.accessManager.grantRole(ROLE_TOKEN_FACTORY, deployer, 0);
 

@@ -21,6 +21,13 @@ library Errors {
     /// @notice Reverts if the token is already linked
     error TokenAlreadyLinked(address token);
 
+    /// @notice Reverts when a caller tries to deploy an identity of a type whose
+    ///         configured AM role they do not hold.
+    /// @param caller the address that attempted the deployment.
+    /// @param identityType the identity type that was requested.
+    /// @param requiredRole the AM role id required for that type.
+    error NotAuthorizedForIdentityType(address caller, uint256 identityType, uint64 requiredRole);
+
     /// @notice Reverts if no key with MANAGEMENT purpose is provided
     error NoManagementKeyInKeys();
 

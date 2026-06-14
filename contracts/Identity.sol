@@ -35,6 +35,10 @@ import { ERC165 } from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
  */
 contract Identity is Initializable, SmartAccount, ERC165 {
 
+    /// @notice Emitted once, when an identity finishes initialization. Lets indexers
+    ///         classify identities at deploy time without an extra `eth_call`.
+    event IdentityInitialized(uint256 indexed identityType);
+
     /// @dev Account-level identity metadata.
     /// @custom:storage-location erc7201:onchainid.identity.metadata
     struct IdentityMetadata {
@@ -72,6 +76,7 @@ contract Identity is Initializable, SmartAccount, ERC165 {
         _getIdentityMetadata().identityType = _identityType;
         __AccountERC7579_init();
         __Identity_init(initialManagementKey);
+        emit IdentityInitialized(_identityType);
     }
 
     /// @notice Returns the identity type set at initialization.

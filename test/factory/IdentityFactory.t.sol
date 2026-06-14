@@ -18,6 +18,7 @@ import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { Structs } from "contracts/storage/Structs.sol";
+import { Vm } from "forge-std/Vm.sol";
 import { RevertingIdentity } from "test/mocks/RevertingIdentity.sol";
 
 contract IdentityFactoryTest is OnchainIDSetup {
@@ -106,41 +107,45 @@ contract IdentityFactoryTest is OnchainIDSetup {
         new IdentityFactory(address(0), address(onchainidSetup.accessManager));
     }
 
-    // ============ AccessManager gating ============
+    // ============ Per-identity-type gating ============
 
-    /// @dev Re-point a deploy selector at a fresh role and grant that role to no one.
-    ///      Every non-admin caller now reverts via the `restricted` modifier.
-    function _restrictDeployToFreshRole(bytes4 selector) internal returns (uint64 role) {
+    /// @dev Configure a fresh AM role as the gate for an identity type.
+    function _restrictTypeToFreshRole(uint256 identityType) internal returns (uint64 role) {
         role = 999;
-        bytes4[] memory selectors = new bytes4[](1);
-        selectors[0] = selector;
         vm.prank(deployer);
-        onchainidSetup.accessManager.setTargetFunctionRole(address(onchainidSetup.idFactory), selectors, role);
+        onchainidSetup.idFactory.setIdentityTypeRole(identityType, role);
     }
 
-    function test_createIdentityFor_revertWhenCallerLacksRole() public {
-        _restrictDeployToFreshRole(IIdentityFactory.createIdentityFor.selector);
+    function test_createIdentityFor_revertWhenCallerLacksTypeRole() public {
+        _restrictTypeToFreshRole(IdentityTypes.CLAIM_ISSUER);
 
         vm.prank(alice);
-        vm.expectRevert(); // AccessManagerUnauthorizedCall
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Errors.NotAuthorizedForIdentityType.selector, alice, IdentityTypes.CLAIM_ISSUER, uint64(999)
+            )
+        );
         onchainidSetup.idFactory
             .createIdentityFor(
-                david, IdentityTypes.INDIVIDUAL, "noRole", _makeSingleMgmtKeys(david), new Structs.ModuleInstall[](0)
+                david, IdentityTypes.CLAIM_ISSUER, "noRole", _makeSingleMgmtKeys(david), new Structs.ModuleInstall[](0)
             );
     }
 
     function test_createIdentityFor_adminMustGrantSelfRoleToCall() public {
-        // Lock the path down to a fresh role.
-        uint64 role = _restrictDeployToFreshRole(IIdentityFactory.createIdentityFor.selector);
+        uint64 role = _restrictTypeToFreshRole(IdentityTypes.CLAIM_ISSUER);
 
-        // OZ AccessManager has no admin bypass on target-function checks — admin sets the
-        // role graph but must still hold the configured role to call.
+        // OZ AccessManager has no admin bypass on hasRole — admin sets the role graph
+        // but must still hold the role to call.
         vm.prank(deployer);
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Errors.NotAuthorizedForIdentityType.selector, deployer, IdentityTypes.CLAIM_ISSUER, role
+            )
+        );
         onchainidSetup.idFactory
             .createIdentityFor(
                 david,
-                IdentityTypes.INDIVIDUAL,
+                IdentityTypes.CLAIM_ISSUER,
                 "adminNoRole",
                 _makeSingleMgmtKeys(david),
                 new Structs.ModuleInstall[](0)
@@ -153,7 +158,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         address identityAddr = onchainidSetup.idFactory
             .createIdentityFor(
                 david,
-                IdentityTypes.INDIVIDUAL,
+                IdentityTypes.CLAIM_ISSUER,
                 "adminWithRole",
                 _makeSingleMgmtKeys(david),
                 new Structs.ModuleInstall[](0)
@@ -161,8 +166,8 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertTrue(identityAddr != address(0));
     }
 
-    function test_createIdentityFor_nonAdminWithRoleCanCall() public {
-        uint64 role = _restrictDeployToFreshRole(IIdentityFactory.createIdentityFor.selector);
+    function test_createIdentityFor_nonAdminWithTypeRoleCanCall() public {
+        uint64 role = _restrictTypeToFreshRole(IdentityTypes.CLAIM_ISSUER);
 
         vm.prank(deployer);
         onchainidSetup.accessManager.grantRole(role, alice, 0);
@@ -174,15 +179,45 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertTrue(identityAddr != address(0));
     }
 
-    function test_createIdentity_revertWhenCallerLacksRole() public {
-        _restrictDeployToFreshRole(IIdentityFactory.createIdentity.selector);
-
+    /// @notice With no role configured (default), createIdentityFor is open for that type.
+    function test_createIdentityFor_openTypeNeedsNoRole() public {
         vm.prank(alice);
-        vm.expectRevert(); // AccessManagerUnauthorizedCall
-        onchainidSetup.idFactory
-            .createIdentity(
-                IdentityTypes.INDIVIDUAL, "noSelfRole", _makeSingleMgmtKeys(alice), new Structs.ModuleInstall[](0)
+        address identityAddr = onchainidSetup.idFactory
+            .createIdentityFor(
+                david, IdentityTypes.INDIVIDUAL, "openType", _makeSingleMgmtKeys(david), new Structs.ModuleInstall[](0)
             );
+        assertTrue(identityAddr != address(0));
+    }
+
+    /// @notice createIdentity (self-deploy) is always open, regardless of per-type role.
+    function test_createIdentity_selfDeployIgnoresTypeRole() public {
+        _restrictTypeToFreshRole(IdentityTypes.CLAIM_ISSUER);
+
+        // Fresh EOA, no role, but self-deploy is unconditional.
+        address selfDeployer = makeAddr("selfIssuerEoa");
+        vm.prank(selfDeployer);
+        address identityAddr = onchainidSetup.idFactory
+            .createIdentity(
+                IdentityTypes.CLAIM_ISSUER,
+                "selfIssuer",
+                _makeSingleMgmtKeys(selfDeployer),
+                new Structs.ModuleInstall[](0)
+            );
+        assertTrue(identityAddr != address(0));
+    }
+
+    function test_setIdentityTypeRole_emitsEventAndUpdatesView() public {
+        vm.prank(deployer);
+        vm.expectEmit(true, true, false, false, address(onchainidSetup.idFactory));
+        emit IIdentityFactory.IdentityTypeRoleSet(IdentityTypes.CLAIM_ISSUER, 123);
+        onchainidSetup.idFactory.setIdentityTypeRole(IdentityTypes.CLAIM_ISSUER, 123);
+        assertEq(onchainidSetup.idFactory.getIdentityTypeRole(IdentityTypes.CLAIM_ISSUER), 123);
+    }
+
+    function test_setIdentityTypeRole_revertForNonAdmin() public {
+        vm.prank(alice);
+        vm.expectRevert(); // AccessManagerUnauthorizedAccount
+        onchainidSetup.idFactory.setIdentityTypeRole(IdentityTypes.CLAIM_ISSUER, 7);
     }
 
     // ============ createIdentityFor (validation) ============
@@ -617,6 +652,32 @@ contract IdentityFactoryTest is OnchainIDSetup {
             );
         assertTrue(identityAddr != address(0));
         assertEq(onchainidSetup.idFactory.getIdentity(_asAccount(eoa)), identityAddr, "self-deployer auto-linked");
+    }
+
+    // ============ IdentityInitialized event ============
+
+    function test_createIdentity_emitsIdentityInitialized() public {
+        address eoa = makeAddr("eventEoa");
+        // Precompute the proxy address so we can scope vm.expectEmit to it.
+        // Easier: emit-watch any address, then check after.
+        vm.recordLogs();
+        vm.prank(eoa);
+        address identityAddr = onchainidSetup.idFactory
+            .createIdentity(
+                IdentityTypes.INDIVIDUAL, "evtSalt", _makeSingleMgmtKeys(eoa), new Structs.ModuleInstall[](0)
+            );
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 expectedTopic0 = keccak256("IdentityInitialized(uint256)");
+        bool found = false;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].emitter == identityAddr && logs[i].topics[0] == expectedTopic0) {
+                assertEq(uint256(logs[i].topics[1]), IdentityTypes.INDIVIDUAL, "type topic should match");
+                found = true;
+                break;
+            }
+        }
+        assertTrue(found, "IdentityInitialized event not emitted by the new identity");
     }
 
 }

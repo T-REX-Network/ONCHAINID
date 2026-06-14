@@ -10,8 +10,8 @@ import {
 } from "@openzeppelin/contracts/utils/cryptography/verifiers/ERC7913WebAuthnVerifier.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IdentityUtilities } from "contracts/IdentityUtilities.sol";
-import { IIdentityFactory } from "contracts/factory/IIdentityFactory.sol";
 import { IdentityFactory } from "contracts/factory/IdentityFactory.sol";
+import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { ClaimsModule } from "contracts/modules/claims/ClaimsModule.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
 import { ERC7579Signature } from "contracts/modules/validators/ERC7579Signature.sol";
@@ -102,19 +102,16 @@ contract DeployOnchainID is Script {
         // (`beacon.upgradeTo(newImpl)`) go through the same role gating as everything else.
         beacon.transferOwnership(address(am));
 
-        // ===== Phase 3: AccessManager target-function wiring =====
-        // The factory's two deploy paths are both `restricted`. Gating happens at the
-        // AM via `setTargetFunctionRole(target, [selector], roleId)`:
-        //   - createIdentity (self-deploy) -> PUBLIC_ROLE (anyone can self-deploy).
-        //   - createIdentityFor            -> ROLE_TOKEN_FACTORY (only registered factories).
-        // Operators can re-point either selector at a different role later.
-        bytes4[] memory createSelector = new bytes4[](1);
-        createSelector[0] = IIdentityFactory.createIdentity.selector;
-        am.setTargetFunctionRole(address(idFactory), createSelector, am.PUBLIC_ROLE());
-
-        bytes4[] memory createForSelector = new bytes4[](1);
-        createForSelector[0] = IIdentityFactory.createIdentityFor.selector;
-        am.setTargetFunctionRole(address(idFactory), createForSelector, ROLE_TOKEN_FACTORY);
+        // ===== Phase 3: per-identity-type deploy gating =====
+        // createIdentity (self-deploy) is always open: the caller can only deploy for
+        // themselves, so per-type gating is unnecessary.
+        //
+        // createIdentityFor consults `identityTypeRoles[_identityType]`. A type with role 0
+        // is open; a type with a non-zero role can only be deployed by callers who hold
+        // that role on the AM. We restrict the security-sensitive types here and leave
+        // everything else open by default.
+        idFactory.setIdentityTypeRole(IdentityTypes.ASSET, ROLE_TOKEN_FACTORY);
+        idFactory.setIdentityTypeRole(IdentityTypes.CLAIM_ISSUER, ROLE_CLAIM_ISSUER_ADMIN);
 
         // 7. ERC-7913 WebAuthn Verifier (stateless — verifies P-256 WebAuthn assertions on-chain)
         ERC7913WebAuthnVerifier webAuthnVerifier = new ERC7913WebAuthnVerifier();

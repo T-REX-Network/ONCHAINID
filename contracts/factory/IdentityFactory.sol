@@ -2,6 +2,7 @@
 pragma solidity ^0.8.27;
 
 import { AccessManaged } from "@openzeppelin/contracts/access/manager/AccessManaged.sol";
+import { IAccessManager } from "@openzeppelin/contracts/access/manager/IAccessManager.sol";
 import { Nonces } from "@openzeppelin/contracts/utils/Nonces.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import { SignatureChecker } from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
@@ -22,13 +23,14 @@ import { Create3 } from "../vendor/utils/Create3.sol";
 import { IIdentityFactory } from "./IIdentityFactory.sol";
 
 /// @title IdentityFactory
-/// @notice Deploys ONCHAINID identity proxies. Both deploy paths are gated by the
-///         AccessManager through `restricted`.
+/// @notice Deploys ONCHAINID identity proxies.
 ///         createIdentity: caller deploys for themselves and is auto-linked as the
-///         first wallet.
+///         first wallet. Always open; no per-type gate (you can only deploy for
+///         yourself, so nothing to abuse).
 ///         createIdentityFor: caller deploys for an EVM account that cannot sign
-///         (a token, a vault).
-///         Admin configures access per selector via `setTargetFunctionRole` on the AM.
+///         (a token, a vault). Gated per identity type via the attached AccessManager.
+///         Each type maps to an AM role through setIdentityTypeRole. A type with role
+///         0 is open; a non-zero role restricts the call to its holders.
 ///         Wallets and signers share the same bytes shape. Bindings are sticky and
 ///         revocation is terminal.
 contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
@@ -59,6 +61,8 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         mapping(bytes32 walletKey => WalletEntry entry) wallets;
         mapping(address identity => EnumerableSet.Bytes32Set walletKeys) accounts;
         mapping(address identity => bool deployedByFactory) isFactoryIdentity;
+        /// @dev AM role required to deploy each identity type. 0 means open.
+        mapping(uint256 identityType => uint64 roleId) identityTypeRoles;
     }
 
     // keccak256(abi.encode(uint256(keccak256("onchainid.IdentityFactory")) - 1)) & ~bytes32(uint256(0xff))
@@ -83,9 +87,11 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         beacon = beaconAddress;
     }
 
-    // ---------------------------------------------------------------------------------------
-    // Deploy paths
-    // ---------------------------------------------------------------------------------------
+    /// @inheritdoc IIdentityFactory
+    function setIdentityTypeRole(uint256 _identityType, uint64 _roleId) external restricted {
+        _storage().identityTypeRoles[_identityType] = _roleId;
+        emit IdentityTypeRoleSet(_identityType, _roleId);
+    }
 
     /// @inheritdoc IIdentityFactory
     function createIdentity(
@@ -93,8 +99,9 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         string memory _salt,
         Structs.KeyParam[] memory _keys,
         Structs.ModuleInstall[] memory _modules
-    ) external restricted returns (address) {
-        // Caller is the account. Auto-link them as the first wallet.
+    ) external returns (address) {
+        // Self-deploy is always open. The caller becomes the new identity's first wallet,
+        // so no third-party squatting is possible.
         return _doCreateIdentity(abi.encodePacked(msg.sender), _identityType, _salt, _keys, _modules);
     }
 
@@ -105,14 +112,11 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         string memory _salt,
         Structs.KeyParam[] memory _keys,
         Structs.ModuleInstall[] memory _modules
-    ) external restricted returns (address) {
+    ) external returns (address) {
+        _checkTypeRole(_identityType, msg.sender);
         require(_account != address(0), Errors.ZeroAddress());
         return _doCreateIdentity(abi.encodePacked(_account), _identityType, _salt, _keys, _modules);
     }
-
-    // ---------------------------------------------------------------------------------------
-    // Wallet linking surface
-    // ---------------------------------------------------------------------------------------
 
     /// @inheritdoc IIdentityFactory
     function linkAccount(bytes calldata account, bytes calldata signature, uint256 nonce, uint256 expiry) external {
@@ -150,10 +154,6 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         require(_storage().wallets[key].identity == msg.sender, Errors.WalletNotLinkedToIdentity(account));
         _revokeAccount(account, msg.sender);
     }
-
-    // ---------------------------------------------------------------------------------------
-    // Views
-    // ---------------------------------------------------------------------------------------
 
     /// @inheritdoc IIdentityFactory
     function getIdentity(bytes calldata account) external view returns (address) {
@@ -196,9 +196,19 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         return super.nonces(_addressKeyForAccount(account));
     }
 
-    // ---------------------------------------------------------------------------------------
-    // Internal helpers
-    // ---------------------------------------------------------------------------------------
+    /// @inheritdoc IIdentityFactory
+    function getIdentityTypeRole(uint256 _identityType) external view returns (uint64) {
+        return _storage().identityTypeRoles[_identityType];
+    }
+
+    /// @dev Per-type gate for {createIdentityFor}. Role 0 means open: skip the AM lookup
+    ///      so an unconfigured type stays freely deployable.
+    function _checkTypeRole(uint256 _identityType, address caller) private view {
+        uint64 requiredRole = _storage().identityTypeRoles[_identityType];
+        if (requiredRole == 0) return;
+        (bool isMember,) = IAccessManager(authority()).hasRole(requiredRole, caller);
+        require(isMember, Errors.NotAuthorizedForIdentityType(caller, _identityType, requiredRole));
+    }
 
     /// @dev keccak256(account) cast to address. Used as the nonce key so OZ Nonces
     ///      (address-keyed) works for ERC-7913 signers (passkeys etc.). Not a real

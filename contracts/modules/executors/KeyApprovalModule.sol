@@ -64,10 +64,6 @@ contract KeyApprovalModule is IERC7579Module {
         address indexed account, uint256 indexed executionId, address indexed to, uint256 value, bytes data
     );
 
-    // -----------------------------------------------------------------------
-    // ERC-7579 module metadata
-    // -----------------------------------------------------------------------
-
     /// @inheritdoc IERC7579Module
     function isModuleType(uint256 moduleTypeId) public pure returns (bool) {
         return moduleTypeId == MODULE_TYPE_EXECUTOR || moduleTypeId == MODULE_TYPE_FALLBACK;
@@ -78,10 +74,6 @@ contract KeyApprovalModule is IERC7579Module {
 
     /// @inheritdoc IERC7579Module
     function onUninstall(bytes calldata) external pure { }
-
-    // -----------------------------------------------------------------------
-    // ERC-734 ABI — invoked through the account's fallback handler
-    // -----------------------------------------------------------------------
 
     /// @notice Queue an execution for the calling identity. Auto-runs if the caller's key
     ///         purpose authorizes it; otherwise waits for {approve}.
@@ -171,10 +163,6 @@ contract KeyApprovalModule is IERC7579Module {
         require(account == msg.sender, Errors.UnauthorizedPolicyQuery());
         return _canAutoApprove(account, keyHash, target, data);
     }
-
-    // -----------------------------------------------------------------------
-    // Internals
-    // -----------------------------------------------------------------------
 
     /// @dev Auto-approval policy. See contract NatSpec for the rule table.
     function _canAutoApprove(address account, bytes32 keyHash, address to, bytes calldata data)

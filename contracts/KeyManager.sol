@@ -73,10 +73,6 @@ contract KeyManager is IERC734 {
         _;
     }
 
-    // -----------------------------------------------------------------------
-    // ERC-734 registry — reads
-    // -----------------------------------------------------------------------
-
     /// @notice Returns the full key data, if present.
     function getKey(bytes32 _key)
         external
@@ -120,10 +116,6 @@ contract KeyManager is IERC734 {
         if (ks.keys[_key].key == 0) return false;
         return ks.keys[_key].purposes.contains(_purpose) || ks.keys[_key].purposes.contains(KeyPurposes.MANAGEMENT);
     }
-
-    // -----------------------------------------------------------------------
-    // ERC-734 registry — writes
-    // -----------------------------------------------------------------------
 
     /**
      * @notice Add a key with `_purpose`.
@@ -248,10 +240,6 @@ contract KeyManager is IERC734 {
 
         emit KeyAdded(_key, _purpose, _type);
     }
-
-    // -----------------------------------------------------------------------
-    // Internals
-    // -----------------------------------------------------------------------
 
     function _checkDelegated() internal view {
         require(_getKeyStorage().canInteract, Errors.InteractingWithLibraryContractForbidden());

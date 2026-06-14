@@ -10,7 +10,6 @@ import {
 import { BeaconProxy } from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
 import { UpgradeableBeacon } from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import { Identity } from "contracts/Identity.sol";
-import { IIdentityFactory } from "contracts/factory/IIdentityFactory.sol";
 import { IdentityFactory } from "contracts/factory/IdentityFactory.sol";
 import { IClaimIssuer } from "contracts/interface/IClaimIssuer.sol";
 import { IERC735 } from "contracts/interface/IERC735.sol";
@@ -42,11 +41,11 @@ library IdentityHelper {
         ClaimsModule claimsModule;
     }
 
-    /// @notice Deploys complete Identity Factory infrastructure. Wires an AccessManager
-    ///         whose initial admin is `managementKey` and opens every identity type to
-    ///         `PUBLIC_ROLE` so that existing tests (which expect the deployer to be able
-    ///         to mint identities of any type) keep working without per-test plumbing.
-    ///         Tests that exercise the gating itself should redeploy with a custom config.
+    /// @notice Deploys complete Identity Factory infrastructure with an AccessManager
+    ///         whose initial admin is `managementKey`. All identity types default to
+    ///         open (role 0), so tests can mint any type for any address without extra
+    ///         plumbing. Tests that exercise the gating should call `setIdentityTypeRole`
+    ///         on the factory.
     /// @param managementKey The initial management key address (also initial admin of the
     ///        AccessManager).
     /// @return setup Struct containing all deployed contracts
@@ -60,14 +59,6 @@ library IdentityHelper {
         setup.beacon = new UpgradeableBeacon(address(setup.identityImplementation), managementKey);
         setup.accessManager = new AccessManager(managementKey);
         setup.idFactory = new IdentityFactory(address(setup.beacon), address(setup.accessManager));
-
-        // Default test policy: both deploy paths open to PUBLIC_ROLE so test setUps can mint
-        // identities for arbitrary addresses without per-test plumbing. Production deployments
-        // use a stricter policy — see `scripts/DeployOnchainID.s.sol`.
-        bytes4[] memory deploySelectors = new bytes4[](2);
-        deploySelectors[0] = IIdentityFactory.createIdentity.selector;
-        deploySelectors[1] = IIdentityFactory.createIdentityFor.selector;
-        setup.accessManager.setTargetFunctionRole(address(setup.idFactory), deploySelectors, PUBLIC_ROLE);
     }
 
     /// @notice Builds the full default-module install list: legacy queue (execute/approve) +
