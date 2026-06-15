@@ -28,6 +28,11 @@ library Errors {
     /// @param requiredRole the AM role id required for that type.
     error NotAuthorizedForIdentityType(address caller, uint256 identityType, uint64 requiredRole);
 
+    /// @notice Reverts when a deploy is attempted for a type the admin has not registered.
+    ///         Admin enables a type by calling `setIdentityTypeRole`. Use the AM's
+    ///         `PUBLIC_ROLE` for open types.
+    error UnknownIdentityType(uint256 identityType);
+
     /// @notice Reverts if no key with MANAGEMENT purpose is provided
     error NoManagementKeyInKeys();
 

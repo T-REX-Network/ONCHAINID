@@ -25,12 +25,11 @@ import { IIdentityFactory } from "./IIdentityFactory.sol";
 /// @title IdentityFactory
 /// @notice Deploys ONCHAINID identity proxies.
 ///         createIdentity: caller deploys for themselves and is auto-linked as the
-///         first wallet. Always open; no per-type gate (you can only deploy for
-///         yourself, so nothing to abuse).
+///         first wallet. Always open; you can only deploy for yourself.
 ///         createIdentityFor: caller deploys for an EVM account that cannot sign
-///         (a token, a vault). Gated per identity type via the attached AccessManager.
-///         Each type maps to an AM role through setIdentityTypeRole. A type with role
-///         0 is open; a non-zero role restricts the call to its holders.
+///         (a token, a vault). Admin must register each identity type up front via
+///         setIdentityTypeRole. Unregistered types revert. Use the AM's PUBLIC_ROLE
+///         for open types; any other role restricts the call to its holders.
 ///         Wallets and signers share the same bytes shape. Bindings are sticky and
 ///         revocation is terminal.
 contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
@@ -61,7 +60,8 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         mapping(bytes32 walletKey => WalletEntry entry) wallets;
         mapping(address identity => EnumerableSet.Bytes32Set walletKeys) accounts;
         mapping(address identity => bool deployedByFactory) isFactoryIdentity;
-        /// @dev AM role required to deploy each identity type. 0 means open.
+        /// @dev AM role required to deploy each identity type. 0 means the type has
+        ///      not been registered; createIdentityFor reverts for unregistered types.
         mapping(uint256 identityType => uint64 roleId) identityTypeRoles;
     }
 
@@ -202,11 +202,11 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         return _storage().identityTypeRoles[_identityType];
     }
 
-    /// @dev Per-type gate for {createIdentityFor}. Role 0 means open: skip the AM lookup
-    ///      so an unconfigured type stays freely deployable.
+    /// @dev Per-type gate for {createIdentityFor}. Unknown types revert. Admin registers
+    ///      a type with `setIdentityTypeRole` (use the AM's `PUBLIC_ROLE` for open types).
     function _checkTypeRole(uint256 _identityType, address caller) private view {
         uint64 requiredRole = _storage().identityTypeRoles[_identityType];
-        if (requiredRole == 0) return;
+        require(requiredRole != 0, Errors.UnknownIdentityType(_identityType));
         (bool isMember,) = IAccessManager(authority()).hasRole(requiredRole, caller);
         require(isMember, Errors.NotAuthorizedForIdentityType(caller, _identityType, requiredRole));
     }

@@ -106,12 +106,22 @@ contract DeployOnchainID is Script {
         // createIdentity (self-deploy) is always open: the caller can only deploy for
         // themselves, so per-type gating is unnecessary.
         //
-        // createIdentityFor consults `identityTypeRoles[_identityType]`. A type with role 0
-        // is open; a type with a non-zero role can only be deployed by callers who hold
-        // that role on the AM. We restrict the security-sensitive types here and leave
-        // everything else open by default.
+        // createIdentityFor consults `identityTypeRoles[_identityType]`. Unregistered
+        // types revert. We pin the security-sensitive types to specific roles and the
+        // rest to PUBLIC_ROLE so anyone can mint them.
+        uint64 publicRole = am.PUBLIC_ROLE();
+
+        // Gated types: only role holders may mint.
         idFactory.setIdentityTypeRole(IdentityTypes.ASSET, ROLE_TOKEN_FACTORY);
         idFactory.setIdentityTypeRole(IdentityTypes.CLAIM_ISSUER, ROLE_CLAIM_ISSUER_ADMIN);
+
+        // Open types: anyone may mint. Listed explicitly so they're known to the factory.
+        idFactory.setIdentityTypeRole(IdentityTypes.INDIVIDUAL, publicRole);
+        idFactory.setIdentityTypeRole(IdentityTypes.CORPORATE, publicRole);
+        idFactory.setIdentityTypeRole(IdentityTypes.IOT, publicRole);
+        idFactory.setIdentityTypeRole(IdentityTypes.SMART_CONTRACT, publicRole);
+        idFactory.setIdentityTypeRole(IdentityTypes.PUBLIC_AUTHORITY, publicRole);
+        idFactory.setIdentityTypeRole(IdentityTypes.AI_AGENT, publicRole);
 
         // 7. ERC-7913 WebAuthn Verifier (stateless — verifies P-256 WebAuthn assertions on-chain)
         ERC7913WebAuthnVerifier webAuthnVerifier = new ERC7913WebAuthnVerifier();

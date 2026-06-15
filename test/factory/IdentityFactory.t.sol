@@ -179,14 +179,27 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertTrue(identityAddr != address(0));
     }
 
-    /// @notice With no role configured (default), createIdentityFor is open for that type.
-    function test_createIdentityFor_openTypeNeedsNoRole() public {
+    /// @notice Types registered with PUBLIC_ROLE are deployable by anyone.
+    function test_createIdentityFor_publicRoleTypeIsOpen() public {
+        // The test helper registers INDIVIDUAL with PUBLIC_ROLE at setUp.
         vm.prank(alice);
         address identityAddr = onchainidSetup.idFactory
             .createIdentityFor(
                 david, IdentityTypes.INDIVIDUAL, "openType", _makeSingleMgmtKeys(david), new Structs.ModuleInstall[](0)
             );
         assertTrue(identityAddr != address(0));
+    }
+
+    /// @notice Unregistered types revert. This closes the bypass where a caller could
+    ///         pick a random uint and slip past the gating.
+    function test_createIdentityFor_revertOnUnregisteredType() public {
+        uint256 unknownType = 99999999;
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(Errors.UnknownIdentityType.selector, unknownType));
+        onchainidSetup.idFactory
+            .createIdentityFor(
+                david, unknownType, "unknown", _makeSingleMgmtKeys(david), new Structs.ModuleInstall[](0)
+            );
     }
 
     /// @notice createIdentity (self-deploy) is always open, regardless of per-type role.

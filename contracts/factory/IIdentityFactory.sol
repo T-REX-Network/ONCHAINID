@@ -7,9 +7,9 @@ import { Structs } from "../storage/Structs.sol";
 /// @notice Factory for ONCHAINID identity proxies. Deployment is gated per identity type
 ///         using an OpenZeppelin AccessManager as the role oracle.
 ///
-///         Each type maps to an AM role via {setIdentityTypeRole}. A type with role 0 is
-///         open: anyone may deploy it. A type with a non-zero role can only be deployed
-///         by callers who hold that role on the AM.
+///         Admin must register each type up front via {setIdentityTypeRole}. Unregistered
+///         types revert. Use the AM's `PUBLIC_ROLE` for open types; any other role
+///         restricts the call to its holders.
 ///
 ///         {setIdentityTypeRole} itself is `restricted` (resolved by the AM).
 ///
@@ -58,7 +58,8 @@ interface IIdentityFactory {
 
     /// @notice Deploy for an EVM account that cannot sign (a token, a vault). The
     ///         account is auto-linked as the identity's first wallet. Caller must hold
-    ///         the role configured for `_identityType` (or any caller if the type is open).
+    ///         the role configured for `_identityType` (use `PUBLIC_ROLE` for open types).
+    ///         Unregistered types revert.
     function createIdentityFor(
         address _account,
         uint256 _identityType,
@@ -71,7 +72,8 @@ interface IIdentityFactory {
     ///         `roleId == 0` to mark the type as open. `restricted` via the AM.
     function setIdentityTypeRole(uint256 _identityType, uint64 _roleId) external;
 
-    /// @notice AM role required to deploy `_identityType`. 0 means open.
+    /// @notice AM role required to deploy `_identityType`. Returns 0 if the type
+    ///         has not been registered.
     function getIdentityTypeRole(uint256 _identityType) external view returns (uint64);
 
     /// @notice Link a wallet (signer bytes) to the calling identity. The wallet
