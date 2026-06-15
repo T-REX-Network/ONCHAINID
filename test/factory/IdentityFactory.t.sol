@@ -326,13 +326,13 @@ contract IdentityFactoryTest is OnchainIDSetup {
     function test_linkAccount_eoaSignerLinksThroughIdentity() public {
         bytes memory davidAcc = _asAccount(david);
         uint256 expiry = block.timestamp + 1 hours;
-        uint256 nonce = onchainidSetup.idFactory.noncesForAccount(davidAcc);
+        uint256 nonce = onchainidSetup.idFactory.nonceForAccount(davidAcc);
         bytes memory sig = _signLink(davidPk, davidAcc, address(aliceIdentity), nonce, expiry);
 
         _execLink(aliceIdentity, alice, davidAcc, sig, nonce, expiry);
 
         assertEq(onchainidSetup.idFactory.getIdentity(davidAcc), address(aliceIdentity));
-        assertEq(onchainidSetup.idFactory.noncesForAccount(davidAcc), nonce + 1);
+        assertEq(onchainidSetup.idFactory.nonceForAccount(davidAcc), nonce + 1);
     }
 
     function test_linkAccount_revertExpiredSignature() public {
@@ -370,7 +370,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
     function test_linkAccount_revertReplay() public {
         bytes memory davidAcc = _asAccount(david);
         uint256 expiry = block.timestamp + 1 hours;
-        uint256 nonce = onchainidSetup.idFactory.noncesForAccount(davidAcc);
+        uint256 nonce = onchainidSetup.idFactory.nonceForAccount(davidAcc);
         bytes memory sig = _signLink(davidPk, davidAcc, address(aliceIdentity), nonce, expiry);
 
         _execLink(aliceIdentity, alice, davidAcc, sig, nonce, expiry);
@@ -383,7 +383,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
     function test_linkAccount_revertSignatureNamesWrongIdentity() public {
         bytes memory davidAcc = _asAccount(david);
         uint256 expiry = block.timestamp + 1 hours;
-        uint256 nonce = onchainidSetup.idFactory.noncesForAccount(davidAcc);
+        uint256 nonce = onchainidSetup.idFactory.nonceForAccount(davidAcc);
         bytes memory sig = _signLink(davidPk, davidAcc, address(bobIdentity), nonce, expiry);
 
         vm.prank(address(aliceIdentity));
@@ -397,7 +397,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         MockERC1271Wallet sw = new MockERC1271Wallet(carol);
         bytes memory swAcc = _asAccount(address(sw));
         uint256 expiry = block.timestamp + 1 hours;
-        uint256 nonce = onchainidSetup.idFactory.noncesForAccount(swAcc);
+        uint256 nonce = onchainidSetup.idFactory.nonceForAccount(swAcc);
         bytes memory sig = _signLink(carolPk, swAcc, address(aliceIdentity), nonce, expiry);
 
         _execLink(aliceIdentity, alice, swAcc, sig, nonce, expiry);
@@ -447,7 +447,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
     function test_revokeAccount_byIdentity_marksRevokedAndClearsActive() public {
         bytes memory davidAcc = _asAccount(david);
         uint256 expiry = block.timestamp + 1 hours;
-        uint256 nonce = onchainidSetup.idFactory.noncesForAccount(davidAcc);
+        uint256 nonce = onchainidSetup.idFactory.nonceForAccount(davidAcc);
         bytes memory sig = _signLink(davidPk, davidAcc, address(aliceIdentity), nonce, expiry);
         _execLink(aliceIdentity, alice, davidAcc, sig, nonce, expiry);
 
@@ -466,7 +466,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
     function test_revokeAccount_revertWhenCallerIsNotBoundIdentity() public {
         bytes memory davidAcc = _asAccount(david);
         uint256 expiry = block.timestamp + 1 hours;
-        uint256 nonce = onchainidSetup.idFactory.noncesForAccount(davidAcc);
+        uint256 nonce = onchainidSetup.idFactory.nonceForAccount(davidAcc);
         bytes memory sig = _signLink(davidPk, davidAcc, address(aliceIdentity), nonce, expiry);
         _execLink(aliceIdentity, alice, davidAcc, sig, nonce, expiry);
 
@@ -478,12 +478,12 @@ contract IdentityFactoryTest is OnchainIDSetup {
     function test_linkAccount_revertWhenWalletAlreadyRevoked() public {
         bytes memory davidAcc = _asAccount(david);
         uint256 expiry = block.timestamp + 1 hours;
-        uint256 nonce = onchainidSetup.idFactory.noncesForAccount(davidAcc);
+        uint256 nonce = onchainidSetup.idFactory.nonceForAccount(davidAcc);
         bytes memory sig = _signLink(davidPk, davidAcc, address(aliceIdentity), nonce, expiry);
         _execLink(aliceIdentity, alice, davidAcc, sig, nonce, expiry);
         _execRevoke(aliceIdentity, alice, davidAcc);
 
-        uint256 nonce2 = onchainidSetup.idFactory.noncesForAccount(davidAcc);
+        uint256 nonce2 = onchainidSetup.idFactory.nonceForAccount(davidAcc);
         uint256 expiry2 = block.timestamp + 1 hours;
         bytes memory sig2 = _signLink(davidPk, davidAcc, address(aliceIdentity), nonce2, expiry2);
 
@@ -495,11 +495,11 @@ contract IdentityFactoryTest is OnchainIDSetup {
     function test_linkAccount_revertWhenWalletBoundToAnotherIdentity() public {
         bytes memory davidAcc = _asAccount(david);
         uint256 expiry = block.timestamp + 1 hours;
-        uint256 nonce = onchainidSetup.idFactory.noncesForAccount(davidAcc);
+        uint256 nonce = onchainidSetup.idFactory.nonceForAccount(davidAcc);
         bytes memory sig = _signLink(davidPk, davidAcc, address(aliceIdentity), nonce, expiry);
         _execLink(aliceIdentity, alice, davidAcc, sig, nonce, expiry);
 
-        uint256 nonce2 = onchainidSetup.idFactory.noncesForAccount(davidAcc);
+        uint256 nonce2 = onchainidSetup.idFactory.nonceForAccount(davidAcc);
         uint256 expiry2 = block.timestamp + 1 hours;
         bytes memory sig2 = _signLink(davidPk, davidAcc, address(bobIdentity), nonce2, expiry2);
 
@@ -523,9 +523,9 @@ contract IdentityFactoryTest is OnchainIDSetup {
         bytes memory davidAcc = _asAccount(david);
         bytes memory carolAcc = _asAccount(carol);
         uint256 ex = block.timestamp + 1 hours;
-        uint256 nd = onchainidSetup.idFactory.noncesForAccount(davidAcc);
+        uint256 nd = onchainidSetup.idFactory.nonceForAccount(davidAcc);
         _execLink(aliceIdentity, alice, davidAcc, _signLink(davidPk, davidAcc, address(aliceIdentity), nd, ex), nd, ex);
-        uint256 nc = onchainidSetup.idFactory.noncesForAccount(carolAcc);
+        uint256 nc = onchainidSetup.idFactory.nonceForAccount(carolAcc);
         _execLink(aliceIdentity, alice, carolAcc, _signLink(carolPk, carolAcc, address(aliceIdentity), nc, ex), nc, ex);
 
         bytes[] memory all = onchainidSetup.idFactory.getAccounts(address(aliceIdentity));

@@ -83,7 +83,7 @@ interface IIdentityFactory {
     ///         smart wallets, raw ERC-7913 signer blob for passkeys / custom verifiers.
     /// @param signature EIP-712 signature produced by `account` over
     ///         `LinkAccount(bytes account,address identity,uint256 nonce,uint256 expiry)`.
-    /// @param nonce current nonce for `account` (see {noncesForAccount}).
+    /// @param nonce current nonce for `account` (see {nonceForAccount}).
     /// @param expiry unix timestamp after which the signature is invalid. `expiry == 0`
     ///         reverts. Callers must set freshness explicitly because the binding is
     ///         permanent once consumed.
@@ -120,7 +120,7 @@ interface IIdentityFactory {
 
     /// @notice Current nonce for a signer. Keyed by `keccak256(account)` cast to address
     ///         so EVM and ERC-7913 signers share the same nonce store.
-    function noncesForAccount(bytes calldata account) external view returns (uint256);
+    function nonceForAccount(bytes calldata account) external view returns (uint256);
 
     /**
      * @dev OZ UpgradeableBeacon every BeaconProxy deployed here delegates to.

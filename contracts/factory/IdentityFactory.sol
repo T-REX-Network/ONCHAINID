@@ -83,6 +83,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         EIP712("IdentityFactory", "1")
     {
         require(beaconAddress != address(0), Errors.ZeroAddress());
+        require(initialAuthority != address(0), Errors.ZeroAddress());
 
         beacon = beaconAddress;
     }
@@ -192,7 +193,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
     }
 
     /// @inheritdoc IIdentityFactory
-    function noncesForAccount(bytes calldata account) external view returns (uint256) {
+    function nonceForAccount(bytes calldata account) external view returns (uint256) {
         return super.nonces(_addressKeyForAccount(account));
     }
 
@@ -225,7 +226,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         Structs.KeyParam[] memory _keys,
         Structs.ModuleInstall[] memory _modules
     ) private returns (address) {
-        require(keccak256(bytes(_salt)) != keccak256(""), Errors.EmptyString());
+        require(bytes(_salt).length != 0, Errors.EmptyString());
         require(_keys.length > 0, Errors.EmptyListOfKeys());
 
         // Asset identities are deployed for a token contract, always a 20-byte EVM address.
