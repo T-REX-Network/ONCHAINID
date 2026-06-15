@@ -73,7 +73,7 @@ contract KeyManager is IERC734 {
         _;
     }
 
-    /// @notice Returns the full key data, if present.
+    /// @inheritdoc IERC734
     function getKey(bytes32 _key)
         external
         view
@@ -85,12 +85,12 @@ contract KeyManager is IERC734 {
         return (ks.keys[_key].purposes.values(), ks.keys[_key].keyType, ks.keys[_key].key);
     }
 
-    /// @notice Returns the purposes associated with a key.
+    /// @inheritdoc IERC734
     function getKeyPurposes(bytes32 _key) external view virtual override returns (uint256[] memory _purposes) {
         return _getKeyStorage().keys[_key].purposes.values();
     }
 
-    /// @notice Returns all key hashes registered with a given purpose.
+    /// @inheritdoc IERC734
     function getKeysByPurpose(uint256 _purpose) external view virtual override returns (bytes32[] memory keys) {
         return _getKeyStorage().keysByPurpose[_purpose].values();
     }
@@ -107,21 +107,17 @@ contract KeyManager is IERC734 {
         return (ks.keys[_keyHash].signerData, ks.keys[_keyHash].clientData);
     }
 
-    /**
-     * @notice Returns true if `_key` has `_purpose`, OR has MANAGEMENT (universal permission).
-     * @dev O(1) via EnumerableSet's `contains`.
-     */
+    /// @inheritdoc IERC734
+    /// @dev O(1) via EnumerableSet's `contains`.
     function keyHasPurpose(bytes32 _key, uint256 _purpose) public view virtual override returns (bool) {
         KeyStorage storage ks = _getKeyStorage();
         if (ks.keys[_key].key == 0) return false;
         return ks.keys[_key].purposes.contains(_purpose) || ks.keys[_key].purposes.contains(KeyPurposes.MANAGEMENT);
     }
 
-    /**
-     * @notice Add a key with `_purpose`.
-     * @dev Caller must hold MANAGEMENT, or be the identity itself (post-execution from the
-     *      queue module or the EntryPoint).
-     */
+    /// @inheritdoc IERC734
+    /// @dev Caller must hold MANAGEMENT, or be the identity itself (post-execution from
+    ///      the queue module or the EntryPoint).
     function addKey(bytes32 _key, uint256 _purpose, uint256 _type)
         public
         virtual
@@ -149,11 +145,9 @@ contract KeyManager is IERC734 {
         return true;
     }
 
-    /**
-     * @notice Remove `_purpose` from `_key`. Deletes the key entry when no purposes remain.
-     * @dev The last MANAGEMENT key cannot be removed — doing so would make the identity
-     *      unrecoverable (no caller would satisfy `onlyManager`).
-     */
+    /// @inheritdoc IERC734
+    /// @dev Deletes the key entry when no purposes remain. The last MANAGEMENT key cannot
+    ///      be removed; doing so would leave the identity unrecoverable.
     function removeKey(bytes32 _key, uint256 _purpose)
         public
         virtual
