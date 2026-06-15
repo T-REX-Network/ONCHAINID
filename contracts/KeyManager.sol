@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import { IERC734 } from "./interface/IERC734.sol";
 import { Errors } from "./libraries/Errors.sol";
+import { hashAddress } from "./libraries/Hashing.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
 import { KeyTypes } from "./libraries/KeyTypes.sol";
 import { Structs } from "./storage/Structs.sol";
@@ -66,8 +67,7 @@ contract KeyManager is IERC734 {
     /// @notice Requires a MANAGEMENT key, or an internal self-call (`msg.sender == address(this)`).
     modifier onlyManager() {
         require(
-            msg.sender == address(this)
-                || keyHasPurpose(keccak256(abi.encodePacked(msg.sender)), KeyPurposes.MANAGEMENT),
+            msg.sender == address(this) || keyHasPurpose(hashAddress(msg.sender), KeyPurposes.MANAGEMENT),
             Errors.SenderDoesNotHaveManagementKey()
         );
         _;

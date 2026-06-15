@@ -11,6 +11,7 @@ import {
 import { IERC734 } from "../../interface/IERC734.sol";
 import { IERC735 } from "../../interface/IERC735.sol";
 import { Errors } from "../../libraries/Errors.sol";
+import { hashAddress } from "../../libraries/Hashing.sol";
 import { KeyPurposes } from "../../libraries/KeyPurposes.sol";
 
 /**
@@ -81,7 +82,7 @@ contract KeyApprovalModule is IERC7579Module {
     ///         dispatched from the identity's balance when the request runs.
     function execute(address _to, uint256 _value, bytes calldata _data) external payable returns (uint256 executionId) {
         address account = msg.sender;
-        bytes32 callerKeyHash = keccak256(abi.encodePacked(_msgSender()));
+        bytes32 callerKeyHash = hashAddress(_msgSender());
 
         // 1. Push any msg.value back to the identity so the module never holds ETH.
         if (msg.value > 0) {
@@ -108,7 +109,7 @@ contract KeyApprovalModule is IERC7579Module {
     function approve(uint256 _id, bool _shouldApprove) external returns (bool success) {
         // 1. Resolve account + ERC-2771 caller, fetch the queued request.
         address account = msg.sender;
-        bytes32 callerKeyHash = keccak256(abi.encodePacked(_msgSender()));
+        bytes32 callerKeyHash = hashAddress(_msgSender());
         AccountState storage state = _state[account];
         Execution storage execution = state.executions[_id];
 

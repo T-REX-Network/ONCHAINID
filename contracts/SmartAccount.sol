@@ -4,6 +4,7 @@ pragma solidity ^0.8.28;
 import { KeyManager } from "./KeyManager.sol";
 import { IKeyExecutor } from "./interface/IKeyExecutor.sol";
 import { Errors } from "./libraries/Errors.sol";
+import { hashAddress } from "./libraries/Hashing.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
 import { KeyApprovalModule } from "./modules/executors/KeyApprovalModule.sol";
 import { LowLevelCall } from "./vendor/utils/LowLevelCall.sol";
@@ -70,7 +71,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         super._uninstallModule(moduleTypeId, module, deInitData);
 
         // Look up the module's key entry.
-        bytes32 moduleKey = keccak256(abi.encodePacked(module));
+        bytes32 moduleKey = hashAddress(module);
         KeyStorage storage ks = _getKeyStorage();
 
         // No purpose was ever granted → nothing to clean up.
@@ -93,7 +94,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         returns (bytes[] memory)
     {
         // Use the executor's address as the key for the purpose lookup.
-        bytes32 callerKeyHash = keccak256(abi.encodePacked(msg.sender));
+        bytes32 callerKeyHash = hashAddress(msg.sender);
 
         // Apply the same per-target rule used for user ops.
         if (!_isAuthorizedForExecution(mode, executionCalldata, callerKeyHash)) {

@@ -16,6 +16,7 @@ import { IERC734 } from "../../interface/IERC734.sol";
 import { IERC735 } from "../../interface/IERC735.sol";
 import { IIdentity } from "../../interface/IIdentity.sol";
 import { Errors } from "../../libraries/Errors.sol";
+import { hashAddress } from "../../libraries/Hashing.sol";
 import { KeyPurposes } from "../../libraries/KeyPurposes.sol";
 import { Structs } from "../../storage/Structs.sol";
 
@@ -467,7 +468,7 @@ contract ClaimsModule is IERC7579Module, IERC735 {
     function _requireClaimKey(address account, address caller, bool onlyClaimSigner) internal view {
         if (caller == account) return;
 
-        bytes32 keyHash = keccak256(abi.encodePacked(caller));
+        bytes32 keyHash = hashAddress(caller);
 
         // CLAIM_SIGNER is always enough; it covers both add and remove.
         if (IERC734(account).keyHasPurpose(keyHash, KeyPurposes.CLAIM_SIGNER)) {
@@ -488,7 +489,7 @@ contract ClaimsModule is IERC7579Module, IERC735 {
     function _requireManagement(address account, address caller) internal view {
         if (caller == account) return;
         require(
-            IERC734(account).keyHasPurpose(keccak256(abi.encodePacked(caller)), KeyPurposes.MANAGEMENT),
+            IERC734(account).keyHasPurpose(hashAddress(caller), KeyPurposes.MANAGEMENT),
             Errors.SenderDoesNotHaveManagementKey()
         );
     }

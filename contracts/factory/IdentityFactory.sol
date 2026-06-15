@@ -15,6 +15,7 @@ import { KeyManager } from "../KeyManager.sol";
 import { SmartAccount } from "../SmartAccount.sol";
 import { IIdentity } from "../interface/IIdentity.sol";
 import { Errors } from "../libraries/Errors.sol";
+import { hashAddress } from "../libraries/Hashing.sol";
 import { IdentityTypes } from "../libraries/IdentityTypes.sol";
 import { KeyPurposes } from "../libraries/KeyPurposes.sol";
 import { KeyTypes } from "../libraries/KeyTypes.sol";
@@ -333,13 +334,12 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
                 .installModule(_modules[i].moduleType, _modules[i].module, _modules[i].initData);
             if (_modules[i].purpose != 0) {
                 // Register the module address as a MODULE-type key with that purpose.
-                KeyManager(_identity)
-                    .addKey(keccak256(abi.encodePacked(_modules[i].module)), _modules[i].purpose, KeyTypes.MODULE);
+                KeyManager(_identity).addKey(hashAddress(_modules[i].module), _modules[i].purpose, KeyTypes.MODULE);
             }
         }
 
         // 3. Drop the bootstrap key.
-        KeyManager(_identity).removeKey(keccak256(abi.encodePacked(address(this))), KeyPurposes.MANAGEMENT);
+        KeyManager(_identity).removeKey(hashAddress(address(this)), KeyPurposes.MANAGEMENT);
 
         // 4. Must leave at least one MANAGEMENT key behind.
         require(
