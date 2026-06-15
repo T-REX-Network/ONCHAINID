@@ -41,6 +41,9 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
     ///      only be reached via a MANAGEMENT-authorized executor. Closing issue #6 as
     ///      "won't fix" per design: the bootstrap path requires this override; the
     ///      override is documented and proven equivalent in privilege.
+    /// @dev Fallback handler wiring: `module` must be a contract. If it resolves to an
+    ///      EOA (or any non-zero address with no code), policy queries hit the strict
+    ///      default and the fallback silently degrades. Don't install fallbacks on EOAs.
     function installModule(uint256 moduleTypeId, address module, bytes calldata initData)
         public
         virtual
