@@ -22,7 +22,13 @@ import { KeyPurposes } from "../../libraries/KeyPurposes.sol";
  *         queue and the auto-approval rules. Per-identity state is keyed by `account` because
  *         a single module deployment is shared across every identity that installs it.
  *
- *         Auto-approval rules:
+ *         Proposing vs auto-executing are separate gates. To queue a request via {execute}
+ *         the caller must hold at least one of PROPOSER / ACTION / CLAIM_SIGNER /
+ *         CLAIM_ADDER / MANAGEMENT on the identity. Random addresses cannot pollute the
+ *         queue or the event log. PROPOSER is a queue-only purpose: it lets a key queue
+ *         a request that then waits for an approver and never auto-runs by itself.
+ *
+ *         Auto-approval rules (unchanged by the propose gate):
  *         - MANAGEMENT: anything.
  *         - ACTION: external targets only.
  *         - CLAIM_SIGNER on self: only `addClaim` / `removeClaim`.
@@ -87,9 +93,16 @@ contract KeyApprovalModule is IERC7579Module {
     ///         purpose authorizes it; otherwise waits for {approve}.
     /// @dev    Treasury model: any `msg.value` is pushed back to the identity; `_value` is
     ///         dispatched from the identity's balance when the request runs.
+    ///         Gated: caller must hold a key on the identity that authorizes proposing.
     function execute(address _to, uint256 _value, bytes calldata _data) external payable returns (uint256 executionId) {
         address account = msg.sender;
-        bytes32 callerKeyHash = keccak256(abi.encodePacked(_msgSender()));
+        address proposer = _msgSender();
+        bytes32 callerKeyHash = keccak256(abi.encodePacked(proposer));
+
+        // Reject random callers. Any key with a real purpose on the identity can propose;
+        // PROPOSER is the queue-only purpose for callers who should be able to push
+        // requests but cannot auto-run or approve them.
+        require(_canPropose(account, callerKeyHash), Errors.SenderCannotPropose(proposer));
 
         // 1. Push any msg.value back to the identity so the module never holds ETH.
         if (msg.value > 0) {
@@ -210,6 +223,16 @@ contract KeyApprovalModule is IERC7579Module {
         if (to != account && IERC734(account).keyHasPurpose(keyHash, KeyPurposes.ACTION)) return true;
 
         return false;
+    }
+
+    /// @dev Gate for {execute}. Any purpose that can already authorize an auto-run or an
+    ///      approval also passes here, plus the queue-only PROPOSER purpose.
+    function _canPropose(address account, bytes32 keyHash) internal view returns (bool) {
+        IERC734 acct = IERC734(account);
+        return acct.keyHasPurpose(keyHash, KeyPurposes.PROPOSER) || acct.keyHasPurpose(keyHash, KeyPurposes.ACTION)
+            || acct.keyHasPurpose(keyHash, KeyPurposes.CLAIM_SIGNER)
+            || acct.keyHasPurpose(keyHash, KeyPurposes.CLAIM_ADDER)
+            || acct.keyHasPurpose(keyHash, KeyPurposes.MANAGEMENT);
     }
 
     /// @dev Dispatches via `executeFromExecutor`, which spends `execution.value` from the
