@@ -258,18 +258,35 @@ contract IdentityFactoryTest is OnchainIDSetup {
     }
 
     function test_revertBecauseSaltAlreadyUsed() public {
+        // Same salt, keys, and modules deploy to the same address, so the second call collides.
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(carol);
+        Structs.ModuleInstall[] memory modules = new Structs.ModuleInstall[](0);
+
         vm.prank(deployer);
-        onchainidSetup.idFactory
-            .createIdentityFor(
-                carol, IdentityTypes.INDIVIDUAL, "saltUsed", _makeSingleMgmtKeys(carol), new Structs.ModuleInstall[](0)
-            );
+        onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "saltUsed", keys, modules);
 
         vm.prank(deployer);
         vm.expectRevert(OZErrors.FailedDeployment.selector);
-        onchainidSetup.idFactory
-            .createIdentityFor(
-                david, IdentityTypes.INDIVIDUAL, "saltUsed", _makeSingleMgmtKeys(david), new Structs.ModuleInstall[](0)
-            );
+        onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "saltUsed", keys, modules);
+    }
+
+    /// @notice Same _salt string with different keys yields a different identity address.
+    ///         Closes the cross-chain front-running surface where someone reuses an
+    ///         expected salt with their own keys to land on the victim's address.
+    function test_createIdentityFor_sameSaltDifferentKeysGivesDifferentAddress() public {
+        Structs.ModuleInstall[] memory modules = new Structs.ModuleInstall[](0);
+
+        vm.prank(deployer);
+        address first = onchainidSetup.idFactory
+            .createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "saltShared", _makeSingleMgmtKeys(carol), modules);
+
+        vm.prank(deployer);
+        address second = onchainidSetup.idFactory
+            .createIdentityFor(david, IdentityTypes.INDIVIDUAL, "saltShared", _makeSingleMgmtKeys(david), modules);
+
+        assertTrue(first != address(0));
+        assertTrue(second != address(0));
+        assertTrue(first != second, "different bootstrap config must land at a different address");
     }
 
     function test_createIdentity_revertWhenAccountAlreadyBoundElsewhere() public {

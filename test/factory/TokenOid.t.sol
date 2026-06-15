@@ -174,10 +174,13 @@ contract TokenOidTest is Test {
         );
         setup.idFactory.createIdentityFor(alice, IdentityTypes.ASSET, "salt2", _makeMgmtKey(alice), _emptyModules);
 
-        // Same salt (with a different token) should revert at Create3 with FailedDeployment().
+        // Same _salt string with a different token + different keys yields a different
+        // address under the bootstrap-mixed salt scheme. No Create3 collision.
         vm.prank(deployer);
-        vm.expectRevert(OZErrors.FailedDeployment.selector);
-        setup.idFactory.createIdentityFor(bob, IdentityTypes.ASSET, "salt1", _makeMgmtKey(alice), _emptyModules);
+        address other =
+            setup.idFactory.createIdentityFor(bob, IdentityTypes.ASSET, "salt1", _makeMgmtKey(alice), _emptyModules);
+        assertTrue(other != address(0));
+        assertTrue(other != tokenIdentityAddr, "different bootstrap config should land at a different address");
     }
 
     /// @notice Asset identity with multiple key types should set all keys.

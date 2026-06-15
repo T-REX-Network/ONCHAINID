@@ -238,10 +238,12 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
             require(_account.length == 20 && address(bytes20(_account)) != address(0), Errors.ZeroAddress());
         }
 
-        string memory prefixedSalt = string.concat(_identityType == IdentityTypes.ASSET ? "Token" : "OID", _salt);
+        // Salt covers every deploy input, so different keys give different addresses.
+        bytes32 deploySalt = keccak256(
+            abi.encode(_identityType, _salt, keccak256(abi.encode(_keys)), keccak256(abi.encode(_modules)))
+        );
 
-        // Salt collisions surface as Create3 FailedDeployment().
-        address identity = _deployIdentity(prefixedSalt, _identityType);
+        address identity = _deployIdentity(deploySalt, _identityType);
 
         // Mark factory-deployed BEFORE linking so a re-entrant module can't pretend
         // to be a non-factory caller.
@@ -348,16 +350,16 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
     }
 
     /// @dev CREATE3 deploy of a fresh BeaconProxy. Address depends only on (factory,
-    ///      salt), so the same salt gives the same identity address on every canonical
-    ///      EVM chain where this factory shares the same address.
-    function _deployIdentity(string memory _salt, uint256 _identityType) private returns (address) {
+    ///      deploySalt), so the same salt gives the same identity address on every
+    ///      canonical EVM chain where this factory shares the same address.
+    function _deployIdentity(bytes32 deploySalt, uint256 _identityType) private returns (address) {
         // The proxy's constructor calls beacon.implementation() and forwards this
         // calldata via delegatecall, so Identity.initialize runs in the new proxy's
         // storage with the factory as the initial MANAGEMENT key.
         bytes memory initData = abi.encodeCall(Identity.initialize, (address(this), _identityType));
         bytes memory bytecode = abi.encodePacked(type(BeaconProxy).creationCode, abi.encode(beacon, initData));
 
-        return Create3.deploy(0, keccak256(abi.encodePacked(_salt)), bytecode);
+        return Create3.deploy(0, deploySalt, bytecode);
     }
 
 }
