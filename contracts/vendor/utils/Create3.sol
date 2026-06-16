@@ -28,10 +28,10 @@ import { LowLevelCall } from "./LowLevelCall.sol";
 library Create3 {
 
     /// @dev The proxy initialization code.
-    bytes29 private constant PROXY_INITCODE = 0x74365F5F37365F34f03D5F5F3E5F3D91601357FD5bf35F526015600Bf3;
+    bytes28 private constant PROXY_INITCODE = 0x73365f5f37365f34f06012573d5f5f3e3d5ffd5b005f526014600cf3;
 
     /// @dev Hash of the `PROXY_INITCODE`.
-    bytes32 internal constant PROXY_INITCODE_HASH = 0xd61bbde0460e6c48ddd99fb8b7e1ad36529d2ec79cbac1db0300b3d26ddcdc2a;
+    bytes32 internal constant PROXY_INITCODE_HASH = 0x57a34f6e879358dd76825d6700df87013ad6a3fb43c0d0c602f70a8772c153bd;
 
     error Create3EmptyBytecode();
 
