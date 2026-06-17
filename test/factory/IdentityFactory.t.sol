@@ -109,11 +109,13 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
     // ============ Per-identity-type gating ============
 
-    /// @dev Configure a fresh AM role as the gate for an identity type.
+    /// @dev Configure a fresh AM role as the gate for an identity type. Keeps
+    ///      `selfDeployable = true` so existing `createIdentityFor` tests aren't
+    ///      affected by the self-deploy gate.
     function _restrictTypeToFreshRole(uint256 identityType) internal returns (uint64 role) {
         role = 999;
         vm.prank(deployer);
-        onchainidSetup.idFactory.setIdentityTypeRole(identityType, role);
+        onchainidSetup.idFactory.setIdentityTypePolicy(identityType, role, true);
     }
 
     function test_createIdentityFor_revertWhenCallerLacksTypeRole() public {
@@ -202,35 +204,106 @@ contract IdentityFactoryTest is OnchainIDSetup {
             );
     }
 
-    /// @notice createIdentity (self-deploy) is always open, regardless of per-type role.
-    function test_createIdentity_selfDeployIgnoresTypeRole() public {
-        _restrictTypeToFreshRole(IdentityTypes.CLAIM_ISSUER);
+    /// @notice createIdentity reverts when the per-type policy has `selfDeployable = false`.
+    ///         Closes the bypass where any EOA could self-mint a role-gated type and
+    ///         sidestep the createIdentityFor role check.
+    function test_createIdentity_revertsWhenNotSelfDeployable() public {
+        vm.prank(deployer);
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 999, false);
 
-        // Fresh EOA, no role, but self-deploy is unconditional.
         address selfDeployer = makeAddr("selfIssuerEoa");
         vm.prank(selfDeployer);
-        address identityAddr = onchainidSetup.idFactory
+        vm.expectRevert(
+            abi.encodeWithSelector(Errors.IdentityTypeNotSelfDeployable.selector, IdentityTypes.CLAIM_ISSUER)
+        );
+        onchainidSetup.idFactory
             .createIdentity(
                 IdentityTypes.CLAIM_ISSUER,
                 "selfIssuer",
                 _makeSingleMgmtKeys(selfDeployer),
                 new Structs.ModuleInstall[](0)
             );
+    }
+
+    function test_setIdentityTypePolicy_emitsEventAndUpdatesView() public {
+        vm.prank(deployer);
+        vm.expectEmit(true, true, false, true, address(onchainidSetup.idFactory));
+        emit IIdentityFactory.IdentityTypePolicySet(IdentityTypes.CLAIM_ISSUER, 123, false);
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 123, false);
+        (uint64 roleId, bool selfDeployable) =
+            onchainidSetup.idFactory.getIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER);
+        assertEq(roleId, 123);
+        assertEq(selfDeployable, false);
+    }
+
+    function test_setIdentityTypePolicy_revertForNonAdmin() public {
+        vm.prank(alice);
+        vm.expectRevert(); // AccessManagerUnauthorizedAccount
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 7, true);
+    }
+
+    /// @notice createIdentity rejects unregistered types up front (same as createIdentityFor).
+    function test_createIdentity_revertOnUnregisteredType() public {
+        uint256 unknownType = 99999999;
+        address selfDeployer = makeAddr("selfDeployerUnknownType");
+        vm.prank(selfDeployer);
+        vm.expectRevert(abi.encodeWithSelector(Errors.UnknownIdentityType.selector, unknownType));
+        onchainidSetup.idFactory
+            .createIdentity(
+                unknownType, "unknownSelf", _makeSingleMgmtKeys(selfDeployer), new Structs.ModuleInstall[](0)
+            );
+    }
+
+    /// @notice createIdentity succeeds when the policy explicitly opts the type into self-deploy.
+    function test_createIdentity_succeedsWhenSelfDeployable() public {
+        vm.prank(deployer);
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 999, true);
+
+        address selfDeployer = makeAddr("selfIssuerOptedIn");
+        vm.prank(selfDeployer);
+        address identityAddr = onchainidSetup.idFactory
+            .createIdentity(
+                IdentityTypes.CLAIM_ISSUER,
+                "selfIssuerOk",
+                _makeSingleMgmtKeys(selfDeployer),
+                new Structs.ModuleInstall[](0)
+            );
+        assertTrue(identityAddr != address(0));
+        assertEq(onchainidSetup.idFactory.getIdentity(_asAccount(selfDeployer)), identityAddr);
+    }
+
+    /// @notice The selfDeployable flag does not affect createIdentityFor. A type can be
+    ///         open for admin-driven deploys while being closed to self-deploy.
+    function test_createIdentityFor_unaffectedBySelfDeployable() public {
+        uint64 publicRole = onchainidSetup.accessManager.PUBLIC_ROLE();
+        vm.prank(deployer);
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.INDIVIDUAL, publicRole, false);
+
+        vm.prank(alice);
+        address identityAddr = onchainidSetup.idFactory
+            .createIdentityFor(
+                david,
+                IdentityTypes.INDIVIDUAL,
+                "selfDeployOffButForOk",
+                _makeSingleMgmtKeys(david),
+                new Structs.ModuleInstall[](0)
+            );
         assertTrue(identityAddr != address(0));
     }
 
-    function test_setIdentityTypeRole_emitsEventAndUpdatesView() public {
+    /// @notice Regression guard: ASSET-typed self-deploy must revert. Closes the bug where
+    ///         any EOA could mint an ASSET identity bound to themselves.
+    function test_createIdentity_assetTypeRevertsForEoa() public {
+        // Apply the production policy for ASSET (matches DeployOnchainID defaults).
+        uint64 publicRole = onchainidSetup.accessManager.PUBLIC_ROLE();
         vm.prank(deployer);
-        vm.expectEmit(true, true, false, false, address(onchainidSetup.idFactory));
-        emit IIdentityFactory.IdentityTypeRoleSet(IdentityTypes.CLAIM_ISSUER, 123);
-        onchainidSetup.idFactory.setIdentityTypeRole(IdentityTypes.CLAIM_ISSUER, 123);
-        assertEq(onchainidSetup.idFactory.getIdentityTypeRole(IdentityTypes.CLAIM_ISSUER), 123);
-    }
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.ASSET, publicRole, false);
 
-    function test_setIdentityTypeRole_revertForNonAdmin() public {
-        vm.prank(alice);
-        vm.expectRevert(); // AccessManagerUnauthorizedAccount
-        onchainidSetup.idFactory.setIdentityTypeRole(IdentityTypes.CLAIM_ISSUER, 7);
+        address eoa = makeAddr("eoaTryingToMintAsset");
+        vm.prank(eoa);
+        vm.expectRevert(abi.encodeWithSelector(Errors.IdentityTypeNotSelfDeployable.selector, IdentityTypes.ASSET));
+        onchainidSetup.idFactory
+            .createIdentity(IdentityTypes.ASSET, "assetEoa", _makeSingleMgmtKeys(eoa), new Structs.ModuleInstall[](0));
     }
 
     // ============ createIdentityFor (validation) ============

@@ -26,11 +26,14 @@ import { IIdentityFactory } from "./IIdentityFactory.sol";
 /// @title IdentityFactory
 /// @notice Deploys ONCHAINID identity proxies.
 ///         createIdentity: caller deploys for themselves and is auto-linked as the
-///         first wallet. Always open; you can only deploy for yourself.
+///         first wallet. Gated per type by `selfDeployable`: contract-shaped types
+///         (ASSET, SMART_CONTRACT) opt out because the `msg.sender = first wallet`
+///         binding does not apply to them.
 ///         createIdentityFor: caller deploys for an EVM account that cannot sign
-///         (a token, a vault). Admin must register each identity type up front via
-///         setIdentityTypeRole. Unregistered types revert. Use the AM's PUBLIC_ROLE
-///         for open types; any other role restricts the call to its holders.
+///         (a token, a vault). Caller must hold the per-type role.
+///         Admin registers each identity type up front via setIdentityTypePolicy.
+///         Unregistered types revert from both entry points. Use the AM's PUBLIC_ROLE
+///         for open types; any other role restricts createIdentityFor to its holders.
 ///         Wallets and signers share the same bytes shape. Bindings are sticky and
 ///         revocation is terminal.
 contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
@@ -54,6 +57,14 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         bytes record;
     }
 
+    /// @dev Per-type deploy policy. `roleId == 0` means the type is unregistered;
+    ///      both deploy entry points revert. `selfDeployable` gates {createIdentity}.
+    ///      uint64 + bool pack into one storage slot.
+    struct TypePolicy {
+        uint64 roleId;
+        bool selfDeployable;
+    }
+
     /// @dev EIP-7201 namespaced storage. All mutable state lives here so a future
     ///      upgrade won't collide with inherited slots.
     /// @custom:storage-location erc7201:onchainid.IdentityFactory
@@ -61,9 +72,8 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         mapping(bytes32 walletKey => WalletEntry entry) wallets;
         mapping(address identity => EnumerableSet.Bytes32Set walletKeys) accounts;
         mapping(address identity => bool deployedByFactory) isFactoryIdentity;
-        /// @dev AM role required to deploy each identity type. 0 means the type has
-        ///      not been registered; createIdentityFor reverts for unregistered types.
-        mapping(uint256 identityType => uint64 roleId) identityTypeRoles;
+        /// @dev Per-type deploy policy. Unregistered types (`roleId == 0`) revert.
+        mapping(uint256 identityType => TypePolicy policy) typePolicies;
     }
 
     // keccak256(abi.encode(uint256(keccak256("onchainid.IdentityFactory")) - 1)) & ~bytes32(uint256(0xff))
@@ -90,9 +100,9 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
     }
 
     /// @inheritdoc IIdentityFactory
-    function setIdentityTypeRole(uint256 _identityType, uint64 _roleId) external restricted {
-        _storage().identityTypeRoles[_identityType] = _roleId;
-        emit IdentityTypeRoleSet(_identityType, _roleId);
+    function setIdentityTypePolicy(uint256 _identityType, uint64 _roleId, bool _selfDeployable) external restricted {
+        _storage().typePolicies[_identityType] = TypePolicy(_roleId, _selfDeployable);
+        emit IdentityTypePolicySet(_identityType, _roleId, _selfDeployable);
     }
 
     /// @inheritdoc IIdentityFactory
@@ -102,8 +112,11 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         Structs.KeyParam[] memory _keys,
         Structs.ModuleInstall[] memory _modules
     ) external returns (address) {
-        // Self-deploy is always open. The caller becomes the new identity's first wallet,
-        // so no third-party squatting is possible.
+        // Self-deploy is gated per type. Contract-shaped types like ASSET / SMART_CONTRACT
+        // opt out because their identity represents a contract, not msg.sender.
+        TypePolicy storage policy = _storage().typePolicies[_identityType];
+        require(policy.roleId != 0, Errors.UnknownIdentityType(_identityType));
+        require(policy.selfDeployable, Errors.IdentityTypeNotSelfDeployable(_identityType));
         return _doCreateIdentity(abi.encodePacked(msg.sender), _identityType, _salt, _keys, _modules);
     }
 
@@ -199,14 +212,15 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
     }
 
     /// @inheritdoc IIdentityFactory
-    function getIdentityTypeRole(uint256 _identityType) external view returns (uint64) {
-        return _storage().identityTypeRoles[_identityType];
+    function getIdentityTypePolicy(uint256 _identityType) external view returns (uint64 roleId, bool selfDeployable) {
+        TypePolicy storage policy = _storage().typePolicies[_identityType];
+        return (policy.roleId, policy.selfDeployable);
     }
 
     /// @dev Per-type gate for {createIdentityFor}. Unknown types revert. Admin registers
-    ///      a type with `setIdentityTypeRole` (use the AM's `PUBLIC_ROLE` for open types).
+    ///      a type with `setIdentityTypePolicy` (use the AM's `PUBLIC_ROLE` for open types).
     function _checkTypeRole(uint256 _identityType, address caller) private view {
-        uint64 requiredRole = _storage().identityTypeRoles[_identityType];
+        uint64 requiredRole = _storage().typePolicies[_identityType].roleId;
         require(requiredRole != 0, Errors.UnknownIdentityType(_identityType));
         (bool isMember,) = IAccessManager(authority()).hasRole(requiredRole, caller);
         require(isMember, Errors.NotAuthorizedForIdentityType(caller, _identityType, requiredRole));

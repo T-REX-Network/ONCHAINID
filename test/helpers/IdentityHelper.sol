@@ -43,9 +43,10 @@ library IdentityHelper {
 
     /// @notice Deploys complete Identity Factory infrastructure with an AccessManager
     ///         whose initial admin is `managementKey`. Every standard identity type is
-    ///         registered with `PUBLIC_ROLE` so tests can mint any type for any address
-    ///         without extra plumbing. Tests that exercise stricter gating should
-    ///         re-point the relevant type via `setIdentityTypeRole`.
+    ///         registered with `PUBLIC_ROLE` and `selfDeployable = true` so tests can
+    ///         mint any type for any address without extra plumbing. Tests that
+    ///         exercise stricter gating should re-point the relevant type via
+    ///         `setIdentityTypePolicy`.
     /// @param managementKey The initial management key address (also initial admin of the
     ///        AccessManager).
     /// @return setup Struct containing all deployed contracts
@@ -60,7 +61,8 @@ library IdentityHelper {
         setup.accessManager = new AccessManager(managementKey);
         setup.idFactory = new IdentityFactory(address(setup.beacon), address(setup.accessManager));
 
-        // Register every standard type with PUBLIC_ROLE for a permissive test default.
+        // Register every standard type with PUBLIC_ROLE and selfDeployable = true for
+        // a permissive test default.
         uint256[8] memory types = [
             IdentityTypes.ASSET,
             IdentityTypes.INDIVIDUAL,
@@ -72,7 +74,7 @@ library IdentityHelper {
             IdentityTypes.AI_AGENT
         ];
         for (uint256 i = 0; i < types.length; i++) {
-            setup.idFactory.setIdentityTypeRole(types[i], PUBLIC_ROLE);
+            setup.idFactory.setIdentityTypePolicy(types[i], PUBLIC_ROLE, true);
         }
     }
 

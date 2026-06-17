@@ -29,9 +29,16 @@ library Errors {
     error NotAuthorizedForIdentityType(address caller, uint256 identityType, uint64 requiredRole);
 
     /// @notice Reverts when a deploy is attempted for a type the admin has not registered.
-    ///         Admin enables a type by calling `setIdentityTypeRole`. Use the AM's
+    ///         Admin enables a type by calling `setIdentityTypePolicy`. Use the AM's
     ///         `PUBLIC_ROLE` for open types.
     error UnknownIdentityType(uint256 identityType);
+
+    /// @notice Reverts when {createIdentity} is called for a type whose policy has
+    ///         `selfDeployable = false`. Self-deploy is gated per type because some
+    ///         types (e.g. ASSET, SMART_CONTRACT) represent contracts, not EOAs, so
+    ///         the `msg.sender = first wallet` binding does not apply to them. Admin
+    ///         opts a type in via {setIdentityTypePolicy}.
+    error IdentityTypeNotSelfDeployable(uint256 identityType);
 
     /// @notice Reverts if no key with MANAGEMENT purpose is provided
     error NoManagementKeyInKeys();

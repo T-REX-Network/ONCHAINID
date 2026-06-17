@@ -102,26 +102,31 @@ contract DeployOnchainID is Script {
         // (`beacon.upgradeTo(newImpl)`) go through the same role gating as everything else.
         beacon.transferOwnership(address(am));
 
-        // ===== Phase 3: per-identity-type deploy gating =====
-        // createIdentity (self-deploy) is always open: the caller can only deploy for
-        // themselves, so per-type gating is unnecessary.
+        // ===== Phase 3: per-identity-type deploy policy =====
+        // Each type carries a policy: an AM role id (gates createIdentityFor) and a
+        // selfDeployable flag (gates createIdentity). Unregistered types revert from
+        // both entry points.
         //
-        // createIdentityFor consults `identityTypeRoles[_identityType]`. Unregistered
-        // types revert. We pin the security-sensitive types to specific roles and the
-        // rest to PUBLIC_ROLE so anyone can mint them.
+        // Contract-shaped types (ASSET, SMART_CONTRACT, PUBLIC_AUTHORITY) opt out of
+        // self-deploy because their identity represents a contract, not msg.sender.
+        // CLAIM_ISSUER also opts out so the admin role on createIdentityFor is not
+        // bypassable via self-deploy.
         uint64 publicRole = am.PUBLIC_ROLE();
 
-        // Gated types: only role holders may mint.
-        idFactory.setIdentityTypeRole(IdentityTypes.ASSET, ROLE_TOKEN_FACTORY);
-        idFactory.setIdentityTypeRole(IdentityTypes.CLAIM_ISSUER, ROLE_CLAIM_ISSUER_ADMIN);
+        // Gated for createIdentityFor; self-deploy disabled.
+        idFactory.setIdentityTypePolicy(IdentityTypes.ASSET, ROLE_TOKEN_FACTORY, false);
+        idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, ROLE_CLAIM_ISSUER_ADMIN, false);
 
-        // Open types: anyone may mint. Listed explicitly so they're known to the factory.
-        idFactory.setIdentityTypeRole(IdentityTypes.INDIVIDUAL, publicRole);
-        idFactory.setIdentityTypeRole(IdentityTypes.CORPORATE, publicRole);
-        idFactory.setIdentityTypeRole(IdentityTypes.IOT, publicRole);
-        idFactory.setIdentityTypeRole(IdentityTypes.SMART_CONTRACT, publicRole);
-        idFactory.setIdentityTypeRole(IdentityTypes.PUBLIC_AUTHORITY, publicRole);
-        idFactory.setIdentityTypeRole(IdentityTypes.AI_AGENT, publicRole);
+        // Open for createIdentityFor; self-deploy enabled (EOA-shaped types).
+        idFactory.setIdentityTypePolicy(IdentityTypes.INDIVIDUAL, publicRole, true);
+        idFactory.setIdentityTypePolicy(IdentityTypes.CORPORATE, publicRole, true);
+        idFactory.setIdentityTypePolicy(IdentityTypes.IOT, publicRole, true);
+        idFactory.setIdentityTypePolicy(IdentityTypes.AI_AGENT, publicRole, true);
+
+        // Open for createIdentityFor; self-deploy disabled (contract-shaped /
+        // institutional types).
+        idFactory.setIdentityTypePolicy(IdentityTypes.SMART_CONTRACT, publicRole, false);
+        idFactory.setIdentityTypePolicy(IdentityTypes.PUBLIC_AUTHORITY, publicRole, false);
 
         // 7. ERC-7913 WebAuthn Verifier (stateless — verifies P-256 WebAuthn assertions on-chain)
         ERC7913WebAuthnVerifier webAuthnVerifier = new ERC7913WebAuthnVerifier();

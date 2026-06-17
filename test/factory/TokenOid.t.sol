@@ -14,8 +14,9 @@ import { Test } from "forge-std/Test.sol";
 
 /// @notice Tests for the asset-identity path on {IdentityFactory}. Whether a caller can
 ///         mint asset identities depends on the per-type role configured on the factory
-///         via `setIdentityTypeRole`. ASSET is open by default; production deployments
-///         gate it behind a TOKEN_FACTORY role.
+///         via `setIdentityTypePolicy`. ASSET is open by default in the test helper;
+///         production deployments gate it behind a TOKEN_FACTORY role and disable
+///         self-deploy.
 contract TokenOidTest is Test {
 
     /// @dev Local role id used by tests that need a non-admin token-factory caller.
@@ -58,9 +59,10 @@ contract TokenOidTest is Test {
 
     /// @dev Gate the ASSET type behind `ROLE_TOKEN_FACTORY`, mirroring a production
     ///      deployment where only registered token factories may mint asset identities.
+    ///      Self-deploy is disabled (ASSET represents a contract, not an EOA).
     function _restrictAssetToTokenFactoryRole() internal {
         vm.prank(deployer);
-        setup.idFactory.setIdentityTypeRole(IdentityTypes.ASSET, ROLE_TOKEN_FACTORY);
+        setup.idFactory.setIdentityTypePolicy(IdentityTypes.ASSET, ROLE_TOKEN_FACTORY, false);
     }
 
     // ============ Per-identity-type gated asset creation ============

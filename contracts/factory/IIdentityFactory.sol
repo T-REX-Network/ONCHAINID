@@ -7,11 +7,13 @@ import { Structs } from "../storage/Structs.sol";
 /// @notice Factory for ONCHAINID identity proxies. Deployment is gated per identity type
 ///         using an OpenZeppelin AccessManager as the role oracle.
 ///
-///         Admin must register each type up front via {setIdentityTypeRole}. Unregistered
-///         types revert. Use the AM's `PUBLIC_ROLE` for open types; any other role
-///         restricts the call to its holders.
+///         Admin must register each type up front via {setIdentityTypePolicy}. The policy
+///         carries an AM role id (gates {createIdentityFor}) and a `selfDeployable` flag
+///         (gates {createIdentity}). Unregistered types revert from both entry points.
+///         Use the AM's `PUBLIC_ROLE` for open types; any other role restricts the call to
+///         its holders.
 ///
-///         {setIdentityTypeRole} itself is `restricted` (resolved by the AM).
+///         {setIdentityTypePolicy} itself is `restricted` (resolved by the AM).
 ///
 ///         Wallets are addressed as `bytes`. EVM addresses pass `abi.encodePacked(addr)`.
 ///         ERC-7913 signers (passkeys, WebAuthn, custom verifiers) pass their raw signer
@@ -41,14 +43,17 @@ interface IIdentityFactory {
     // event emitted when a token is linked to an ONCHAINID contract (tokens are EVM-only)
     event TokenLinked(address indexed token, address indexed identity);
 
-    /// @notice Emitted when the AM role required to deploy a given identity type changes.
-    ///         `roleId == 0` means the type is open (no role required).
-    event IdentityTypeRoleSet(uint256 indexed identityType, uint64 indexed roleId);
+    /// @notice Emitted when the policy for a given identity type changes. `roleId == 0`
+    ///         means the type is unregistered (both deploy paths revert). `selfDeployable`
+    ///         gates {createIdentity}: true allows self-deploy, false reserves the type
+    ///         for {createIdentityFor}.
+    event IdentityTypePolicySet(uint256 indexed identityType, uint64 indexed roleId, bool selfDeployable);
 
     /// @notice Self-deploy. Caller is the account being deployed for and is auto-linked
-    ///         as the new identity's first wallet. Open to anyone for any type: the
-    ///         caller can only deploy an identity for themselves, so no per-type gate
-    ///         is needed here.
+    ///         as the new identity's first wallet. Gated per type by `selfDeployable`:
+    ///         contract-shaped types like ASSET / SMART_CONTRACT opt out because the
+    ///         `msg.sender = first wallet` binding does not apply to them. Unregistered
+    ///         types revert.
     function createIdentity(
         uint256 _identityType,
         string memory _salt,
@@ -68,13 +73,14 @@ interface IIdentityFactory {
         Structs.ModuleInstall[] memory _modules
     ) external returns (address);
 
-    /// @notice Set the AM role required to deploy identities of `_identityType`. Pass
-    ///         `roleId == 0` to mark the type as open. `restricted` via the AM.
-    function setIdentityTypeRole(uint256 _identityType, uint64 _roleId) external;
+    /// @notice Set the per-type policy: AM role required to call {createIdentityFor},
+    ///         and whether {createIdentity} (self-deploy) is allowed. Pass `roleId == 0`
+    ///         to unregister the type (both deploy paths will revert). `restricted` via
+    ///         the AM.
+    function setIdentityTypePolicy(uint256 _identityType, uint64 _roleId, bool _selfDeployable) external;
 
-    /// @notice AM role required to deploy `_identityType`. Returns 0 if the type
-    ///         has not been registered.
-    function getIdentityTypeRole(uint256 _identityType) external view returns (uint64);
+    /// @notice Read the per-type policy. `roleId == 0` means the type is unregistered.
+    function getIdentityTypePolicy(uint256 _identityType) external view returns (uint64 roleId, bool selfDeployable);
 
     /// @notice Link a wallet (signer bytes) to the calling identity. The wallet
     ///         authorizes the link via an EIP-712 `LinkAccount` signature. Supports
