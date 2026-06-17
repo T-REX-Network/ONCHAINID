@@ -126,6 +126,13 @@ contract KeyManager is IERC734 {
         onlyManager
         returns (bool success)
     {
+        _addKey(_key, _purpose, _type);
+        return true;
+    }
+
+    /// @dev Internal version of {addKey}. No modifiers. Used by both the external entry
+    ///      point and by initialization paths that run before any MANAGEMENT key exists.
+    function _addKey(bytes32 _key, uint256 _purpose, uint256 _type) internal {
         KeyStorage storage ks = _getKeyStorage();
         Structs.Key storage k = ks.keys[_key];
 
@@ -142,7 +149,6 @@ contract KeyManager is IERC734 {
         ks.keysByPurpose[_purpose].add(_key);
 
         emit KeyAdded(_key, _purpose, _type);
-        return true;
     }
 
     /// @inheritdoc IERC734

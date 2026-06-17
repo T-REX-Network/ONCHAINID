@@ -10,19 +10,20 @@ import { Errors as OZErrors } from "@openzeppelin/contracts/utils/Errors.sol";
 import { Identity } from "contracts/Identity.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
+import { Structs } from "contracts/storage/Structs.sol";
 
 import { OnchainIDSetup } from "./helpers/OnchainIDSetup.sol";
 import { Test as TestContract } from "./mocks/Test.sol";
 
 contract ProxyTest is OnchainIDSetup {
 
-    function _initData(address mgmtKey, uint256 idType) internal pure returns (bytes memory) {
-        return abi.encodeCall(Identity.initialize, (mgmtKey, idType));
+    function _initData(uint256 idType) internal pure returns (bytes memory) {
+        return abi.encodeCall(Identity.initialize, (idType, new Structs.KeyParam[](0), new Structs.ModuleInstall[](0)));
     }
 
     function test_revertBecauseBeaconIsZeroAddress() public {
         vm.expectRevert(abi.encode(ERC1967Utils.ERC1967InvalidBeacon.selector, address(0)));
-        new BeaconProxy(address(0), _initData(alice, IdentityTypes.INDIVIDUAL));
+        new BeaconProxy(address(0), _initData(IdentityTypes.INDIVIDUAL));
     }
 
     function test_revertBecauseImplementationIsNotIdentity() public {
@@ -30,15 +31,7 @@ contract ProxyTest is OnchainIDSetup {
         UpgradeableBeacon b = new UpgradeableBeacon(address(testContract), address(this));
 
         vm.expectRevert(OZErrors.FailedCall.selector);
-        new BeaconProxy(address(b), _initData(alice, IdentityTypes.INDIVIDUAL));
-    }
-
-    function test_revertBecauseInitialKeyIsZeroAddress() public {
-        Identity impl = new Identity(deployer, true);
-        UpgradeableBeacon b = new UpgradeableBeacon(address(impl), address(this));
-
-        vm.expectRevert(Errors.ZeroAddress.selector);
-        new BeaconProxy(address(b), _initData(address(0), IdentityTypes.INDIVIDUAL));
+        new BeaconProxy(address(b), _initData(IdentityTypes.INDIVIDUAL));
     }
 
     function test_preventCreatingBeaconWithZeroImplementation() public {
@@ -59,9 +52,9 @@ contract ProxyTest is OnchainIDSetup {
     }
 
     function test_beacon_shouldReturnCorrectAddress() public {
-        Identity impl = new Identity(deployer, false);
+        Identity impl = new Identity(false);
         UpgradeableBeacon b = new UpgradeableBeacon(address(impl), address(this));
-        BeaconProxy proxy = new BeaconProxy(address(b), _initData(deployer, IdentityTypes.INDIVIDUAL));
+        BeaconProxy proxy = new BeaconProxy(address(b), _initData(IdentityTypes.INDIVIDUAL));
 
         // ERC-1967 beacon slot: bytes32(uint256(keccak256('eip1967.proxy.beacon')) - 1)
         bytes32 beaconSlot = 0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50;
@@ -70,9 +63,9 @@ contract ProxyTest is OnchainIDSetup {
     }
 
     function test_updateImplementationAddress() public {
-        Identity impl = new Identity(deployer, false);
+        Identity impl = new Identity(false);
         UpgradeableBeacon b = new UpgradeableBeacon(address(impl), address(this));
-        new BeaconProxy(address(b), _initData(deployer, IdentityTypes.INDIVIDUAL));
+        new BeaconProxy(address(b), _initData(IdentityTypes.INDIVIDUAL));
 
         vm.expectEmit(true, true, true, true);
         emit UpgradeableBeacon.Upgraded(address(impl));

@@ -21,7 +21,6 @@ import { ClaimsModule } from "contracts/modules/claims/ClaimsModule.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
 import { ERC7579Signature } from "contracts/modules/validators/ERC7579Signature.sol";
 import { Structs } from "contracts/storage/Structs.sol";
-import { Vm } from "forge-std/Vm.sol";
 
 /// @notice Helper library for deploying OnchainID Identity Factory infrastructure
 library IdentityHelper {
@@ -56,7 +55,7 @@ library IdentityHelper {
         setup.keyApprovalModule = new KeyApprovalModule();
         setup.claimsModule = new ClaimsModule();
 
-        setup.identityImplementation = new Identity(managementKey, false);
+        setup.identityImplementation = new Identity(false);
         setup.beacon = new UpgradeableBeacon(address(setup.identityImplementation), managementKey);
         setup.accessManager = new AccessManager(managementKey);
         setup.idFactory = new IdentityFactory(address(setup.beacon), address(setup.accessManager));
@@ -183,43 +182,90 @@ library IdentityHelper {
         internal
         returns (Identity identity, ERC7579Signature signatureValidator)
     {
-        Identity impl = new Identity(initialManagementKey, false);
+        Identity impl = new Identity(false);
         UpgradeableBeacon b = new UpgradeableBeacon(address(impl), initialManagementKey);
-        BeaconProxy proxy =
-            new BeaconProxy(address(b), abi.encodeCall(Identity.initialize, (initialManagementKey, identityType)));
-        identity = Identity(payable(address(proxy)));
 
         signatureValidator = new ERC7579Signature();
-        Vm vmHandle = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
-        vmHandle.prank(initialManagementKey);
-        identity.installModule(MODULE_TYPE_VALIDATOR, address(signatureValidator), "");
-
-        // Install ClaimsModule so the identity exposes the ERC-735 ABI via fallback.
         ClaimsModule claimsModule = new ClaimsModule();
-        _installClaimsModule(identity, address(claimsModule), initialManagementKey, vmHandle);
-    }
 
-    /// @dev Installs ClaimsModule as executor + fallback for the ERC-735 / claim-issuer
-    ///      selector set on `identity`. Used by {deployIdentityWithProxy} test paths.
-    function _installClaimsModule(Identity identity, address claimsModule, address managementKey, Vm vmHandle) private {
-        vmHandle.startPrank(managementKey);
-        identity.installModule(MODULE_TYPE_EXECUTOR, claimsModule, "");
-        identity.installModule(MODULE_TYPE_FALLBACK, claimsModule, abi.encodePacked(IERC735.addClaim.selector));
-        identity.installModule(MODULE_TYPE_FALLBACK, claimsModule, abi.encodePacked(IERC735.removeClaim.selector));
-        identity.installModule(MODULE_TYPE_FALLBACK, claimsModule, abi.encodePacked(IERC735.getClaim.selector));
-        identity.installModule(
-            MODULE_TYPE_FALLBACK, claimsModule, abi.encodePacked(IERC735.getClaimIdsByTopic.selector)
-        );
-        identity.installModule(MODULE_TYPE_FALLBACK, claimsModule, abi.encodePacked(IIdentity.isClaimValid.selector));
-        identity.installModule(MODULE_TYPE_FALLBACK, claimsModule, abi.encodePacked(IIdentity.getClaimHash.selector));
-        identity.installModule(
-            MODULE_TYPE_FALLBACK, claimsModule, abi.encodePacked(IClaimIssuer.revokeClaimByDigest.selector)
-        );
-        identity.installModule(
-            MODULE_TYPE_FALLBACK, claimsModule, abi.encodePacked(IClaimIssuer.isDigestRevoked.selector)
-        );
-        identity.installModule(MODULE_TYPE_FALLBACK, claimsModule, abi.encodePacked(IClaimIssuer.addClaimTo.selector));
-        vmHandle.stopPrank();
+        // Bundle the management key + validator + ClaimsModule fallback surface into a
+        // single `initialize` call. Identity now bootstraps atomically inside the proxy
+        // constructor — no post-deploy external installModule calls.
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
+        bytes memory mgmtSigner = abi.encodePacked(initialManagementKey);
+        keys[0] = Structs.KeyParam({
+            keyHash: keccak256(mgmtSigner),
+            purpose: KeyPurposes.MANAGEMENT,
+            keyType: 1, // ECDSA
+            signerData: mgmtSigner,
+            clientData: ""
+        });
+
+        Structs.ModuleInstall[] memory modules = new Structs.ModuleInstall[](11);
+        modules[0] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_VALIDATOR, module: address(signatureValidator), initData: "", purpose: 0
+        });
+        modules[1] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_EXECUTOR, module: address(claimsModule), initData: "", purpose: 0
+        });
+        modules[2] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: address(claimsModule),
+            initData: abi.encodePacked(IERC735.addClaim.selector),
+            purpose: 0
+        });
+        modules[3] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: address(claimsModule),
+            initData: abi.encodePacked(IERC735.removeClaim.selector),
+            purpose: 0
+        });
+        modules[4] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: address(claimsModule),
+            initData: abi.encodePacked(IERC735.getClaim.selector),
+            purpose: 0
+        });
+        modules[5] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: address(claimsModule),
+            initData: abi.encodePacked(IERC735.getClaimIdsByTopic.selector),
+            purpose: 0
+        });
+        modules[6] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: address(claimsModule),
+            initData: abi.encodePacked(IIdentity.isClaimValid.selector),
+            purpose: 0
+        });
+        modules[7] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: address(claimsModule),
+            initData: abi.encodePacked(IIdentity.getClaimHash.selector),
+            purpose: 0
+        });
+        modules[8] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: address(claimsModule),
+            initData: abi.encodePacked(IClaimIssuer.revokeClaimByDigest.selector),
+            purpose: 0
+        });
+        modules[9] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: address(claimsModule),
+            initData: abi.encodePacked(IClaimIssuer.isDigestRevoked.selector),
+            purpose: 0
+        });
+        modules[10] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: address(claimsModule),
+            initData: abi.encodePacked(IClaimIssuer.addClaimTo.selector),
+            purpose: 0
+        });
+
+        BeaconProxy proxy =
+            new BeaconProxy(address(b), abi.encodeCall(Identity.initialize, (identityType, keys, modules)));
+        identity = Identity(payable(address(proxy)));
     }
 
 }

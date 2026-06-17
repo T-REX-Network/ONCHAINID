@@ -387,7 +387,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
         keys[0] = _makeECDSAKey(david, KeyPurposes.ACTION);
         vm.prank(deployer);
-        vm.expectRevert(Errors.CannotRemoveLastManagementKey.selector);
+        vm.expectRevert(Errors.NoManagementKeyInKeys.selector);
         onchainidSetup.idFactory
             .createIdentityFor(david, IdentityTypes.INDIVIDUAL, "salt1", keys, new Structs.ModuleInstall[](0));
     }

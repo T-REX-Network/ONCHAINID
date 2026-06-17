@@ -12,28 +12,29 @@ import { BeaconProxy } from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.so
 
 import { Identity } from "../Identity.sol";
 import { KeyManager } from "../KeyManager.sol";
-import { SmartAccount } from "../SmartAccount.sol";
 import { IIdentity } from "../interface/IIdentity.sol";
 import { Errors } from "../libraries/Errors.sol";
-import { hashAddress } from "../libraries/Hashing.sol";
 import { IdentityTypes } from "../libraries/IdentityTypes.sol";
 import { KeyPurposes } from "../libraries/KeyPurposes.sol";
-import { KeyTypes } from "../libraries/KeyTypes.sol";
 import { Structs } from "../storage/Structs.sol";
 import { Create3 } from "../vendor/utils/Create3.sol";
 import { IIdentityFactory } from "./IIdentityFactory.sol";
 
 /// @title IdentityFactory
 /// @notice Deploys ONCHAINID identity proxies.
+///
 ///         createIdentity: caller deploys for themselves and is auto-linked as the
-///         first wallet. Gated per type by `selfDeployable`: contract-shaped types
-///         (ASSET, SMART_CONTRACT) opt out because the `msg.sender = first wallet`
-///         binding does not apply to them.
+///         first wallet. Gated per type by `selfDeployable`. Contract-shaped types
+///         like ASSET and SMART_CONTRACT opt out because the `msg.sender = first
+///         wallet` binding does not apply to them.
+///
 ///         createIdentityFor: caller deploys for an EVM account that cannot sign
 ///         (a token, a vault). Caller must hold the per-type role.
+///
 ///         Admin registers each identity type up front via setIdentityTypePolicy.
 ///         Unregistered types revert from both entry points. Use the AM's PUBLIC_ROLE
-///         for open types; any other role restricts createIdentityFor to its holders.
+///         for open types. Any other role restricts createIdentityFor to its holders.
+///
 ///         Wallets and signers share the same bytes shape. Bindings are sticky and
 ///         revocation is terminal.
 contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
@@ -233,7 +234,12 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         return address(uint160(uint256(keccak256(account))));
     }
 
-    /// @dev Shared deploy core: CREATE3, mark factory-deployed, auto-link, run bootstrap.
+    /// @dev Shared deploy core. CREATE3 deploys the proxy with keys and modules baked into
+    ///      the init calldata. Identity.initialize runs in the proxy constructor frame so
+    ///      keys and modules are applied without any cross-contract dance and without the
+    ///      factory ever holding a MANAGEMENT key. After deploy we check the post-state
+    ///      shape (at least one MANAGEMENT key), mark the identity as factory-deployed,
+    ///      auto-link the account, and emit TokenLinked for ASSET.
     function _doCreateIdentity(
         bytes memory _account,
         uint256 _identityType,
@@ -257,7 +263,13 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
             abi.encode(_identityType, _salt, keccak256(abi.encode(_keys)), keccak256(abi.encode(_modules)))
         );
 
-        address identity = _deployIdentity(deploySalt, _identityType);
+        address identity = _deployIdentity(deploySalt, _identityType, _keys, _modules);
+
+        // The identity must end up with at least one MANAGEMENT key. Without it nobody
+        // can manage the identity, so deploy is treated as a programmer error and reverts.
+        require(
+            KeyManager(identity).getKeysByPurpose(KeyPurposes.MANAGEMENT).length >= 1, Errors.NoManagementKeyInKeys()
+        );
 
         // Mark factory-deployed BEFORE linking so a re-entrant module can't pretend
         // to be a non-factory caller.
@@ -267,8 +279,6 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         if (_identityType == IdentityTypes.ASSET) {
             emit TokenLinked(address(bytes20(_account)), identity);
         }
-
-        _setupIdentity(identity, _keys, _modules);
 
         return identity;
     }
@@ -326,51 +336,19 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         return keccak256(account);
     }
 
-    /// @dev Bootstraps a freshly-deployed identity: add user keys, install modules
-    ///      (and grant their MODULE purposes), then drop the factory's bootstrap
-    ///      MANAGEMENT key. installModule uses `onlyManager` (not OZ's default
-    ///      `onlyEntryPointOrSelf`). See the NatSpec on SmartAccount.installModule
-    ///      for why.
-    function _setupIdentity(address _identity, Structs.KeyParam[] memory _keys, Structs.ModuleInstall[] memory _modules)
-        private
-    {
-        // 1. User keys.
-        for (uint256 i = 0; i < _keys.length; i++) {
-            KeyManager(_identity)
-                .addKeyWithData(
-                    _keys[i].keyHash, _keys[i].purpose, _keys[i].keyType, _keys[i].signerData, _keys[i].clientData
-                );
-        }
-
-        // 2. Modules. The factory has no opinion on what to install, including the
-        //    legacy ERC-734 execute/approve queue. Callers who want that ABI pass in
-        //    the four install entries and grant MANAGEMENT via the install's `purpose`.
-        for (uint256 i = 0; i < _modules.length; i++) {
-            SmartAccount(payable(_identity))
-                .installModule(_modules[i].moduleType, _modules[i].module, _modules[i].initData);
-            if (_modules[i].purpose != 0) {
-                // Register the module address as a MODULE-type key with that purpose.
-                KeyManager(_identity).addKey(hashAddress(_modules[i].module), _modules[i].purpose, KeyTypes.MODULE);
-            }
-        }
-
-        // 3. Drop the bootstrap key.
-        KeyManager(_identity).removeKey(hashAddress(address(this)), KeyPurposes.MANAGEMENT);
-
-        // 4. Must leave at least one MANAGEMENT key behind.
-        require(
-            KeyManager(_identity).getKeysByPurpose(KeyPurposes.MANAGEMENT).length >= 1, Errors.NoManagementKeyInKeys()
-        );
-    }
-
-    /// @dev CREATE3 deploy of a fresh BeaconProxy. Address depends only on (factory,
-    ///      deploySalt), so the same salt gives the same identity address on every
-    ///      canonical EVM chain where this factory shares the same address.
-    function _deployIdentity(bytes32 deploySalt, uint256 _identityType) private returns (address) {
-        // The proxy's constructor calls beacon.implementation() and forwards this
-        // calldata via delegatecall, so Identity.initialize runs in the new proxy's
-        // storage with the factory as the initial MANAGEMENT key.
-        bytes memory initData = abi.encodeCall(Identity.initialize, (address(this), _identityType));
+    /// @dev CREATE3 deploy of a fresh BeaconProxy. The address depends only on the factory
+    ///      address and the deploySalt, so the same salt gives the same identity address
+    ///      on every canonical EVM chain where this factory shares the same address. The
+    ///      proxy's constructor calls beacon.implementation() and forwards this calldata
+    ///      via delegatecall, so Identity.initialize runs inside the new proxy's storage
+    ///      and applies keys and modules in the same frame.
+    function _deployIdentity(
+        bytes32 deploySalt,
+        uint256 _identityType,
+        Structs.KeyParam[] memory _keys,
+        Structs.ModuleInstall[] memory _modules
+    ) private returns (address) {
+        bytes memory initData = abi.encodeCall(Identity.initialize, (_identityType, _keys, _modules));
         bytes memory bytecode = abi.encodePacked(type(BeaconProxy).creationCode, abi.encode(beacon, initData));
 
         return Create3.deploy(0, deploySalt, bytecode);

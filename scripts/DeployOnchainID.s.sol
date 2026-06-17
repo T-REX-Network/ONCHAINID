@@ -56,7 +56,7 @@ contract DeployOnchainID is Script {
         console.log("ERC7579Signature Validator:", address(signatureValidator));
 
         // 2. Identity implementation (library mode — prevents direct initialization)
-        Identity identityImpl = new Identity(deployer, true);
+        Identity identityImpl = new Identity(true);
         console.log("Identity implementation:", address(identityImpl));
 
         // 3. IdentityUtilities implementation + proxy
