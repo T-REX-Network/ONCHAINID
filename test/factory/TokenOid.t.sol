@@ -186,6 +186,32 @@ contract TokenOidTest is Test {
         assertTrue(other != tokenIdentityAddr, "different bootstrap config should land at a different address");
     }
 
+    /// @notice ASSET identities cannot revoke their bound token from the factory directory.
+    ///         Closes Ernest's PR #20 review: the token contract can't sign a fresh
+    ///         linkAccount digest, so revoking would orphan getIdentity(token) forever.
+    function test_revokeAccount_revertWhenCallerIsAssetIdentity() public {
+        address token = makeAddr("tokenForRevoke");
+        vm.prank(deployer);
+        address assetIdentity = setup.idFactory
+        .createIdentityFor(token, IdentityTypes.ASSET, "revokeSalt", _makeMgmtKey(bob), _emptyModules);
+
+        vm.prank(assetIdentity);
+        vm.expectRevert(abi.encodeWithSelector(Errors.CannotRevokeFromNonSigningIdentity.selector, assetIdentity));
+        setup.idFactory.revokeAccount(abi.encodePacked(token));
+    }
+
+    /// @notice Same guard applies to SMART_CONTRACT identities (also non-signing entities).
+    function test_revokeAccount_revertWhenCallerIsSmartContractIdentity() public {
+        address contractAddr = makeAddr("smartContractForRevoke");
+        vm.prank(deployer);
+        address scIdentity = setup.idFactory
+            .createIdentityFor(contractAddr, IdentityTypes.SMART_CONTRACT, "scSalt", _makeMgmtKey(bob), _emptyModules);
+
+        vm.prank(scIdentity);
+        vm.expectRevert(abi.encodeWithSelector(Errors.CannotRevokeFromNonSigningIdentity.selector, scIdentity));
+        setup.idFactory.revokeAccount(abi.encodePacked(contractAddr));
+    }
+
     /// @notice Asset identity with multiple key types should set all keys.
     function test_createAssetIdentity_withMultipleKeys_shouldSetKeys() public {
         address claimAdder = makeAddr("tokenClaimAdder");

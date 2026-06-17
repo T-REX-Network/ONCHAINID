@@ -143,10 +143,13 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         // contracts could register themselves and feed bogus claims to T-REX modules.
         require(_storage().isFactoryIdentity[msg.sender], Errors.NotFactoryIdentity(msg.sender));
 
-        // Asset identities represent exactly one token contract. Refuse to add more
-        // wallets to them.
+        // Non-signing-entity identities (ASSET, SMART_CONTRACT) are bound to one contract
+        // at deploy. Adding more wallets to them would break the 1:1 contract↔identity
+        // mapping.
+        uint256 idType = IIdentity(msg.sender).getIdentityType();
         require(
-            IIdentity(msg.sender).getIdentityType() != IdentityTypes.ASSET, Errors.CannotLinkToAssetIdentity(msg.sender)
+            idType != IdentityTypes.ASSET && idType != IdentityTypes.SMART_CONTRACT,
+            Errors.CannotLinkToAssetIdentity(msg.sender)
         );
 
         bytes32 digest = _hashTypedDataV4(
@@ -166,6 +169,16 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
 
     /// @inheritdoc IIdentityFactory
     function revokeAccount(bytes calldata account) external {
+        // Symmetric with the linkAccount ASSET guard: non-signing-entity identities (ASSET,
+        // SMART_CONTRACT) cannot re-link a fresh wallet because the bound contract can't
+        // sign a LinkAccount digest. Allowing revoke would orphan the factory's discovery
+        // entry permanently. Block it.
+        uint256 idType = IIdentity(msg.sender).getIdentityType();
+        require(
+            idType != IdentityTypes.ASSET && idType != IdentityTypes.SMART_CONTRACT,
+            Errors.CannotRevokeFromNonSigningIdentity(msg.sender)
+        );
+
         bytes32 key = _walletKey(account);
         require(_storage().wallets[key].identity == msg.sender, Errors.WalletNotLinkedToIdentity(account));
         _revokeAccount(account, msg.sender);

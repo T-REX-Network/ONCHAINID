@@ -69,6 +69,12 @@ library Errors {
     ///         it would break the 1:1 token↔identity mapping.
     error CannotLinkToAssetIdentity(address identity);
 
+    /// @notice Reverts when {revokeAccount} is called on a non-signing-entity identity
+    ///         (ASSET or SMART_CONTRACT). The bound contract cannot sign a fresh
+    ///         {linkAccount} digest, so revoking would orphan the factory's discovery
+    ///         entry permanently with no recovery path.
+    error CannotRevokeFromNonSigningIdentity(address identity);
+
     /// @notice Reverts when a wallet is already actively linked to the calling identity.
     error WalletAlreadyLinkedToIdentity(bytes wallet);
 
