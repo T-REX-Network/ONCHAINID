@@ -472,6 +472,13 @@ contract ClaimsModule is IERC7579Module, IERC735 {
 
     /**
      * @dev Require the off-chain caller to hold a claim key on `account`.
+     *
+     *      Executor on self note: an executor calling `addClaim` or `removeClaim` on the
+     *      identity itself is no longer supported. The fallback dispatcher appends the
+     *      identity as the ERC-2771 tail, so `caller` here resolves to the identity, which
+     *      does not hold a claim key on its own registry. This is intentional. Off-chain
+     *      claim issuance from a CLAIM_SIGNER key remains the supported path.
+     *
      * @param account Identity whose keys are checked.
      * @param caller Off-chain caller, read from the ERC-2771 calldata tail.
      * @param onlyClaimSigner If true, accept CLAIM_SIGNER only (used by `removeClaim`).
@@ -492,6 +499,12 @@ contract ClaimsModule is IERC7579Module, IERC735 {
 
     /**
      * @dev Require the off-chain caller to hold MANAGEMENT on `account`.
+     *
+     *      Executor on self note: same as `_requireClaimKey`. An executor calling
+     *      management gated entrypoints on the identity itself will fail here because the
+     *      ERC-2771 tail resolves to the identity, which does not hold MANAGEMENT on its
+     *      own registry. This is intentional.
+     *
      * @param account Identity whose keys are checked.
      * @param caller Off-chain caller, read from the ERC-2771 calldata tail.
      */

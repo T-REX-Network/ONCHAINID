@@ -470,8 +470,55 @@ contract SmartAccountTest is OnchainIDSetup {
         kam.canAutoApprove(address(aliceIdentity), keccak256(abi.encodePacked(alice)), address(0), "");
     }
 
+    /// @notice Proves that `executeFromExecutor` actually asks the policy module before
+    ///         dispatching. We swap the real policy for one that always says yes, then use
+    ///         an executor with no key purpose. The built-in fallback rule would reject
+    ///         this call, so it can only go through if the policy was consulted.
+    function test_executeFromExecutor_path_consultsKeyApprovalModule() public {
+        // Replace the real policy with one that approves everything.
+        address kam = address(onchainidSetup.keyApprovalModule);
+        vm.startPrank(alice);
+        aliceIdentity.uninstallModule(MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.execute.selector));
+
+        AlwaysApprovePolicy approveAll = new AlwaysApprovePolicy();
+        aliceIdentity.installModule(
+            MODULE_TYPE_FALLBACK, address(approveAll), abi.encodePacked(IKeyExecutor.execute.selector)
+        );
+
+        // Install the executor but do not give it any key. Without a key, only the
+        // policy can authorize the call. If the policy is skipped, the test fails.
+        TestExecutor testExec = new TestExecutor();
+        aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
+        vm.stopPrank();
+
+        Counter counter = new Counter();
+        bytes memory call = abi.encodeCall(Counter.increment, ());
+        bytes memory executionCalldata = abi.encodePacked(address(counter), uint256(0), call);
+
+        testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
+        assertEq(counter.count(), 1, "executor without a key should only dispatch if the policy was consulted");
+    }
+
+    /// @notice Ernest's r3421876946 happy path: an ACTION executor targeting an external
+    ///         contract that KAM auto-approves. The simple positive case that the original
+    ///         deleted test covered, restored on a scenario that still passes after H-04.
+    function test_executeFromExecutor_path_actionOnExternal_kamAutoApproves() public {
+        TestExecutor testExec = new TestExecutor();
+        vm.startPrank(alice);
+        aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
+        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.ACTION, KeyTypes.ECDSA);
+        vm.stopPrank();
+
+        Counter counter = new Counter();
+        bytes memory call = abi.encodeCall(Counter.increment, ());
+        bytes memory executionCalldata = abi.encodePacked(address(counter), uint256(0), call);
+
+        testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
+        assertEq(counter.count(), 1, "ACTION executor on external target should be auto-approved by KAM");
+    }
+
     /// @notice No-policy strict fallback: with `KeyApprovalModule` uninstalled, an ACTION
-    ///         executor can still dispatch external calls — the pre-PR rule applies.
+    ///         executor can still dispatch external calls. The pre-PR rule applies.
     function test_executeFromExecutor_path_noPolicyInstalled_strictFallback_actionExternal() public {
         address kam = address(onchainidSetup.keyApprovalModule);
         // Uninstall the fallback handler for `execute` so policy discovery returns address(0).
@@ -739,6 +786,25 @@ contract BrokenPolicy is IERC7579Module {
 
     function canAutoApprove(address, bytes32, address, bytes calldata) external pure returns (bool) {
         revert("nope");
+    }
+
+}
+
+/// @notice ERC-7579 FALLBACK module whose `canAutoApprove` returns true for any input.
+///         Used to prove that `SmartAccount._isKeyAuthorizedToCallTarget` actually consults
+///         the wired policy module. Outcomes that disagree with the strict default
+///         (e.g. authorizing a keyless executor) can only come from the policy staticcall.
+contract AlwaysApprovePolicy is IERC7579Module {
+
+    function isModuleType(uint256 moduleTypeId) external pure returns (bool) {
+        return moduleTypeId == MODULE_TYPE_FALLBACK;
+    }
+
+    function onInstall(bytes calldata) external pure { }
+    function onUninstall(bytes calldata) external pure { }
+
+    function canAutoApprove(address, bytes32, address, bytes calldata) external pure returns (bool) {
+        return true;
     }
 
 }
