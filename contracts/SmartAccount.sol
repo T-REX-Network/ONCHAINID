@@ -27,20 +27,16 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
 
     using EnumerableSet for EnumerableSet.UintSet;
 
-    /// @notice Install a module. MANAGEMENT-gated so the factory can install at bootstrap.
-    /// @dev The OZ default gate (`onlyEntryPointOrSelf`) is intentionally replaced with the
-    ///      stricter ERC-734 `onlyManager` check, and `_installModule` is invoked directly
-    ///      instead of `super.installModule`. This is required by the factory-orchestrated
-    ///      bootstrap model: {IdentityFactory._setupIdentity} holds a transient MANAGEMENT
-    ///      key on the freshly deployed identity and installs modules before any ERC-4337
-    ///      EntryPoint or self-call path exists. The translated gate (`onlyManager` =
-    ///      caller must hold a MANAGEMENT key in this identity's ERC-734 registry) is at
-    ///      least as strict as the OZ default, because the only paths that satisfied
-    ///      `onlyEntryPointOrSelf` were (a) the canonical EntryPoint, which in turn ran a
-    ///      MANAGEMENT-key-signed UserOp, or (b) the identity calling itself, which can
-    ///      only be reached via a MANAGEMENT-authorized executor. Closing issue #6 as
-    ///      "won't fix" per design: the bootstrap path requires this override; the
-    ///      override is documented and proven equivalent in privilege.
+    /// @notice Install a module. Gated on MANAGEMENT.
+    /// @dev The OZ default gate (`onlyEntryPointOrSelf`) is replaced with the stricter
+    ///      ERC-734 `onlyManager` check, and `_installModule` is invoked directly instead
+    ///      of `super.installModule`. The translated gate is at least as strict as the
+    ///      OZ default, because the only paths that satisfied `onlyEntryPointOrSelf` were
+    ///      (a) the canonical EntryPoint, which in turn ran a MANAGEMENT-signed UserOp,
+    ///      or (b) the identity calling itself, which can only be reached via a
+    ///      MANAGEMENT-authorized executor. The override lets a MANAGEMENT key holder
+    ///      install or rotate modules directly, without round-tripping through an
+    ///      EntryPoint or a self-call. Closing issue #6 as "won't fix" per design.
     /// @dev Fallback handler wiring: `module` must be a contract. If it resolves to an
     ///      EOA (or any non-zero address with no code), policy queries hit the strict
     ///      default and the fallback silently degrades. Don't install fallbacks on EOAs.

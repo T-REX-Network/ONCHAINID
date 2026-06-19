@@ -10,6 +10,7 @@ import { hashAddress } from "./libraries/Hashing.sol";
 import { KeyTypes } from "./libraries/KeyTypes.sol";
 import { Structs } from "./storage/Structs.sol";
 import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import { MODULE_TYPE_EXECUTOR, MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import { ERC165 } from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 
@@ -37,9 +38,12 @@ import { ERC165 } from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
  *      Initialization is single-shot. {initialize} takes the identity type plus the
  *      caller-supplied keys and modules and applies them inside the proxy constructor frame,
  *      with no cross-contract calls. No transient bootstrap MANAGEMENT key is ever written
- *      to any external contract. The shape invariant (at least one MANAGEMENT key) is
- *      enforced by {IdentityFactory} after deploy. This contract trusts the caller's shape
- *      and can be deployed directly with whatever keys and modules the caller wants.
+ *      to any external contract.
+ *
+ *      Two shape invariants are enforced at init time. The factory's post-deploy check
+ *      asserts at least one MANAGEMENT key. This contract's pre-init check asserts the
+ *      module list contains at least one validator or executor, so the account can either
+ *      verify signatures or dispatch outbound calls.
  */
 contract Identity is Initializable, SmartAccount, ERC165 {
 
@@ -85,6 +89,10 @@ contract Identity is Initializable, SmartAccount, ERC165 {
         Structs.KeyParam[] calldata _keys,
         Structs.ModuleInstall[] calldata _modules
     ) external virtual initializer {
+        // The account needs at least a validator (to verify signatures) or an executor
+        // (to dispatch outbound calls). Without either it can't do anything useful.
+        require(_hasValidatorOrExecutor(_modules), Errors.IdentityNoValidatorOrExecutor());
+
         _getIdentityMetadata().identityType = _identityType;
         __AccountERC7579_init();
         __Identity_init();
@@ -106,6 +114,16 @@ contract Identity is Initializable, SmartAccount, ERC165 {
         }
 
         emit IdentityInitialized(_identityType);
+    }
+
+    /// @dev True when `modules` contains at least one validator or executor entry.
+    function _hasValidatorOrExecutor(Structs.ModuleInstall[] calldata modules) private pure returns (bool) {
+        for (uint256 i = 0; i < modules.length; i++) {
+            if (modules[i].moduleType == MODULE_TYPE_VALIDATOR || modules[i].moduleType == MODULE_TYPE_EXECUTOR) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /// @notice Returns the identity type set at initialization.

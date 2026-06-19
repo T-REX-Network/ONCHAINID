@@ -43,6 +43,11 @@ library Errors {
     /// @notice Reverts if no key with MANAGEMENT purpose is provided
     error NoManagementKeyInKeys();
 
+    /// @notice Reverts when an identity is initialized with no validator and no executor
+    ///         module. Without either, the account cannot verify signatures or dispatch
+    ///         outbound calls.
+    error IdentityNoValidatorOrExecutor();
+
     /// @notice Reverts when a wallet is already linked to a different identity than the one
     ///         currently trying to claim it. Sticky binding: a wallet can be re-linked only to
     ///         its original identity, never to another.

@@ -3,6 +3,7 @@ pragma solidity ^0.8.27;
 
 import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { IdentityHelper } from "../helpers/IdentityHelper.sol";
+import { MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { Errors as OZErrors } from "@openzeppelin/contracts/utils/Errors.sol";
 import { Identity } from "contracts/Identity.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
@@ -28,7 +29,9 @@ contract TokenOidTest is Test {
     address internal alice;
     address internal bob;
 
-    Structs.ModuleInstall[] internal _emptyModules;
+    /// @dev Minimal module bundle that satisfies Identity.initialize's "needs a validator
+    ///      or an executor" invariant. A single ERC7579Signature validator is enough.
+    Structs.ModuleInstall[] internal _defaultModules;
 
     function setUp() public {
         deployer = makeAddr("tokenOidDeployer");
@@ -38,6 +41,12 @@ contract TokenOidTest is Test {
         vm.startPrank(deployer);
         setup = IdentityHelper.deployFactory(deployer);
         vm.stopPrank();
+
+        _defaultModules.push(
+            Structs.ModuleInstall({
+                moduleType: MODULE_TYPE_VALIDATOR, module: address(setup.signatureValidator), initData: "", purpose: 0
+            })
+        );
     }
 
     // ---- helpers ----
@@ -77,7 +86,7 @@ contract TokenOidTest is Test {
                 Errors.NotAuthorizedForIdentityType.selector, alice, IdentityTypes.ASSET, ROLE_TOKEN_FACTORY
             )
         );
-        setup.idFactory.createIdentityFor(alice, IdentityTypes.ASSET, "TST", _makeMgmtKey(alice), _emptyModules);
+        setup.idFactory.createIdentityFor(alice, IdentityTypes.ASSET, "TST", _makeMgmtKey(alice), _defaultModules);
     }
 
     /// @notice Once granted the ASSET role, a non-admin caller can mint asset identities.
@@ -90,7 +99,7 @@ contract TokenOidTest is Test {
         address token = makeAddr("tokenAddr");
         vm.prank(alice);
         address identity = setup.idFactory
-            .createIdentityFor(token, IdentityTypes.ASSET, "factorySalt", _makeMgmtKey(bob), _emptyModules);
+            .createIdentityFor(token, IdentityTypes.ASSET, "factorySalt", _makeMgmtKey(bob), _defaultModules);
 
         assertTrue(identity != address(0), "Identity should be deployed");
         assertEq(setup.idFactory.getIdentity(abi.encodePacked(token)), identity, "Token should map to identity");
@@ -113,14 +122,14 @@ contract TokenOidTest is Test {
                 Errors.NotAuthorizedForIdentityType.selector, deployer, IdentityTypes.ASSET, ROLE_TOKEN_FACTORY
             )
         );
-        setup.idFactory.createIdentityFor(token, IdentityTypes.ASSET, "adminSalt", _makeMgmtKey(bob), _emptyModules);
+        setup.idFactory.createIdentityFor(token, IdentityTypes.ASSET, "adminSalt", _makeMgmtKey(bob), _defaultModules);
 
         vm.prank(deployer);
         setup.accessManager.grantRole(ROLE_TOKEN_FACTORY, deployer, 0);
 
         vm.prank(deployer);
         address identity = setup.idFactory
-        .createIdentityFor(token, IdentityTypes.ASSET, "adminSalt", _makeMgmtKey(bob), _emptyModules);
+            .createIdentityFor(token, IdentityTypes.ASSET, "adminSalt", _makeMgmtKey(bob), _defaultModules);
 
         assertTrue(identity != address(0));
         assertEq(setup.idFactory.getIdentity(abi.encodePacked(token)), identity);
@@ -131,19 +140,19 @@ contract TokenOidTest is Test {
     function test_createAssetIdentity_revertTokenZeroAddress() public {
         vm.prank(deployer);
         vm.expectRevert(Errors.ZeroAddress.selector);
-        setup.idFactory.createIdentityFor(address(0), IdentityTypes.ASSET, "TST", _makeMgmtKey(alice), _emptyModules);
+        setup.idFactory.createIdentityFor(address(0), IdentityTypes.ASSET, "TST", _makeMgmtKey(alice), _defaultModules);
     }
 
     function test_createAssetIdentity_revertEmptySalt() public {
         vm.prank(deployer);
         vm.expectRevert(Errors.EmptyString.selector);
-        setup.idFactory.createIdentityFor(alice, IdentityTypes.ASSET, "", _makeMgmtKey(alice), _emptyModules);
+        setup.idFactory.createIdentityFor(alice, IdentityTypes.ASSET, "", _makeMgmtKey(alice), _defaultModules);
     }
 
     function test_createAssetIdentity_revertEmptyKeys() public {
         vm.prank(deployer);
         vm.expectRevert(Errors.EmptyListOfKeys.selector);
-        setup.idFactory.createIdentityFor(alice, IdentityTypes.ASSET, "TST", new Structs.KeyParam[](0), _emptyModules);
+        setup.idFactory.createIdentityFor(alice, IdentityTypes.ASSET, "TST", new Structs.KeyParam[](0), _defaultModules);
     }
 
     /// @notice At least one MANAGEMENT key must be supplied. The factory rejects deploys
@@ -154,12 +163,12 @@ contract TokenOidTest is Test {
 
         vm.prank(deployer);
         vm.expectRevert(Errors.NoManagementKeyInKeys.selector);
-        setup.idFactory.createIdentityFor(alice, IdentityTypes.ASSET, "TST", actionOnly, _emptyModules);
+        setup.idFactory.createIdentityFor(alice, IdentityTypes.ASSET, "TST", actionOnly, _defaultModules);
     }
 
     function test_createAssetIdentity_shouldCreateAndRevertDuplicate() public {
         vm.prank(deployer);
-        setup.idFactory.createIdentityFor(alice, IdentityTypes.ASSET, "salt1", _makeMgmtKey(bob), _emptyModules);
+        setup.idFactory.createIdentityFor(alice, IdentityTypes.ASSET, "salt1", _makeMgmtKey(bob), _defaultModules);
 
         address tokenIdentityAddr = setup.idFactory.getIdentity(abi.encodePacked(alice));
         assertTrue(tokenIdentityAddr != address(0));
@@ -175,13 +184,13 @@ contract TokenOidTest is Test {
                 Errors.WalletBoundToAnotherIdentity.selector, abi.encodePacked(alice), tokenIdentityAddr
             )
         );
-        setup.idFactory.createIdentityFor(alice, IdentityTypes.ASSET, "salt2", _makeMgmtKey(alice), _emptyModules);
+        setup.idFactory.createIdentityFor(alice, IdentityTypes.ASSET, "salt2", _makeMgmtKey(alice), _defaultModules);
 
         // Same _salt string with a different token + different keys yields a different
         // address under the bootstrap-mixed salt scheme. No Create3 collision.
         vm.prank(deployer);
         address other =
-            setup.idFactory.createIdentityFor(bob, IdentityTypes.ASSET, "salt1", _makeMgmtKey(alice), _emptyModules);
+            setup.idFactory.createIdentityFor(bob, IdentityTypes.ASSET, "salt1", _makeMgmtKey(alice), _defaultModules);
         assertTrue(other != address(0));
         assertTrue(other != tokenIdentityAddr, "different bootstrap config should land at a different address");
     }
@@ -193,7 +202,7 @@ contract TokenOidTest is Test {
         address token = makeAddr("tokenForRevoke");
         vm.prank(deployer);
         address assetIdentity = setup.idFactory
-        .createIdentityFor(token, IdentityTypes.ASSET, "revokeSalt", _makeMgmtKey(bob), _emptyModules);
+            .createIdentityFor(token, IdentityTypes.ASSET, "revokeSalt", _makeMgmtKey(bob), _defaultModules);
 
         vm.prank(assetIdentity);
         vm.expectRevert(abi.encodeWithSelector(Errors.CannotRevokeFromNonSigningIdentity.selector, assetIdentity));
@@ -205,7 +214,7 @@ contract TokenOidTest is Test {
         address contractAddr = makeAddr("smartContractForRevoke");
         vm.prank(deployer);
         address scIdentity = setup.idFactory
-            .createIdentityFor(contractAddr, IdentityTypes.SMART_CONTRACT, "scSalt", _makeMgmtKey(bob), _emptyModules);
+            .createIdentityFor(contractAddr, IdentityTypes.SMART_CONTRACT, "scSalt", _makeMgmtKey(bob), _defaultModules);
 
         vm.prank(scIdentity);
         vm.expectRevert(abi.encodeWithSelector(Errors.CannotRevokeFromNonSigningIdentity.selector, scIdentity));
@@ -223,7 +232,7 @@ contract TokenOidTest is Test {
         address token = makeAddr("tokenWithKeys");
         vm.prank(deployer);
         address identityAddr =
-            setup.idFactory.createIdentityFor(token, IdentityTypes.ASSET, "saltKeys", keys, _emptyModules);
+            setup.idFactory.createIdentityFor(token, IdentityTypes.ASSET, "saltKeys", keys, _defaultModules);
 
         Identity identity = Identity(payable(identityAddr));
 
@@ -262,7 +271,7 @@ contract TokenOidTest is Test {
 
         vm.prank(deployer);
         address identityAddr = setup.idFactory
-            .createIdentityFor(token, IdentityTypes.ASSET, "amKey", _makeAccessManagerMgmtKey(am), _emptyModules);
+            .createIdentityFor(token, IdentityTypes.ASSET, "amKey", _makeAccessManagerMgmtKey(am), _defaultModules);
 
         Identity identity = Identity(payable(identityAddr));
         bytes32 amKeyHash = keccak256(abi.encodePacked(am));
@@ -284,7 +293,7 @@ contract TokenOidTest is Test {
 
         vm.prank(deployer);
         address identityAddr = setup.idFactory
-            .createIdentityFor(token, IdentityTypes.ASSET, "amGov", _makeAccessManagerMgmtKey(am), _emptyModules);
+            .createIdentityFor(token, IdentityTypes.ASSET, "amGov", _makeAccessManagerMgmtKey(am), _defaultModules);
 
         Identity identity = Identity(payable(identityAddr));
 

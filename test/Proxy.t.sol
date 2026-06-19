@@ -2,6 +2,7 @@
 pragma solidity ^0.8.27;
 
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
+import { MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { ERC1967Utils } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Utils.sol";
 import { BeaconProxy } from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
 import { UpgradeableBeacon } from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
@@ -10,6 +11,8 @@ import { Errors as OZErrors } from "@openzeppelin/contracts/utils/Errors.sol";
 import { Identity } from "contracts/Identity.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
+import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
+import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 
 import { OnchainIDSetup } from "./helpers/OnchainIDSetup.sol";
@@ -17,8 +20,28 @@ import { Test as TestContract } from "./mocks/Test.sol";
 
 contract ProxyTest is OnchainIDSetup {
 
-    function _initData(uint256 idType) internal pure returns (bytes memory) {
-        return abi.encodeCall(Identity.initialize, (idType, new Structs.KeyParam[](0), new Structs.ModuleInstall[](0)));
+    /// @dev Build a minimal initialize() calldata. One MANAGEMENT key plus a validator
+    ///      module so Identity.initialize's shape invariants pass.
+    function _initData(uint256 idType) internal view returns (bytes memory) {
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
+        bytes memory signer = abi.encodePacked(alice);
+        keys[0] = Structs.KeyParam({
+            keyHash: keccak256(signer),
+            purpose: KeyPurposes.MANAGEMENT,
+            keyType: KeyTypes.ECDSA,
+            signerData: signer,
+            clientData: ""
+        });
+
+        Structs.ModuleInstall[] memory modules = new Structs.ModuleInstall[](1);
+        modules[0] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_VALIDATOR,
+            module: address(onchainidSetup.signatureValidator),
+            initData: "",
+            purpose: 0
+        });
+
+        return abi.encodeCall(Identity.initialize, (idType, keys, modules));
     }
 
     function test_revertBecauseBeaconIsZeroAddress() public {
