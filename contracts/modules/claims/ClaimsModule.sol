@@ -457,17 +457,19 @@ contract ClaimsModule is IERC7579Module, IERC735 {
 
     /**
      * @dev Require the off-chain caller to hold a claim key on `account`.
-     *      Self-calls (caller == account) are allowed — these arrive through `executeFromExecutor`
-     *      paths where the upstream `SmartAccount` per-target rule already enforced the right
-     *      purpose. Removing this shortcut would break the documented executor-with-claim-key flow.
+     *
+     *      Executor on self note: an executor calling `addClaim` or `removeClaim` on the
+     *      identity itself is no longer supported. The fallback dispatcher appends the
+     *      identity as the ERC-2771 tail, so `caller` here resolves to the identity, which
+     *      does not hold a claim key on its own registry. This is intentional. Off-chain
+     *      claim issuance from a CLAIM_SIGNER key remains the supported path.
+     *
      * @param account Identity whose keys are checked.
      * @param caller Off-chain caller, read from the ERC-2771 calldata tail.
      * @param onlyClaimSigner If true, accept CLAIM_SIGNER only (used by `removeClaim`).
      *        If false, accept CLAIM_SIGNER or CLAIM_ADDER (used by `addClaim`).
      */
     function _requireClaimKey(address account, address caller, bool onlyClaimSigner) internal view {
-        if (caller == account) return;
-
         bytes32 keyHash = hashAddress(caller);
 
         // CLAIM_SIGNER is always enough; it covers both add and remove.
@@ -482,12 +484,16 @@ contract ClaimsModule is IERC7579Module, IERC735 {
 
     /**
      * @dev Require the off-chain caller to hold MANAGEMENT on `account`.
-     *      Self-calls are allowed for the same reason as in `_requireClaimKey`.
+     *
+     *      Executor on self note: same as `_requireClaimKey`. An executor calling
+     *      management gated entrypoints on the identity itself will fail here because the
+     *      ERC-2771 tail resolves to the identity, which does not hold MANAGEMENT on its
+     *      own registry. This is intentional.
+     *
      * @param account Identity whose keys are checked.
      * @param caller Off-chain caller, read from the ERC-2771 calldata tail.
      */
     function _requireManagement(address account, address caller) internal view {
-        if (caller == account) return;
         require(
             IERC734(account).keyHasPurpose(hashAddress(caller), KeyPurposes.MANAGEMENT),
             Errors.SenderDoesNotHaveManagementKey()
