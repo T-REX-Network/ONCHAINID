@@ -231,11 +231,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     }
 
     /// @inheritdoc IIdentityFactory
-    function getPendingCrossChainLink(bytes calldata account)
-        external
-        view
-        returns (address identity, uint256 expiry)
-    {
+    function getPendingCrossChainLink(bytes calldata account) external view returns (address identity, uint256 expiry) {
         PendingLink storage pending = _storage().pendingLinks[_walletKey(account)];
         return (pending.identity, pending.expiry);
     }
@@ -249,10 +245,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         bytes32 walletKey = _walletKey(account);
         PendingLink memory pending = _storage().pendingLinks[walletKey];
         require(pending.identity != address(0), Errors.NoPendingCrossChainLink(account));
-        require(
-            pending.identity == msg.sender,
-            Errors.PendingCrossChainLinkIdentityMismatch(account, pending.identity)
-        );
+        require(pending.identity == msg.sender, Errors.PendingCrossChainLinkIdentityMismatch(account, pending.identity));
         require(block.timestamp <= pending.expiry, Errors.ExpiredSignature(pending.expiry));
 
         delete _storage().pendingLinks[walletKey];
@@ -263,7 +256,10 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     /// @dev ERC-7786 gateway authorization. The factory delegates trust to its
     ///      AccessManager: only addresses the AM admin has whitelisted via
     ///      {setTrustedGateway} can deliver inbound messages.
-    function _isAuthorizedGateway(address gateway, bytes calldata /* sender */ )
+    function _isAuthorizedGateway(
+        address gateway,
+        bytes calldata /* sender */
+    )
         internal
         view
         override
@@ -281,9 +277,11 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         bytes32, /* receiveId */
         bytes calldata, /* sender */
         bytes calldata payload
-    ) internal override {
-        (bytes memory walletEnvelope, address identity, uint256 expiry) =
-            abi.decode(payload, (bytes, address, uint256));
+    )
+        internal
+        override
+    {
+        (bytes memory walletEnvelope, address identity, uint256 expiry) = abi.decode(payload, (bytes, address, uint256));
 
         require(block.timestamp <= expiry, Errors.ExpiredSignature(expiry));
         require(_storage().isFactoryIdentity[identity], Errors.NotFactoryIdentity(identity));
@@ -292,9 +290,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // Sticky binding still applies: a wallet that is already linked or
         // revoked cannot be re-proposed. The confirm step would reject anyway,
         // but failing fast here saves the identity owner a wasted transaction.
-        require(
-            _storage().wallets[key].status == AccountStatus.None, Errors.WalletAlreadyHasEntry(walletEnvelope)
-        );
+        require(_storage().wallets[key].status == AccountStatus.None, Errors.WalletAlreadyHasEntry(walletEnvelope));
 
         _storage().pendingLinks[key] = PendingLink({ identity: identity, expiry: expiry });
         emit PendingCrossChainLinkProposed(walletEnvelope, identity, expiry);

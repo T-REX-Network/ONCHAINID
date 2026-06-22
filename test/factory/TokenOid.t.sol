@@ -176,8 +176,7 @@ contract TokenOidTest is Test {
         vm.prank(deployer);
         setup.idFactory.createIdentityFor(alice, IdentityTypes.ASSET, "salt1", _makeMgmtKey(bob), _defaultModules);
 
-        address tokenIdentityAddr =
-            setup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, alice));
+        address tokenIdentityAddr = setup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, alice));
         assertTrue(tokenIdentityAddr != address(0));
         bytes[] memory accs = setup.idFactory.getAccounts(tokenIdentityAddr);
         assertEq(accs.length, 1);

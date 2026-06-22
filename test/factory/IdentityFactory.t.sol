@@ -262,7 +262,10 @@ contract IdentityFactoryTest is OnchainIDSetup {
                 IdentityTypes.CLAIM_ISSUER, "selfIssuerOk", _makeSingleMgmtKeys(selfDeployer), _defaultModules()
             );
         assertTrue(identityAddr != address(0));
-        assertEq(onchainidSetup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, selfDeployer)), identityAddr);
+        assertEq(
+            onchainidSetup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, selfDeployer)),
+            identityAddr
+        );
     }
 
     /// @notice The selfDeployable flag does not affect createIdentityFor. A type can be
@@ -506,9 +509,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         address existingTokenIdentity = onchainidSetup.idFactory.getIdentity(tokenAcc);
         vm.prank(deployer);
         vm.expectRevert(
-            abi.encodeWithSelector(
-                Errors.WalletBoundToAnotherIdentity.selector, tokenAcc, existingTokenIdentity
-            )
+            abi.encodeWithSelector(Errors.WalletBoundToAnotherIdentity.selector, tokenAcc, existingTokenIdentity)
         );
         onchainidSetup.idFactory
             .createIdentityFor(
@@ -617,7 +618,8 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
     /// @notice Tokens share the wallet keyspace — the same getIdentity(bytes) call works.
     function test_getIdentity_resolvesToken() public view {
-        address identity = onchainidSetup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, Constants.TOKEN_ADDRESS));
+        address identity = onchainidSetup.idFactory
+            .getIdentity(InteroperableAddress.formatEvmV1(block.chainid, Constants.TOKEN_ADDRESS));
         assertTrue(identity != address(0));
     }
 
@@ -627,11 +629,18 @@ contract IdentityFactoryTest is OnchainIDSetup {
     }
 
     function test_getIdentity_unknownWalletReturnsZero() public {
-        assertEq(onchainidSetup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, makeAddr("unknown"))), address(0));
+        assertEq(
+            onchainidSetup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, makeAddr("unknown"))),
+            address(0)
+        );
     }
 
     function test_getIdentity_unknownTokenReturnsZero() public {
-        assertEq(onchainidSetup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, makeAddr("unknownToken"))), address(0));
+        assertEq(
+            onchainidSetup.idFactory
+                .getIdentity(InteroperableAddress.formatEvmV1(block.chainid, makeAddr("unknownToken"))),
+            address(0)
+        );
     }
 
     // ============ ERC-7930 — non-EVM interoperable address ============
@@ -887,7 +896,11 @@ contract IdentityFactoryTest is OnchainIDSetup {
         address identityAddr = onchainidSetup.idFactory
             .createIdentity(IdentityTypes.INDIVIDUAL, "selfDeploySalt", _makeSingleMgmtKeys(eoa), _defaultModules());
         assertTrue(identityAddr != address(0));
-        assertEq(onchainidSetup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, eoa)), identityAddr, "self-deployer auto-linked");
+        assertEq(
+            onchainidSetup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, eoa)),
+            identityAddr,
+            "self-deployer auto-linked"
+        );
     }
 
     // ============ IdentityInitialized event ============
