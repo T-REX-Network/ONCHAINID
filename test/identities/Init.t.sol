@@ -6,27 +6,22 @@ import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/I
 import { Identity } from "contracts/Identity.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
+import { Structs } from "contracts/storage/Structs.sol";
 
 contract InitTest is OnchainIDSetup {
 
     function test_revert_whenReinitializingDeployedIdentity() public {
         vm.prank(alice);
         vm.expectRevert(Initializable.InvalidInitialization.selector);
-        aliceIdentity.initialize(alice, IdentityTypes.INDIVIDUAL);
+        aliceIdentity.initialize(IdentityTypes.INDIVIDUAL, new Structs.KeyParam[](0), new Structs.ModuleInstall[](0));
     }
 
-    function test_revert_whenInitializingWithZeroAddress() public {
+    function test_revert_whenInitializingLibraryDirectly() public {
         // The library implementation is constructed with `_disableInitializers()`, so any
-        // call to `initialize` on it reverts via OZ's `Initializable` slot — before the
-        // zero-address check even runs.
-        Identity libraryImpl = new Identity(deployer, true);
+        // call to `initialize` on it reverts via OZ's `Initializable` slot.
+        Identity libraryImpl = new Identity(true);
         vm.expectRevert(Initializable.InvalidInitialization.selector);
-        libraryImpl.initialize(address(0), IdentityTypes.INDIVIDUAL);
-    }
-
-    function test_revert_whenCreatingIdentityWithInvalidInitialKey() public {
-        vm.expectRevert(Errors.ZeroAddress.selector);
-        new Identity(address(0), false);
+        libraryImpl.initialize(IdentityTypes.INDIVIDUAL, new Structs.KeyParam[](0), new Structs.ModuleInstall[](0));
     }
 
     function test_versionInitializedWhenDeployedAsRegularContract() public {
@@ -34,16 +29,8 @@ contract InitTest is OnchainIDSetup {
         assertEq(identityImplementation.version(), "3.0.0");
     }
 
-    function test_revert_whenInitializingLibraryWithValidAddress() public {
-        // Library implementations are locked at construction time via `_disableInitializers()`,
-        // so `initialize` reverts with OZ's standard `InvalidInitialization` regardless of args.
-        Identity libraryImpl = new Identity(deployer, true);
-        vm.expectRevert(Initializable.InvalidInitialization.selector);
-        libraryImpl.initialize(deployer, IdentityTypes.INDIVIDUAL);
-    }
-
     function test_revert_whenCallingLibraryImplementationDirectly() public {
-        Identity libraryImpl = new Identity(deployer, true);
+        Identity libraryImpl = new Identity(true);
 
         vm.prank(deployer);
         vm.expectRevert(Errors.InteractingWithLibraryContractForbidden.selector);
