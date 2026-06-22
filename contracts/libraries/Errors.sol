@@ -87,6 +87,21 @@ library Errors {
     ///         is not currently part of the calling identity's active set.
     error WalletNotLinkedToIdentity(bytes wallet);
 
+    /// @notice Reverts when {confirmCrossChainLink} is called for a wallet that has no
+    ///         pending cross-chain proposal. Either the proposal was never made, it
+    ///         already confirmed, or it expired and was cleared.
+    error NoPendingCrossChainLink(bytes wallet);
+
+    /// @notice Reverts when the caller of {confirmCrossChainLink} is not the identity
+    ///         named in the pending proposal. The cross-chain message named one
+    ///         identity; only that identity can finalize the link.
+    error PendingCrossChainLinkIdentityMismatch(bytes wallet, address pendingIdentity);
+
+    /// @notice Reverts when an inbound cross-chain proposal targets a wallet that
+    ///         already has a registry entry (active or revoked). Sticky binding
+    ///         applies to the cross-chain path the same way it does to the EVM path.
+    error WalletAlreadyHasEntry(bytes wallet);
+
     /* ----- Verifier ----- */
 
     /// @notice The claim topic already exists.
