@@ -18,4 +18,8 @@ library KeyTypes {
     ///      Not used for validators. Validators address signers, not modules.
     uint256 internal constant MODULE = 4;
 
+    /// @dev 5: ACCESS_MANAGER. Signer is an OpenZeppelin AccessManager. Used to govern
+    ///      an identity through roles instead of a single key. Intended purpose: MANAGEMENT.
+    uint256 internal constant ACCESS_MANAGER = 5;
+
 }

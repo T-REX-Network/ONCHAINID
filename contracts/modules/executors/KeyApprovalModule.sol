@@ -11,6 +11,7 @@ import {
 import { IERC734 } from "../../interface/IERC734.sol";
 import { IERC735 } from "../../interface/IERC735.sol";
 import { Errors } from "../../libraries/Errors.sol";
+import { hashAddress } from "../../libraries/Hashing.sol";
 import { KeyPurposes } from "../../libraries/KeyPurposes.sol";
 
 /**
@@ -70,10 +71,6 @@ contract KeyApprovalModule is IERC7579Module {
         address indexed account, uint256 indexed executionId, address indexed to, uint256 value, bytes data
     );
 
-    // -----------------------------------------------------------------------
-    // ERC-7579 module metadata
-    // -----------------------------------------------------------------------
-
     /// @inheritdoc IERC7579Module
     function isModuleType(uint256 moduleTypeId) public pure returns (bool) {
         return moduleTypeId == MODULE_TYPE_EXECUTOR || moduleTypeId == MODULE_TYPE_FALLBACK;
@@ -85,10 +82,6 @@ contract KeyApprovalModule is IERC7579Module {
     /// @inheritdoc IERC7579Module
     function onUninstall(bytes calldata) external pure { }
 
-    // -----------------------------------------------------------------------
-    // ERC-734 ABI — invoked through the account's fallback handler
-    // -----------------------------------------------------------------------
-
     /// @notice Queue an execution for the calling identity. Auto-runs if the caller's key
     ///         purpose authorizes it; otherwise waits for {approve}.
     /// @dev    Treasury model: any `msg.value` is pushed back to the identity; `_value` is
@@ -97,7 +90,7 @@ contract KeyApprovalModule is IERC7579Module {
     function execute(address _to, uint256 _value, bytes calldata _data) external payable returns (uint256 executionId) {
         address account = msg.sender;
         address proposer = _msgSender();
-        bytes32 callerKeyHash = keccak256(abi.encodePacked(proposer));
+        bytes32 callerKeyHash = hashAddress(proposer);
 
         // Reject random callers. Any key with a real purpose on the identity can propose;
         // PROPOSER is the queue-only purpose for callers who should be able to push
@@ -129,7 +122,7 @@ contract KeyApprovalModule is IERC7579Module {
     function approve(uint256 _id, bool _shouldApprove) external returns (bool success) {
         // 1. Resolve account + ERC-2771 caller, fetch the queued request.
         address account = msg.sender;
-        bytes32 callerKeyHash = keccak256(abi.encodePacked(_msgSender()));
+        bytes32 callerKeyHash = hashAddress(_msgSender());
         AccountState storage state = _state[account];
         Execution storage execution = state.executions[_id];
 
@@ -184,10 +177,6 @@ contract KeyApprovalModule is IERC7579Module {
         require(account == msg.sender, Errors.UnauthorizedPolicyQuery());
         return _canAutoApprove(account, keyHash, target, data);
     }
-
-    // -----------------------------------------------------------------------
-    // Internals
-    // -----------------------------------------------------------------------
 
     /// @dev Auto-approval policy. See contract NatSpec for the rule table.
     function _canAutoApprove(address account, bytes32 keyHash, address to, bytes calldata data)

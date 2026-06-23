@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import { IERC734 } from "./interface/IERC734.sol";
 import { Errors } from "./libraries/Errors.sol";
+import { hashAddress } from "./libraries/Hashing.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
 import { KeyTypes } from "./libraries/KeyTypes.sol";
 import { Structs } from "./storage/Structs.sol";
@@ -66,18 +67,13 @@ contract KeyManager is IERC734 {
     /// @notice Requires a MANAGEMENT key, or an internal self-call (`msg.sender == address(this)`).
     modifier onlyManager() {
         require(
-            msg.sender == address(this)
-                || keyHasPurpose(keccak256(abi.encodePacked(msg.sender)), KeyPurposes.MANAGEMENT),
+            msg.sender == address(this) || keyHasPurpose(hashAddress(msg.sender), KeyPurposes.MANAGEMENT),
             Errors.SenderDoesNotHaveManagementKey()
         );
         _;
     }
 
-    // -----------------------------------------------------------------------
-    // ERC-734 registry — reads
-    // -----------------------------------------------------------------------
-
-    /// @notice Returns the full key data, if present.
+    /// @inheritdoc IERC734
     function getKey(bytes32 _key)
         external
         view
@@ -89,12 +85,12 @@ contract KeyManager is IERC734 {
         return (ks.keys[_key].purposes.values(), ks.keys[_key].keyType, ks.keys[_key].key);
     }
 
-    /// @notice Returns the purposes associated with a key.
+    /// @inheritdoc IERC734
     function getKeyPurposes(bytes32 _key) external view virtual override returns (uint256[] memory _purposes) {
         return _getKeyStorage().keys[_key].purposes.values();
     }
 
-    /// @notice Returns all key hashes registered with a given purpose.
+    /// @inheritdoc IERC734
     function getKeysByPurpose(uint256 _purpose) external view virtual override returns (bytes32[] memory keys) {
         return _getKeyStorage().keysByPurpose[_purpose].values();
     }
@@ -111,25 +107,17 @@ contract KeyManager is IERC734 {
         return (ks.keys[_keyHash].signerData, ks.keys[_keyHash].clientData);
     }
 
-    /**
-     * @notice Returns true if `_key` has `_purpose`, OR has MANAGEMENT (universal permission).
-     * @dev O(1) via EnumerableSet's `contains`.
-     */
+    /// @inheritdoc IERC734
+    /// @dev O(1) via EnumerableSet's `contains`.
     function keyHasPurpose(bytes32 _key, uint256 _purpose) public view virtual override returns (bool) {
         KeyStorage storage ks = _getKeyStorage();
         if (ks.keys[_key].key == 0) return false;
         return ks.keys[_key].purposes.contains(_purpose) || ks.keys[_key].purposes.contains(KeyPurposes.MANAGEMENT);
     }
 
-    // -----------------------------------------------------------------------
-    // ERC-734 registry — writes
-    // -----------------------------------------------------------------------
-
-    /**
-     * @notice Add a key with `_purpose`.
-     * @dev Caller must hold MANAGEMENT, or be the identity itself (post-execution from the
-     *      queue module or the EntryPoint).
-     */
+    /// @inheritdoc IERC734
+    /// @dev Caller must hold MANAGEMENT, or be the identity itself (post-execution from
+    ///      the queue module or the EntryPoint).
     function addKey(bytes32 _key, uint256 _purpose, uint256 _type)
         public
         virtual
@@ -138,6 +126,13 @@ contract KeyManager is IERC734 {
         onlyManager
         returns (bool success)
     {
+        _addKey(_key, _purpose, _type);
+        return true;
+    }
+
+    /// @dev Internal version of {addKey}. No modifiers. Used by both the external entry
+    ///      point and by initialization paths that run before any MANAGEMENT key exists.
+    function _addKey(bytes32 _key, uint256 _purpose, uint256 _type) internal {
         KeyStorage storage ks = _getKeyStorage();
         Structs.Key storage k = ks.keys[_key];
 
@@ -154,14 +149,11 @@ contract KeyManager is IERC734 {
         ks.keysByPurpose[_purpose].add(_key);
 
         emit KeyAdded(_key, _purpose, _type);
-        return true;
     }
 
-    /**
-     * @notice Remove `_purpose` from `_key`. Deletes the key entry when no purposes remain.
-     * @dev The last MANAGEMENT key cannot be removed — doing so would make the identity
-     *      unrecoverable (no caller would satisfy `onlyManager`).
-     */
+    /// @inheritdoc IERC734
+    /// @dev Deletes the key entry when no purposes remain. The last MANAGEMENT key cannot
+    ///      be removed; doing so would leave the identity unrecoverable.
     function removeKey(bytes32 _key, uint256 _purpose)
         public
         virtual
@@ -248,10 +240,6 @@ contract KeyManager is IERC734 {
 
         emit KeyAdded(_key, _purpose, _type);
     }
-
-    // -----------------------------------------------------------------------
-    // Internals
-    // -----------------------------------------------------------------------
 
     function _checkDelegated() internal view {
         require(_getKeyStorage().canInteract, Errors.InteractingWithLibraryContractForbidden());

@@ -10,13 +10,7 @@ library Errors {
     /// @notice Reverts if the address is zero
     error ZeroAddress();
 
-    /* ----- IdFactory ----- */
-
-    /// @notice Reverts if the factory is already registered
-    error AlreadyAFactory(address factory);
-
-    /// @notice Reverts if the function is called on the sender address
-    error CannotBeCalledOnSenderAddress();
+    /* ----- IdentityFactory ----- */
 
     /// @notice Reverts if the list of keys is empty
     error EmptyListOfKeys();
@@ -24,58 +18,74 @@ library Errors {
     /// @notice Reverts if the string is empty
     error EmptyString();
 
-    /// @notice Reverts if the address is not a factory
-    error NotAFactory(address factory);
-
-    /// @notice Reverts if the maximum number of wallets per identity is exceeded
-    error MaxWalletsPerIdentityExceeded();
-
-    /// @notice Reverts if the only linked wallet tries to unlink
-    error OnlyLinkedWalletCanUnlink();
-
     /// @notice Reverts if the token is already linked
     error TokenAlreadyLinked(address token);
 
-    /// @notice Reverts if the wallet is already linked to an identity
-    error WalletAlreadyLinkedToIdentity(address wallet);
+    /// @notice Reverts when a caller tries to deploy an identity of a type whose
+    ///         configured AM role they do not hold.
+    /// @param caller the address that attempted the deployment.
+    /// @param identityType the identity type that was requested.
+    /// @param requiredRole the AM role id required for that type.
+    error NotAuthorizedForIdentityType(address caller, uint256 identityType, uint64 requiredRole);
 
-    /// @notice Reverts if the wallet is also listed in management keys
-    error WalletAlsoListedInManagementKeys(address wallet);
+    /// @notice Reverts when a deploy is attempted for a type the admin has not registered.
+    ///         Admin enables a type by calling `setIdentityTypePolicy`. Use the AM's
+    ///         `PUBLIC_ROLE` for open types.
+    error UnknownIdentityType(uint256 identityType);
 
-    /// @notice Reverts if the wallet is not linked to an identity
-    error WalletNotLinkedToIdentity(address wallet);
+    /// @notice Reverts when {createIdentity} is called for a type whose policy has
+    ///         `selfDeployable = false`. Self-deploy is gated per type because some
+    ///         types (e.g. ASSET, SMART_CONTRACT) represent contracts, not EOAs, so
+    ///         the `msg.sender = first wallet` binding does not apply to them. Admin
+    ///         opts a type in via {setIdentityTypePolicy}.
+    error IdentityTypeNotSelfDeployable(uint256 identityType);
 
     /// @notice Reverts if no key with MANAGEMENT purpose is provided
     error NoManagementKeyInKeys();
 
-    /* ----- Gateway ----- */
+    /// @notice Reverts when an identity is initialized with no validator and no executor
+    ///         module. Without either, the account cannot verify signatures or dispatch
+    ///         outbound calls.
+    error IdentityNoValidatorOrExecutor();
 
-    /// @notice The maximum number of signers was reached at deployment.
-    error TooManySigners();
+    /// @notice Reverts when a wallet is already linked to a different identity than the one
+    ///         currently trying to claim it. Sticky binding: a wallet can be re-linked only to
+    ///         its original identity, never to another.
+    error WalletBoundToAnotherIdentity(bytes wallet, address boundIdentity);
 
-    /// @notice The signed attempted to add was already approved.
-    error SignerAlreadyApproved(address signer);
+    /// @notice Reverts when a wallet that was previously revoked is presented to {linkAccount}.
+    ///         Revocation is terminal. A wallet cannot be re-linked after being revoked.
+    error WalletAlreadyRevoked(bytes wallet);
 
-    /// @notice The signed attempted to remove was not approved.
-    error SignerAlreadyNotApproved(address signer);
+    /// @notice Reverts when an operation requires the wallet to be in the `Active` lifecycle
+    ///         state (e.g. {revokeAccount}) but it is not.
+    error WalletNotActive(bytes wallet);
 
-    /// @notice A requested ONCHAINID deployment was requested and signer by a non approved signer.
-    error UnapprovedSigner(address signer);
+    /// @notice Reverts when {linkAccount} is called by a contract that was not deployed by
+    ///         this factory. Only factory-deployed identities can pull wallets in.
+    error NotFactoryIdentity(address caller);
 
-    /// @notice A requested ONCHAINID deployment was requested with a signature revoked.
-    error RevokedSignature(bytes signature);
+    /// @notice Reverts when an EIP-712 link signature is presented after its `expiry`, or
+    ///         when `expiry == 0` (callers must set freshness explicitly).
+    error ExpiredSignature(uint256 expiry);
 
-    /// @notice A requested ONCHAINID deployment was requested with a signature that expired.
-    error ExpiredSignature(bytes signature);
+    /// @notice Reverts when {linkAccount} is called on an asset identity. An asset
+    ///         identity represents one specific token contract. Adding more wallets to
+    ///         it would break the 1:1 token↔identity mapping.
+    error CannotLinkToAssetIdentity(address identity);
 
-    /// @notice Attempted to revoke a signature that was already revoked.
-    error SignatureAlreadyRevoked(bytes signature);
+    /// @notice Reverts when {revokeAccount} is called on a non-signing-entity identity
+    ///         (ASSET or SMART_CONTRACT). The bound contract cannot sign a fresh
+    ///         {linkAccount} digest, so revoking would orphan the factory's discovery
+    ///         entry permanently with no recovery path.
+    error CannotRevokeFromNonSigningIdentity(address identity);
 
-    /// @notice Attempted to approve a signature that was not revoked.
-    error SignatureNotRevoked(bytes signature);
+    /// @notice Reverts when a wallet is already actively linked to the calling identity.
+    error WalletAlreadyLinkedToIdentity(bytes wallet);
 
-    /// @notice A call to the factory failed.
-    error CallToFactoryFailed();
+    /// @notice Reverts when an operation references a wallet that has never been linked, or
+    ///         is not currently part of the calling identity's active set.
+    error WalletNotLinkedToIdentity(bytes wallet);
 
     /* ----- Verifier ----- */
 

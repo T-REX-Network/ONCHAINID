@@ -4,6 +4,7 @@ pragma solidity ^0.8.28;
 import { KeyManager } from "./KeyManager.sol";
 import { IKeyExecutor } from "./interface/IKeyExecutor.sol";
 import { Errors } from "./libraries/Errors.sol";
+import { hashAddress } from "./libraries/Hashing.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
 import { KeyApprovalModule } from "./modules/executors/KeyApprovalModule.sol";
 import { LowLevelCall } from "./vendor/utils/LowLevelCall.sol";
@@ -26,7 +27,19 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
 
     using EnumerableSet for EnumerableSet.UintSet;
 
-    /// @notice Install a module. MANAGEMENT-gated so the factory can install at bootstrap.
+    /// @notice Install a module. Gated on MANAGEMENT.
+    /// @dev The OZ default gate (`onlyEntryPointOrSelf`) is replaced with the stricter
+    ///      ERC-734 `onlyManager` check, and `_installModule` is invoked directly instead
+    ///      of `super.installModule`. The translated gate is at least as strict as the
+    ///      OZ default, because the only paths that satisfied `onlyEntryPointOrSelf` were
+    ///      (a) the canonical EntryPoint, which in turn ran a MANAGEMENT-signed UserOp,
+    ///      or (b) the identity calling itself, which can only be reached via a
+    ///      MANAGEMENT-authorized executor. The override lets a MANAGEMENT key holder
+    ///      install or rotate modules directly, without round-tripping through an
+    ///      EntryPoint or a self-call. Closing issue #6 as "won't fix" per design.
+    /// @dev Fallback handler wiring: `module` must be a contract. If it resolves to an
+    ///      EOA (or any non-zero address with no code), policy queries hit the strict
+    ///      default and the fallback silently degrades. Don't install fallbacks on EOAs.
     function installModule(uint256 moduleTypeId, address module, bytes calldata initData)
         public
         virtual
@@ -34,11 +47,12 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         delegatedOnly
         onlyManager
     {
-        // Skip `super.installModule` to avoid the `onlyEntryPointOrSelf` check.
         _installModule(moduleTypeId, module, initData);
     }
 
     /// @notice Uninstall a module. MANAGEMENT-gated.
+    /// @dev See {installModule} for the rationale behind replacing the OZ default
+    ///      `onlyEntryPointOrSelf` gate with `onlyManager` and bypassing `super`.
     function uninstallModule(uint256 moduleTypeId, address module, bytes calldata deInitData)
         public
         virtual
@@ -46,7 +60,6 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         delegatedOnly
         onlyManager
     {
-        // Skip `super.uninstallModule` to avoid the `onlyEntryPointOrSelf` check.
         _uninstallModule(moduleTypeId, module, deInitData);
     }
 
@@ -57,7 +70,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         super._uninstallModule(moduleTypeId, module, deInitData);
 
         // Look up the module's key entry.
-        bytes32 moduleKey = keccak256(abi.encodePacked(module));
+        bytes32 moduleKey = hashAddress(module);
         KeyStorage storage ks = _getKeyStorage();
 
         // No purpose was ever granted → nothing to clean up.
@@ -80,7 +93,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         returns (bytes[] memory)
     {
         // Use the executor's address as the key for the purpose lookup.
-        bytes32 callerKeyHash = keccak256(abi.encodePacked(msg.sender));
+        bytes32 callerKeyHash = hashAddress(msg.sender);
 
         // Apply the same per-target rule used for user ops.
         if (!_isAuthorizedForExecution(mode, executionCalldata, callerKeyHash)) {

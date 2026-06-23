@@ -16,6 +16,7 @@ import { IERC734 } from "../../interface/IERC734.sol";
 import { IERC735 } from "../../interface/IERC735.sol";
 import { IIdentity } from "../../interface/IIdentity.sol";
 import { Errors } from "../../libraries/Errors.sol";
+import { hashAddress } from "../../libraries/Hashing.sol";
 import { KeyPurposes } from "../../libraries/KeyPurposes.sol";
 import { Structs } from "../../storage/Structs.sol";
 
@@ -91,10 +92,6 @@ contract ClaimsModule is IERC7579Module, IERC735 {
     /// @notice Emitted when `addClaimTo` successfully writes a claim to another identity.
     event ClaimAddedTo(address indexed identity, uint256 topic, bytes signature, Structs.ClaimData data);
 
-    // -----------------------------------------------------------------------
-    // ERC-7579 module metadata
-    // -----------------------------------------------------------------------
-
     /**
      * @inheritdoc IERC7579Module
      * @return True when `moduleTypeId` is `MODULE_TYPE_EXECUTOR` or `MODULE_TYPE_FALLBACK`.
@@ -115,10 +112,6 @@ contract ClaimsModule is IERC7579Module, IERC735 {
      *      place so re-installing the module does not silently un-revoke previously revoked digests.
      */
     function onUninstall(bytes calldata) external pure { }
-
-    // -----------------------------------------------------------------------
-    // ERC-735 ABI — reached through the identity's fallback handler
-    // -----------------------------------------------------------------------
 
     /**
      * @inheritdoc IERC735
@@ -270,10 +263,6 @@ contract ClaimsModule is IERC7579Module, IERC735 {
         return _state[msg.sender].claimsByTopic[_topic].values(start, end);
     }
 
-    // -----------------------------------------------------------------------
-    // ClaimIssuer extras
-    // -----------------------------------------------------------------------
-
     /**
      * @notice Mark a claim digest as revoked. Canonical issuer-side revocation entry point — the
      *         issuer already knows the digest (or computed it via `getClaimHash`), so no claim
@@ -377,10 +366,6 @@ contract ClaimsModule is IERC7579Module, IERC735 {
         emit ClaimAddedTo(address(_identity), _topic, _signature, _data);
     }
 
-    // -----------------------------------------------------------------------
-    // Internals
-    // -----------------------------------------------------------------------
-
     /**
      * @dev Build the EIP-712 claim digest using the calling identity's domain.
      *      The domain is read via IERC5267 from the issuer identity, so off-chain signers
@@ -472,18 +457,20 @@ contract ClaimsModule is IERC7579Module, IERC735 {
 
     /**
      * @dev Require the off-chain caller to hold a claim key on `account`.
-     *      Self-calls (caller == account) are allowed — these arrive through `executeFromExecutor`
-     *      paths where the upstream `SmartAccount` per-target rule already enforced the right
-     *      purpose. Removing this shortcut would break the documented executor-with-claim-key flow.
+     *
+     *      Executor on self note: an executor calling `addClaim` or `removeClaim` on the
+     *      identity itself is no longer supported. The fallback dispatcher appends the
+     *      identity as the ERC-2771 tail, so `caller` here resolves to the identity, which
+     *      does not hold a claim key on its own registry. This is intentional. Off-chain
+     *      claim issuance from a CLAIM_SIGNER key remains the supported path.
+     *
      * @param account Identity whose keys are checked.
      * @param caller Off-chain caller, read from the ERC-2771 calldata tail.
      * @param onlyClaimSigner If true, accept CLAIM_SIGNER only (used by `removeClaim`).
      *        If false, accept CLAIM_SIGNER or CLAIM_ADDER (used by `addClaim`).
      */
     function _requireClaimKey(address account, address caller, bool onlyClaimSigner) internal view {
-        if (caller == account) return;
-
-        bytes32 keyHash = keccak256(abi.encodePacked(caller));
+        bytes32 keyHash = hashAddress(caller);
 
         // CLAIM_SIGNER is always enough; it covers both add and remove.
         if (IERC734(account).keyHasPurpose(keyHash, KeyPurposes.CLAIM_SIGNER)) {
@@ -497,14 +484,18 @@ contract ClaimsModule is IERC7579Module, IERC735 {
 
     /**
      * @dev Require the off-chain caller to hold MANAGEMENT on `account`.
-     *      Self-calls are allowed for the same reason as in `_requireClaimKey`.
+     *
+     *      Executor on self note: same as `_requireClaimKey`. An executor calling
+     *      management gated entrypoints on the identity itself will fail here because the
+     *      ERC-2771 tail resolves to the identity, which does not hold MANAGEMENT on its
+     *      own registry. This is intentional.
+     *
      * @param account Identity whose keys are checked.
      * @param caller Off-chain caller, read from the ERC-2771 calldata tail.
      */
     function _requireManagement(address account, address caller) internal view {
-        if (caller == account) return;
         require(
-            IERC734(account).keyHasPurpose(keccak256(abi.encodePacked(caller)), KeyPurposes.MANAGEMENT),
+            IERC734(account).keyHasPurpose(hashAddress(caller), KeyPurposes.MANAGEMENT),
             Errors.SenderDoesNotHaveManagementKey()
         );
     }

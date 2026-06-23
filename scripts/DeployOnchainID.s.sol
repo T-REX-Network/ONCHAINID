@@ -3,18 +3,19 @@ pragma solidity ^0.8.27;
 
 import { Script, console } from "forge-std/Script.sol";
 
+import { AccessManager } from "@openzeppelin/contracts/access/manager/AccessManager.sol";
+import { UpgradeableBeacon } from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import {
     ERC7913WebAuthnVerifier
 } from "@openzeppelin/contracts/utils/cryptography/verifiers/ERC7913WebAuthnVerifier.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IdentityUtilities } from "contracts/IdentityUtilities.sol";
-import { IdFactory } from "contracts/factory/IdFactory.sol";
-import { Gateway } from "contracts/gateway/Gateway.sol";
+import { IdentityFactory } from "contracts/factory/IdentityFactory.sol";
+import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { ClaimsModule } from "contracts/modules/claims/ClaimsModule.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
 import { ERC7579Signature } from "contracts/modules/validators/ERC7579Signature.sol";
 import { IdentityUtilitiesProxy } from "contracts/proxy/IdentityUtilitiesProxy.sol";
-import { ImplementationAuthority } from "contracts/proxy/ImplementationAuthority.sol";
 
 /**
  * @title DeployOnchainID
@@ -23,22 +24,23 @@ import { ImplementationAuthority } from "contracts/proxy/ImplementationAuthority
  * Deployment order:
  *   1. Identity implementation (library mode)
  *   2. IdentityUtilities implementation + proxy
- *   3. ImplementationAuthority (beacon pointing to Identity impl)
+ *   3. UpgradeableBeacon (points to Identity impl; owned by AccessManager)
  *   4. Module singletons (KeyApprovalModule, ClaimsModule)
- *   5. IdFactory (uses ImplementationAuthority for identity proxies)
- *   6. Gateway (entry point for signed identity deployments)
+ *   5. AccessManager (single source of truth for IdentityFactory permissions)
+ *   6. IdentityFactory (BeaconProxy + UpgradeableBeacon for identity proxies)
+ *   7. AccessManager role wiring (per-identity-type role mapping)
  *
  * Usage:
  *   forge script scripts/DeployOnchainID.s.sol --rpc-url <RPC> --private-key <PK> --broadcast --verify
  */
 contract DeployOnchainID is Script {
 
-    function run() external {
-        // Gateway signers — hardcode as needed
-        address[] memory gatewaySigners = new address[](2);
-        gatewaySigners[0] = 0x927eCbf77127C423642e6e3459CFc0B2c08BeC0c;
-        gatewaySigners[1] = 0xc756c27486d07112bc11AA6d3f53DA3Ca9aAf2ca;
+    /// @dev Conventional, deployer-chosen role ids. Names are labeled on-chain via
+    ///      {AccessManager.labelRole} for explorer/dashboard discoverability.
+    uint64 internal constant ROLE_TOKEN_FACTORY = 1;
+    uint64 internal constant ROLE_CLAIM_ISSUER_ADMIN = 2;
 
+    function run() external {
         vm.startBroadcast();
 
         address deployer = msg.sender;
@@ -54,7 +56,7 @@ contract DeployOnchainID is Script {
         console.log("ERC7579Signature Validator:", address(signatureValidator));
 
         // 2. Identity implementation (library mode — prevents direct initialization)
-        Identity identityImpl = new Identity(deployer, true);
+        Identity identityImpl = new Identity(true);
         console.log("Identity implementation:", address(identityImpl));
 
         // 3. IdentityUtilities implementation + proxy
@@ -67,9 +69,11 @@ contract DeployOnchainID is Script {
 
         // ===== Phase 2: Infrastructure =====
 
-        // 4. ImplementationAuthority (beacon for identity proxies)
-        ImplementationAuthority authority = new ImplementationAuthority(address(identityImpl), deployer);
-        console.log("ImplementationAuthority:", address(authority));
+        // 4. UpgradeableBeacon (beacon for identity proxies). Owned by the deployer
+        //    initially; transferred to the AccessManager below so upgrades go through
+        //    role gating.
+        UpgradeableBeacon beacon = new UpgradeableBeacon(address(identityImpl), deployer);
+        console.log("Beacon:", address(beacon));
 
         // 4b. Module singletons. Callers include these in their `_modules` array on
         //     `createIdentity` to opt into the legacy ERC-734 execute/approve queue
@@ -79,21 +83,54 @@ contract DeployOnchainID is Script {
         ClaimsModule claimsModule = new ClaimsModule();
         console.log("ClaimsModule:", address(claimsModule));
 
-        // 5. IdFactory
-        IdFactory idFactory = new IdFactory(address(authority), deployer);
-        console.log("IdFactory:", address(idFactory));
+        // 5. AccessManager — single source of truth for IdentityFactory permissions.
+        //    The deployer starts as the AccessManager admin (`ADMIN_ROLE = 0`). Production
+        //    deployments should rotate this to a multisig immediately via
+        //    `am.grantRole(0, multisig, 0); am.revokeRole(0, deployer);`.
+        AccessManager am = new AccessManager(deployer);
+        console.log("AccessManager:", address(am));
 
-        // 7. Gateway
-        Gateway gateway = new Gateway(address(idFactory), gatewaySigners, deployer);
-        console.log("Gateway:", address(gateway));
+        // Label roles so explorers and ops dashboards can show human names.
+        am.labelRole(ROLE_TOKEN_FACTORY, "TOKEN_FACTORY");
+        am.labelRole(ROLE_CLAIM_ISSUER_ADMIN, "CLAIM_ISSUER_ADMIN");
 
-        // 8. ERC-7913 WebAuthn Verifier (stateless — verifies P-256 WebAuthn assertions on-chain)
+        // 6. IdentityFactory
+        IdentityFactory idFactory = new IdentityFactory(address(beacon), address(am));
+        console.log("IdentityFactory:", address(idFactory));
+
+        // Hand the beacon to the AccessManager so future implementation upgrades
+        // (`beacon.upgradeTo(newImpl)`) go through the same role gating as everything else.
+        beacon.transferOwnership(address(am));
+
+        // ===== Phase 3: per-identity-type deploy policy =====
+        // Each type carries a policy: an AM role id (gates createIdentityFor) and a
+        // selfDeployable flag (gates createIdentity). Unregistered types revert from
+        // both entry points.
+        //
+        // Contract-shaped types (ASSET, SMART_CONTRACT, PUBLIC_AUTHORITY) opt out of
+        // self-deploy because their identity represents a contract, not msg.sender.
+        // CLAIM_ISSUER also opts out so the admin role on createIdentityFor is not
+        // bypassable via self-deploy.
+        uint64 publicRole = am.PUBLIC_ROLE();
+
+        // Gated for createIdentityFor; self-deploy disabled.
+        idFactory.setIdentityTypePolicy(IdentityTypes.ASSET, ROLE_TOKEN_FACTORY, false);
+        idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, ROLE_CLAIM_ISSUER_ADMIN, false);
+
+        // Open for createIdentityFor; self-deploy enabled (EOA-shaped types).
+        idFactory.setIdentityTypePolicy(IdentityTypes.INDIVIDUAL, publicRole, true);
+        idFactory.setIdentityTypePolicy(IdentityTypes.CORPORATE, publicRole, true);
+        idFactory.setIdentityTypePolicy(IdentityTypes.IOT, publicRole, true);
+        idFactory.setIdentityTypePolicy(IdentityTypes.AI_AGENT, publicRole, true);
+
+        // Open for createIdentityFor; self-deploy disabled (contract-shaped /
+        // institutional types).
+        idFactory.setIdentityTypePolicy(IdentityTypes.SMART_CONTRACT, publicRole, false);
+        idFactory.setIdentityTypePolicy(IdentityTypes.PUBLIC_AUTHORITY, publicRole, false);
+
+        // 7. ERC-7913 WebAuthn Verifier (stateless — verifies P-256 WebAuthn assertions on-chain)
         ERC7913WebAuthnVerifier webAuthnVerifier = new ERC7913WebAuthnVerifier();
         console.log("ERC7913WebAuthnVerifier:", address(webAuthnVerifier));
-
-        // Transfer IdFactory ownership to Gateway so it can deploy identities
-        idFactory.transferOwnership(address(gateway));
-        console.log("IdFactory ownership transferred to Gateway");
 
         vm.stopBroadcast();
 
@@ -103,12 +140,12 @@ contract DeployOnchainID is Script {
         console.log("Identity impl:          ", address(identityImpl));
         console.log("IdentityUtilities impl: ", address(utilitiesImpl));
         console.log("IdentityUtilities proxy:", address(utilitiesProxy));
-        console.log("ImplementationAuthority:", address(authority));
-        console.log("IdFactory:              ", address(idFactory));
+        console.log("Beacon:                 ", address(beacon));
+        console.log("AccessManager:          ", address(am));
+        console.log("IdentityFactory:        ", address(idFactory));
         console.log("ERC7579Signature:       ", address(signatureValidator));
         console.log("KeyApprovalModule:      ", address(keyApprovalModule));
         console.log("ClaimsModule:           ", address(claimsModule));
-        console.log("Gateway:                ", address(gateway));
         console.log("ERC7913WebAuthnVerifier:", address(webAuthnVerifier));
         console.log("=========================================");
     }

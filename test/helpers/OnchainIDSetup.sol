@@ -4,13 +4,13 @@ pragma solidity ^0.8.27;
 import { Constants } from "../utils/Constants.sol";
 import { ClaimSignerHelper } from "./ClaimSignerHelper.sol";
 import { IdentityHelper } from "./IdentityHelper.sol";
+import { UpgradeableBeacon } from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import { Identity } from "contracts/Identity.sol";
-import { IdFactory } from "contracts/factory/IdFactory.sol";
+import { IdentityFactory } from "contracts/factory/IdentityFactory.sol";
 import { IIdentity } from "contracts/interface/IIdentity.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
-import { ImplementationAuthority } from "contracts/proxy/ImplementationAuthority.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 import { Test } from "forge-std/Test.sol";
 
@@ -83,7 +83,7 @@ contract OnchainIDSetup is Test {
             clientData: ""
         });
         address claimIssuerAddr = onchainidSetup.idFactory
-            .createIdentity(
+            .createIdentityFor(
                 claimIssuerOwner,
                 IdentityTypes.CLAIM_ISSUER,
                 "claimIssuer",
@@ -109,7 +109,7 @@ contract OnchainIDSetup is Test {
             clientData: ""
         });
         address aliceIdentityAddr = onchainidSetup.idFactory
-            .createIdentity(
+            .createIdentityFor(
                 alice,
                 IdentityTypes.INDIVIDUAL,
                 "alice",
@@ -174,7 +174,7 @@ contract OnchainIDSetup is Test {
             clientData: ""
         });
         address bobIdentityAddr = onchainidSetup.idFactory
-            .createIdentity(
+            .createIdentityFor(
                 bob,
                 IdentityTypes.INDIVIDUAL,
                 "bob",
@@ -196,8 +196,9 @@ contract OnchainIDSetup is Test {
             clientData: ""
         });
         onchainidSetup.idFactory
-            .createTokenIdentity(
+            .createIdentityFor(
                 Constants.TOKEN_ADDRESS,
+                IdentityTypes.ASSET,
                 "tokenOwner",
                 tokenKeys,
                 IdentityHelper.legacyQueueModules(
@@ -208,12 +209,12 @@ contract OnchainIDSetup is Test {
 
     // ---- Convenience getters ----
 
-    function getIdFactory() public view returns (IdFactory) {
+    function getIdFactory() public view returns (IdentityFactory) {
         return onchainidSetup.idFactory;
     }
 
-    function getImplementationAuthority() public view returns (ImplementationAuthority) {
-        return onchainidSetup.implementationAuthority;
+    function getBeacon() public view returns (UpgradeableBeacon) {
+        return onchainidSetup.beacon;
     }
 
     function getIdentityImplementation() public view returns (Identity) {
