@@ -215,13 +215,13 @@ contract KeyApprovalModule is IERC7579Module {
     }
 
     /// @dev Gate for {execute}. Any purpose that can already authorize an auto-run or an
-    ///      approval also passes here, plus the queue-only PROPOSER purpose.
+    ///      approval also passes here, plus the queue-only PROPOSER purpose. MANAGEMENT is
+    ///      implicit: `keyHasPurpose` returns true for a MANAGEMENT key on any queried purpose.
     function _canPropose(address account, bytes32 keyHash) internal view returns (bool) {
         IERC734 acct = IERC734(account);
         return acct.keyHasPurpose(keyHash, KeyPurposes.PROPOSER) || acct.keyHasPurpose(keyHash, KeyPurposes.ACTION)
             || acct.keyHasPurpose(keyHash, KeyPurposes.CLAIM_SIGNER)
-            || acct.keyHasPurpose(keyHash, KeyPurposes.CLAIM_ADDER)
-            || acct.keyHasPurpose(keyHash, KeyPurposes.MANAGEMENT);
+            || acct.keyHasPurpose(keyHash, KeyPurposes.CLAIM_ADDER);
     }
 
     /// @dev Dispatches via `executeFromExecutor`, which spends `execution.value` from the

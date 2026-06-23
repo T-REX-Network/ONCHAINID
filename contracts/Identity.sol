@@ -31,6 +31,7 @@ import { ERC165 } from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
  *        - CLAIM_SIGNER     — sign and remove claims
  *        - CLAIM_ADDER      — add claims (cannot remove)
  *        - ENCRYPTION       — out-of-band encryption usage
+ *        - PROPOSER         — queue executions via {KeyApprovalModule.execute} (cannot auto-run or approve)
  *
  *      The {IIdentity} interface continues to declare the ERC-735 selectors; calls to those
  *      selectors land on the installed ClaimsModule via fallback dispatch.
