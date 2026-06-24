@@ -126,6 +126,10 @@ library Errors {
     /// @notice The sender does not have the action key.
     error SenderDoesNotHaveActionKey();
 
+    /// @notice The caller holds no key on the target identity that authorizes proposing an
+    ///         execution. PROPOSER, ACTION, CLAIM_SIGNER, CLAIM_ADDER, or MANAGEMENT works.
+    error SenderCannotPropose(address sender);
+
     /// @notice The initial key was already setup.
     error InitialKeyAlreadySetup();
 

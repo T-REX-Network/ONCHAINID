@@ -20,4 +20,9 @@ library KeyPurposes {
     /// @dev 5: CLAIM_ADDER key, can add claims but cannot remove them.
     uint256 internal constant CLAIM_ADDER = 5;
 
+    /// @dev 6: PROPOSER keys can queue executions on the identity but cannot auto-run
+    ///      or self-approve them. Used to raise the floor on who can push entries onto
+    ///      the execution queue without expanding any auto-approval rule.
+    uint256 internal constant PROPOSER = 6;
+
 }
