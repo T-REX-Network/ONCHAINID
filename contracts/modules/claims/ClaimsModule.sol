@@ -156,7 +156,12 @@ contract ClaimsModule is IERC7579Module, IERC735 {
         // When reached via fallback, msg.sender is the Identity and _msgSender() is the off-chain caller.
         // CLAIM_SIGNER or CLAIM_ADDER can add a claim. Self-issued claims still need a real signature
         // (see _addClaim's isClaimValid check), so a CLAIM_ADDER cannot fabricate self-attestations.
-        _requireClaimKey(msg.sender, _msgSender(), /* onlyClaimSigner */ false);
+        _requireClaimKey(
+            msg.sender,
+            _msgSender(),
+            /* onlyClaimSigner */
+            false
+        );
         return _addClaim(msg.sender, _topic, _scheme, _issuer, _signature, _data, _uri);
     }
 

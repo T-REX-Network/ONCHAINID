@@ -67,8 +67,7 @@ library IdentityHelper {
         // Reputation registry needs the factory (for the lazy default-tier fallback
         // factory-membership check). ClaimsModule needs both the factory and registry
         // for the trusted-issuer addClaim path.
-        setup.reputationRegistry =
-            new ReputationRegistry(address(setup.accessManager), address(setup.idFactory));
+        setup.reputationRegistry = new ReputationRegistry(address(setup.accessManager), address(setup.idFactory));
         setup.claimsModule = new ClaimsModule(address(setup.idFactory), address(setup.reputationRegistry));
 
         // Register every standard type with PUBLIC_ROLE and selfDeployable = true for

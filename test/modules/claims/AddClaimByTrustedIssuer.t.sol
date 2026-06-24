@@ -3,11 +3,11 @@ pragma solidity ^0.8.27;
 
 import { ClaimSignerHelper } from "../../helpers/ClaimSignerHelper.sol";
 import { OnchainIDSetup } from "../../helpers/OnchainIDSetup.sol";
-import { ClaimsModule } from "contracts/modules/claims/ClaimsModule.sol";
 import { IERC735 } from "contracts/interface/IERC735.sol";
 import { IIdentity } from "contracts/interface/IIdentity.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
+import { ClaimsModule } from "contracts/modules/claims/ClaimsModule.sol";
 import { ReputationRegistry } from "contracts/reputation/ReputationRegistry.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 
@@ -141,8 +141,9 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
     {
         Structs.ClaimData memory data =
             Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: hex"01" });
-        bytes memory signature =
-            ClaimSignerHelper.signClaim(claimIssuerOwnerPk, claimIssuerOwner, declaredIssuer, targetIdentity, topic, data);
+        bytes memory signature = ClaimSignerHelper.signClaim(
+            claimIssuerOwnerPk, claimIssuerOwner, declaredIssuer, targetIdentity, topic, data
+        );
         return abi.encodeCall(
             ClaimsModule.addClaimByTrustedIssuer, (topic, uint256(1), declaredIssuer, signature, data, "")
         );

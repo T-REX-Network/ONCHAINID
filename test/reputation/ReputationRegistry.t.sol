@@ -3,10 +3,10 @@ pragma solidity ^0.8.27;
 
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 import { Identity } from "contracts/Identity.sol";
-import { IReputationRegistry } from "contracts/reputation/IReputationRegistry.sol";
-import { ReputationRegistry } from "contracts/reputation/ReputationRegistry.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
+import { IReputationRegistry } from "contracts/reputation/IReputationRegistry.sol";
+import { ReputationRegistry } from "contracts/reputation/ReputationRegistry.sol";
 
 /// @title ReputationRegistry tests
 /// @dev The registry is deployed fresh per test against the OnchainIDSetup
@@ -141,9 +141,7 @@ contract ReputationRegistryTest is OnchainIDSetup {
         registry.setReputation(address(aliceIdentity), LOW_SCORE);
 
         vm.expectEmit(true, false, false, true, address(registry));
-        emit IReputationRegistry.ReputationSet(
-            address(aliceIdentity), LOW_SCORE, HIGH_SCORE, reputationManager
-        );
+        emit IReputationRegistry.ReputationSet(address(aliceIdentity), LOW_SCORE, HIGH_SCORE, reputationManager);
         registry.setReputation(address(aliceIdentity), HIGH_SCORE);
         vm.stopPrank();
 
