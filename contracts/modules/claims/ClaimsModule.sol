@@ -210,17 +210,18 @@ contract ClaimsModule is IERC7579Module, IERC735 {
     ///      score check implicitly re-confirms factory membership.
     function _requireTrustedIssuer(address caller, address expectedIssuer) internal view {
         address callerIdentity = factory.getIdentity(abi.encodePacked(caller));
-        require(callerIdentity != address(0), Errors.SenderDoesNotHaveClaimSignerKey());
-        require(expectedIssuer == callerIdentity, Errors.SenderDoesNotHaveClaimSignerKey());
+        require(callerIdentity != address(0), Errors.CallerNotLinkedToFactoryIdentity(caller));
+        require(
+            expectedIssuer == callerIdentity, Errors.DeclaredIssuerMismatch(expectedIssuer, callerIdentity)
+        );
         require(
             IIdentity(callerIdentity).getIdentityType() == IdentityTypes.CLAIM_ISSUER,
-            Errors.SenderDoesNotHaveClaimSignerKey()
+            Errors.IdentityNotClaimIssuerType(callerIdentity)
         );
         IReputationRegistry registry = reputationRegistry;
-        require(
-            registry.reputationOf(callerIdentity) >= registry.claimAddThreshold(),
-            Errors.SenderDoesNotHaveClaimSignerKey()
-        );
+        uint128 score = registry.reputationOf(callerIdentity);
+        uint128 threshold = registry.claimAddThreshold();
+        require(score >= threshold, Errors.ReputationBelowClaimAddThreshold(callerIdentity, score, threshold));
     }
 
     /// @dev Shared write path for `addClaim` and `addClaimByTrustedIssuer`. The issuer-side

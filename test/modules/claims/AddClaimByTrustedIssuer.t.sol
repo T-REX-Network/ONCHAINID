@@ -55,15 +55,15 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
     function test_trustedIssuer_canAddClaimWithoutKeyGrant() public {
         // claimIssuer is factory-deployed CLAIM_ISSUER; claimIssuerOwner is its auto-linked
         // wallet. No key has been granted on aliceIdentity for claimIssuerOwner.
-        bytes memory addClaimData = _buildAddClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
         bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), FRESH_TOPIC);
-
         (,, address issuerBefore,,,) = IIdentity(address(aliceIdentity)).getClaim(claimId);
         assertEq(issuerBefore, address(0));
 
+        (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
+            _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
+
         vm.prank(claimIssuerOwner);
-        (bool ok,) = address(aliceIdentity).call(addClaimData);
-        assertTrue(ok);
+        ClaimsModule(address(aliceIdentity)).addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
 
         (uint256 topic,, address issuerAfter,,,) = IIdentity(address(aliceIdentity)).getClaim(claimId);
         assertEq(topic, FRESH_TOPIC);
@@ -72,42 +72,48 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
 
     // ============ Negative paths ============
 
-    function test_untrustedIssuer_reverts() public {
+    function test_untrustedIssuer_revertsWithReputationBelowThreshold() public {
         // Drop claimIssuer's reputation below threshold.
         vm.prank(reputationManager);
         onchainidSetup.reputationRegistry.setReputation(address(claimIssuer), 0);
 
-        bytes memory addClaimData = _buildAddClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
+        (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
+            _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
 
         vm.prank(claimIssuerOwner);
-        (bool ok,) = address(aliceIdentity).call(addClaimData);
-        assertFalse(ok);
+        vm.expectRevert(
+            abi.encodeWithSelector(Errors.ReputationBelowClaimAddThreshold.selector, address(claimIssuer), 0, THRESHOLD)
+        );
+        ClaimsModule(address(aliceIdentity)).addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
 
         bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), FRESH_TOPIC);
         (,, address issuerAfter,,,) = IIdentity(address(aliceIdentity)).getClaim(claimId);
         assertEq(issuerAfter, address(0));
     }
 
-    function test_callerNotLinkedToAnyIdentity_reverts() public {
-        // A wallet the factory does not know cannot use this path even with a valid
-        // signature.
+    function test_callerNotLinkedToAnyIdentity_revertsWithCallerNotLinked() public {
+        // A wallet the factory does not know cannot use this path.
         address stranger = makeAddr("stranger");
-        bytes memory addClaimData = _buildAddClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
+        (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
+            _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
 
         vm.prank(stranger);
-        (bool ok,) = address(aliceIdentity).call(addClaimData);
-        assertFalse(ok);
+        vm.expectRevert(abi.encodeWithSelector(Errors.CallerNotLinkedToFactoryIdentity.selector, stranger));
+        ClaimsModule(address(aliceIdentity)).addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
     }
 
-    function test_declaredIssuerMismatch_reverts() public {
+    function test_declaredIssuerMismatch_revertsWithMismatchError() public {
         // claimIssuerOwner resolves to claimIssuer, but the call declares bobIdentity
         // as the issuer. Reject so a trusted issuer cannot ship a claim attributed to
         // someone else.
-        bytes memory addClaimData = _buildAddClaim(address(aliceIdentity), address(bobIdentity), FRESH_TOPIC);
+        (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
+            _buildSignedClaim(address(aliceIdentity), address(bobIdentity), FRESH_TOPIC);
 
         vm.prank(claimIssuerOwner);
-        (bool ok,) = address(aliceIdentity).call(addClaimData);
-        assertFalse(ok);
+        vm.expectRevert(
+            abi.encodeWithSelector(Errors.DeclaredIssuerMismatch.selector, address(bobIdentity), address(claimIssuer))
+        );
+        ClaimsModule(address(aliceIdentity)).addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
     }
 
     function test_highScoreNonClaimIssuer_cannotAddClaim() public {
@@ -126,13 +132,11 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
             Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: hex"01" });
         bytes memory signature =
             ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(bobIdentity), FRESH_TOPIC, data);
-        bytes memory addClaimData = abi.encodeCall(
-            ClaimsModule.addClaimByTrustedIssuer, (FRESH_TOPIC, uint256(1), address(aliceIdentity), signature, data, "")
-        );
 
         vm.prank(alice);
-        (bool ok,) = address(bobIdentity).call(addClaimData);
-        assertFalse(ok);
+        vm.expectRevert(abi.encodeWithSelector(Errors.IdentityNotClaimIssuerType.selector, address(aliceIdentity)));
+        ClaimsModule(address(bobIdentity))
+            .addClaimByTrustedIssuer(FRESH_TOPIC, uint256(1), address(aliceIdentity), signature, data, "");
 
         bytes32 claimId = ClaimSignerHelper.computeClaimId(address(aliceIdentity), FRESH_TOPIC);
         (,, address issuerAfter,,,) = IIdentity(address(bobIdentity)).getClaim(claimId);
@@ -141,20 +145,27 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
 
     function test_loseTrustAfterReputationLowered() public {
         // First write succeeds (score 50, threshold 50).
-        bytes memory firstAdd = _buildAddClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
+        (uint256 firstScheme, address firstIssuer, bytes memory firstSig, Structs.ClaimData memory firstData) =
+            _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
         vm.prank(claimIssuerOwner);
-        (bool okFirst,) = address(aliceIdentity).call(firstAdd);
-        assertTrue(okFirst);
+        ClaimsModule(address(aliceIdentity))
+            .addClaimByTrustedIssuer(FRESH_TOPIC, firstScheme, firstIssuer, firstSig, firstData, "");
 
-        // Manager lowers the score. A subsequent attempt for a different topic must fail.
+        // Manager lowers the score. A subsequent attempt for a different topic must
+        // revert with the threshold error.
         vm.prank(reputationManager);
         onchainidSetup.reputationRegistry.setReputation(address(claimIssuer), 0);
 
         uint256 anotherTopic = 7777;
-        bytes memory secondAdd = _buildAddClaim(address(aliceIdentity), address(claimIssuer), anotherTopic);
+        (uint256 secondScheme, address secondIssuer, bytes memory secondSig, Structs.ClaimData memory secondData) =
+            _buildSignedClaim(address(aliceIdentity), address(claimIssuer), anotherTopic);
+
         vm.prank(claimIssuerOwner);
-        (bool okSecond,) = address(aliceIdentity).call(secondAdd);
-        assertFalse(okSecond);
+        vm.expectRevert(
+            abi.encodeWithSelector(Errors.ReputationBelowClaimAddThreshold.selector, address(claimIssuer), 0, THRESHOLD)
+        );
+        ClaimsModule(address(aliceIdentity))
+            .addClaimByTrustedIssuer(anotherTopic, secondScheme, secondIssuer, secondSig, secondData, "");
 
         bytes32 secondClaimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), anotherTopic);
         (,, address issuerAfter,,,) = IIdentity(address(aliceIdentity)).getClaim(secondClaimId);
@@ -163,19 +174,20 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
 
     // ============ Helper ============
 
-    function _buildAddClaim(address targetIdentity, address declaredIssuer, uint256 topic)
+    /// @dev Build the four signed-claim components used by addClaimByTrustedIssuer.
+    ///      Signed by `claimIssuerOwner`, who is a CLAIM_SIGNER on `claimIssuer`'s
+    ///      identity. Carol-signed claims are built inline in the tests that need them.
+    function _buildSignedClaim(address targetIdentity, address declaredIssuer, uint256 topic)
         internal
         view
-        returns (bytes memory)
+        returns (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data)
     {
-        Structs.ClaimData memory data =
-            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: hex"01" });
-        bytes memory signature = ClaimSignerHelper.signClaim(
+        data = Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: hex"01" });
+        signature = ClaimSignerHelper.signClaim(
             claimIssuerOwnerPk, claimIssuerOwner, declaredIssuer, targetIdentity, topic, data
         );
-        return abi.encodeCall(
-            ClaimsModule.addClaimByTrustedIssuer, (topic, uint256(1), declaredIssuer, signature, data, "")
-        );
+        scheme = 1;
+        issuer = declaredIssuer;
     }
 
 }
