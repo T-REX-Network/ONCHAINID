@@ -110,6 +110,35 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
         assertFalse(ok);
     }
 
+    function test_highScoreNonClaimIssuer_cannotAddClaim() public {
+        // The trusted-issuer path must reject any identity that is not type
+        // CLAIM_ISSUER, even when its reputation is at or above the threshold.
+        // Without the explicit type check, a REPUTATION_MANAGER giving a non-issuer
+        // a high score for any reason would silently grant it claim-add capability.
+        //
+        // Setup: aliceIdentity is factory-deployed INDIVIDUAL. Give it a high score
+        // and try to attest to bobIdentity. Carol is alice's CLAIM_SIGNER, so the
+        // claim signature itself is valid; the new gate is what rejects.
+        vm.prank(reputationManager);
+        onchainidSetup.reputationRegistry.setReputation(address(aliceIdentity), ISSUER_DEFAULT_SCORE);
+
+        Structs.ClaimData memory data =
+            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: hex"01" });
+        bytes memory signature =
+            ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(bobIdentity), FRESH_TOPIC, data);
+        bytes memory addClaimData = abi.encodeCall(
+            ClaimsModule.addClaimByTrustedIssuer, (FRESH_TOPIC, uint256(1), address(aliceIdentity), signature, data, "")
+        );
+
+        vm.prank(alice);
+        (bool ok,) = address(bobIdentity).call(addClaimData);
+        assertFalse(ok);
+
+        bytes32 claimId = ClaimSignerHelper.computeClaimId(address(aliceIdentity), FRESH_TOPIC);
+        (,, address issuerAfter,,,) = IIdentity(address(bobIdentity)).getClaim(claimId);
+        assertEq(issuerAfter, address(0));
+    }
+
     function test_loseTrustAfterReputationLowered() public {
         // First write succeeds (score 50, threshold 50).
         bytes memory firstAdd = _buildAddClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);

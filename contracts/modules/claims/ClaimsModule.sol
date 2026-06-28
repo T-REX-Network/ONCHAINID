@@ -18,6 +18,7 @@ import { IERC735 } from "../../interface/IERC735.sol";
 import { IIdentity } from "../../interface/IIdentity.sol";
 import { Errors } from "../../libraries/Errors.sol";
 import { hashAddress } from "../../libraries/Hashing.sol";
+import { IdentityTypes } from "../../libraries/IdentityTypes.sol";
 import { KeyPurposes } from "../../libraries/KeyPurposes.sol";
 import { IReputationRegistry } from "../../reputation/IReputationRegistry.sol";
 import { Structs } from "../../storage/Structs.sol";
@@ -197,14 +198,24 @@ contract ClaimsModule is IERC7579Module, IERC735 {
         return _addClaim(msg.sender, _topic, _scheme, _issuer, _signature, _data, _uri);
     }
 
-    /// @dev Trusted-issuer gate. Reverts unless the caller wallet resolves through the
-    ///      factory to `expectedIssuer` and that identity's reputation meets the global
-    ///      claim-add threshold. `reputationOf` already returns `0` for non-factory
-    ///      identities, so this implicitly re-checks factory membership.
+    /// @dev Trusted-issuer gate. Four conditions, all required:
+    ///        1. The caller wallet resolves through the factory to a non-zero issuer
+    ///           identity (i.e. it is a linked account on a factory-deployed identity).
+    ///        2. That identity equals the claim's declared issuer (issuer-bound rule).
+    ///        3. That identity self-declares type `CLAIM_ISSUER`. Without this, any
+    ///           identity that happens to be scored above the threshold (e.g. an
+    ///           INDIVIDUAL elevated by the manager) could write claims silently.
+    ///        4. Its reputation in the registry meets the global claim-add threshold.
+    ///      `reputationOf` already returns `0` for non-factory identities, so the
+    ///      score check implicitly re-confirms factory membership.
     function _requireTrustedIssuer(address caller, address expectedIssuer) internal view {
         address callerIdentity = factory.getIdentity(abi.encodePacked(caller));
         require(callerIdentity != address(0), Errors.SenderDoesNotHaveClaimSignerKey());
         require(expectedIssuer == callerIdentity, Errors.SenderDoesNotHaveClaimSignerKey());
+        require(
+            IIdentity(callerIdentity).getIdentityType() == IdentityTypes.CLAIM_ISSUER,
+            Errors.SenderDoesNotHaveClaimSignerKey()
+        );
         IReputationRegistry registry = reputationRegistry;
         require(
             registry.reputationOf(callerIdentity) >= registry.claimAddThreshold(),
