@@ -29,3 +29,4 @@ remappings_regenerate = false
 forge-std = { version = "v1.14.0", git = "https://github.com/foundry-rs/forge-std.git", tag = "v1.14.0" }
 "@openzeppelin-contracts" = "5.6.0"
 "@openzeppelin-contracts-upgradeable" = "5.6.0"
+"@openzeppelin-accounts" = { version = "0.0.0-e4c2a32a", git = "https://github.com/OpenZeppelin/openzeppelin-accounts.git", rev = "e4c2a32ad7378741a3cc4f2030f7d21d5ac53d28" }
