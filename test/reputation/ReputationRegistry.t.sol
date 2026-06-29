@@ -33,11 +33,12 @@ contract ReputationRegistryTest is OnchainIDSetup {
 
         registry = new ReputationRegistry(address(onchainidSetup.accessManager), address(onchainidSetup.idFactory));
 
-        // Restrict setReputation + setDefault to REPUTATION_MANAGER_ROLE and
-        // grant the role to `reputationManager`.
-        bytes4[] memory selectors = new bytes4[](2);
+        // Restrict the three restricted setters to REPUTATION_MANAGER_ROLE and grant
+        // the role to `reputationManager`.
+        bytes4[] memory selectors = new bytes4[](3);
         selectors[0] = ReputationRegistry.setReputation.selector;
         selectors[1] = ReputationRegistry.setDefault.selector;
+        selectors[2] = ReputationRegistry.setClaimAddThreshold.selector;
 
         vm.startPrank(deployer);
         onchainidSetup.accessManager.setTargetFunctionRole(address(registry), selectors, REPUTATION_MANAGER_ROLE);
@@ -85,6 +86,33 @@ contract ReputationRegistryTest is OnchainIDSetup {
         vm.expectEmit(true, false, false, true, address(registry));
         emit IReputationRegistry.DefaultSet(IdentityTypes.CLAIM_ISSUER, HIGH_SCORE, 99);
         registry.setDefault(IdentityTypes.CLAIM_ISSUER, 99);
+        vm.stopPrank();
+    }
+
+    // ============ setClaimAddThreshold ============
+
+    function test_setClaimAddThreshold_revertWhenCallerLacksRole() public {
+        vm.prank(alice);
+        vm.expectRevert(); // AccessManagerUnauthorizedAccount
+        registry.setClaimAddThreshold(HIGH_SCORE);
+    }
+
+    function test_setClaimAddThreshold_managerCanSet() public {
+        vm.prank(reputationManager);
+        vm.expectEmit(false, false, false, true, address(registry));
+        emit IReputationRegistry.ClaimAddThresholdSet(0, HIGH_SCORE);
+        registry.setClaimAddThreshold(HIGH_SCORE);
+
+        assertEq(registry.claimAddThreshold(), HIGH_SCORE);
+    }
+
+    function test_setClaimAddThreshold_overwritesAndEmitsOld() public {
+        vm.startPrank(reputationManager);
+        registry.setClaimAddThreshold(HIGH_SCORE);
+
+        vm.expectEmit(false, false, false, true, address(registry));
+        emit IReputationRegistry.ClaimAddThresholdSet(HIGH_SCORE, 99);
+        registry.setClaimAddThreshold(99);
         vm.stopPrank();
     }
 
