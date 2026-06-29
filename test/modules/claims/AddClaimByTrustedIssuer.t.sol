@@ -172,6 +172,48 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
         assertEq(issuerAfter, address(0));
     }
 
+    // ============ Threshold boundary ============
+
+    /// @dev Issuer with reputation exactly equal to the threshold passes the gate. Pins
+    ///      the `>=` semantic; a future change to `>` would break this test.
+    function test_reputationExactlyAtThreshold_passes() public {
+        vm.prank(reputationManager);
+        onchainidSetup.reputationRegistry.setReputation(address(claimIssuer), THRESHOLD);
+
+        (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
+            _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
+
+        vm.prank(claimIssuerOwner);
+        ClaimsModule(address(aliceIdentity)).addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
+
+        bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), FRESH_TOPIC);
+        (,, address issuerAfter,,,) = IIdentity(address(aliceIdentity)).getClaim(claimId);
+        assertEq(issuerAfter, address(claimIssuer));
+    }
+
+    /// @dev Issuer with reputation one below the threshold fails. Pins the other side of
+    ///      the boundary so an off-by-one in the comparison gets caught by tests.
+    function test_reputationOneBelowThreshold_reverts() public {
+        uint128 belowThreshold = THRESHOLD - 1;
+        vm.prank(reputationManager);
+        onchainidSetup.reputationRegistry.setReputation(address(claimIssuer), belowThreshold);
+
+        (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
+            _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
+
+        vm.prank(claimIssuerOwner);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Errors.ReputationBelowClaimAddThreshold.selector, address(claimIssuer), belowThreshold, THRESHOLD
+            )
+        );
+        ClaimsModule(address(aliceIdentity)).addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
+
+        bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), FRESH_TOPIC);
+        (,, address issuerAfter,,,) = IIdentity(address(aliceIdentity)).getClaim(claimId);
+        assertEq(issuerAfter, address(0));
+    }
+
     // ============ Helper ============
 
     /// @dev Build the four signed-claim components used by addClaimByTrustedIssuer.
