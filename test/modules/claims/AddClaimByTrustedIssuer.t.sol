@@ -130,8 +130,9 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
 
         Structs.ClaimData memory data =
             Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: hex"01" });
-        bytes memory signature =
-            ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(bobIdentity), FRESH_TOPIC, data);
+        bytes memory signature = ClaimSignerHelper.signClaim(
+            carolPk, carol, address(aliceIdentity), address(bobIdentity), FRESH_TOPIC, data
+        );
 
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(Errors.IdentityNotClaimIssuerType.selector, address(aliceIdentity)));

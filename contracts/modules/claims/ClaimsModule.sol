@@ -211,9 +211,7 @@ contract ClaimsModule is IERC7579Module, IERC735 {
     function _requireTrustedIssuer(address caller, address expectedIssuer) internal view {
         address callerIdentity = factory.getIdentity(abi.encodePacked(caller));
         require(callerIdentity != address(0), Errors.CallerNotLinkedToFactoryIdentity(caller));
-        require(
-            expectedIssuer == callerIdentity, Errors.DeclaredIssuerMismatch(expectedIssuer, callerIdentity)
-        );
+        require(expectedIssuer == callerIdentity, Errors.DeclaredIssuerMismatch(expectedIssuer, callerIdentity));
         require(
             IIdentity(callerIdentity).getIdentityType() == IdentityTypes.CLAIM_ISSUER,
             Errors.IdentityNotClaimIssuerType(callerIdentity)
