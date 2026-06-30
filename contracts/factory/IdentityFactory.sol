@@ -92,8 +92,8 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         ///      anyone else are rejected. Manage via {setTrustedGateway}.
         mapping(address gateway => bool trusted) trustedGateways;
         /// @dev Cross-chain link proposals awaiting identity-side confirmation.
-        ///      Keyed by `keccak256(walletEnvelope)`. Cleared on {confirmCrossChainLink}.
-        mapping(bytes32 walletKey => PendingLink proposal) pendingLinks;
+        ///      Keyed by the wallet envelope bytes. Cleared on {confirmCrossChainLink}.
+        mapping(bytes wallet => PendingLink proposal) pendingLinks;
     }
 
     // keccak256(abi.encode(uint256(keccak256("onchainid.IdentityFactory")) - 1)) & ~bytes32(uint256(0xff))
@@ -232,7 +232,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
 
     /// @inheritdoc IIdentityFactory
     function getPendingCrossChainLink(bytes calldata account) external view returns (address identity, uint256 expiry) {
-        PendingLink storage pending = _storage().pendingLinks[_walletKey(account)];
+        PendingLink storage pending = _storage().pendingLinks[account];
         return (pending.identity, pending.expiry);
     }
 
@@ -242,8 +242,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // that identity gets to finalize the link. Anyone else calling here is
         // rejected. The identity reaches us via its own execution path, so a
         // MANAGEMENT key on the identity is what actually signs this off.
-        bytes32 walletKey = _walletKey(account);
-        PendingLink memory pending = _storage().pendingLinks[walletKey];
+        PendingLink memory pending = _storage().pendingLinks[account];
         // `pending.identity == address(0)` when no proposal exists, which can never
         // equal `msg.sender`, so a single equality check covers both the missing-
         // proposal and wrong-identity cases.
@@ -253,7 +252,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         );
         require(block.timestamp <= pending.expiry, Errors.ExpiredSignature(pending.expiry));
 
-        delete _storage().pendingLinks[walletKey];
+        delete _storage().pendingLinks[account];
         _linkAccount(account, msg.sender);
         emit CrossChainLinkConfirmed(account, msg.sender);
     }
@@ -291,13 +290,15 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         require(block.timestamp <= expiry, Errors.ExpiredSignature(expiry));
         require(_storage().isFactoryIdentity[identity], Errors.NotFactoryIdentity(identity));
 
-        bytes32 key = _walletKey(walletEnvelope);
         // Sticky binding still applies: a wallet that is already linked or
         // revoked cannot be re-proposed. The confirm step would reject anyway,
         // but failing fast here saves the identity owner a wasted transaction.
-        require(_storage().wallets[key].status == AccountStatus.None, Errors.WalletAlreadyHasEntry(walletEnvelope));
+        require(
+            _storage().wallets[_walletKey(walletEnvelope)].status == AccountStatus.None,
+            Errors.WalletAlreadyHasEntry(walletEnvelope)
+        );
 
-        _storage().pendingLinks[key] = PendingLink({ identity: identity, expiry: expiry });
+        _storage().pendingLinks[walletEnvelope] = PendingLink({ identity: identity, expiry: expiry });
         emit PendingCrossChainLinkProposed(walletEnvelope, identity, expiry);
     }
 
