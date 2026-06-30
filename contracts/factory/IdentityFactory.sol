@@ -279,7 +279,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     function _processMessage(
         address, /* gateway */
         bytes32, /* receiveId */
-        bytes calldata, /* sender */
+        bytes calldata sender,
         bytes calldata payload
     )
         internal
@@ -287,6 +287,13 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     {
         (bytes memory walletEnvelope, address identity, uint256 expiry) = abi.decode(payload, (bytes, address, uint256));
 
+        // The wallet must originate the bridge call itself. `sender` is the
+        // source-chain caller authenticated by ERC-7786, so requiring it to
+        // equal the wallet envelope is the proof-of-control for the wallet half.
+        require(
+            keccak256(sender) == keccak256(walletEnvelope),
+            Errors.CrossChainSenderWalletMismatch(sender, walletEnvelope)
+        );
         require(block.timestamp <= expiry, Errors.ExpiredSignature(expiry));
         require(_storage().isFactoryIdentity[identity], Errors.NotFactoryIdentity(identity));
 

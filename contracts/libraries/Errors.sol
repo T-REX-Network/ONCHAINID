@@ -97,6 +97,12 @@ library Errors {
     ///         applies to the cross-chain path the same way it does to the EVM path.
     error WalletAlreadyHasEntry(bytes wallet);
 
+    /// @notice Reverts when the ERC-7786 source-chain sender does not match the
+    ///         wallet envelope carried in the payload. The wallet must originate
+    ///         the bridge call itself, so `sender` and `wallet` must be the same
+    ///         interoperable address.
+    error CrossChainSenderWalletMismatch(bytes sender, bytes wallet);
+
     /* ----- Verifier ----- */
 
     /// @notice The claim topic already exists.

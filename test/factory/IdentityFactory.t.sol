@@ -715,14 +715,6 @@ contract IdentityFactoryTest is OnchainIDSetup {
         return abi.encode(walletEnv, identity, expiry);
     }
 
-    /// @dev A synthetic ERC-7930 envelope representing the cross-chain source — the
-    ///      Solana program that originated the link request. Content doesn't matter
-    ///      for current tests (the factory accepts any sender from a trusted gateway),
-    ///      but the field is part of the 7786 interface.
-    function _sourceEnvelope() internal pure returns (bytes memory) {
-        return InteroperableAddress.formatV1(bytes2(0x0001), hex"01", abi.encodePacked(uint256(0xdeadbeef)));
-    }
-
     /// @notice Happy path: a non-EVM wallet authorizes a link on its native chain;
     ///         a trusted ERC-7786 gateway delivers the proposal; the named identity
     ///         confirms; the wallet is linked. Both halves of proof are present.
@@ -732,7 +724,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         uint256 expiry = block.timestamp + 1 hours;
 
         bytes memory payload = _crossChainPayload(solanaEnv, address(aliceIdentity), expiry);
-        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(1)), _sourceEnvelope(), payload);
+        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(1)), solanaEnv, payload);
 
         // Proposal staged but link not yet active.
         (address pendingId, uint256 pendingExp) = onchainidSetup.idFactory.getPendingCrossChainLink(solanaEnv);
@@ -760,7 +752,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         bytes memory payload = _crossChainPayload(solanaEnv, address(aliceIdentity), expiry);
 
         vm.expectRevert(); // OZ ERC7786RecipientUnauthorizedGateway
-        rogue.deliver(address(onchainidSetup.idFactory), bytes32(uint256(2)), _sourceEnvelope(), payload);
+        rogue.deliver(address(onchainidSetup.idFactory), bytes32(uint256(2)), solanaEnv, payload);
     }
 
     /// @notice An expired proposal is rejected at delivery time. Saves the identity
@@ -773,7 +765,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         bytes memory payload = _crossChainPayload(solanaEnv, address(aliceIdentity), expiredAt);
 
         vm.expectRevert(abi.encodeWithSelector(Errors.ExpiredSignature.selector, expiredAt));
-        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(3)), _sourceEnvelope(), payload);
+        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(3)), solanaEnv, payload);
     }
 
     /// @notice Only the identity named in the proposal can finalize it. A different
@@ -784,7 +776,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         bytes memory solanaEnv = _nonEvmEnvelope(makeAddr("solanaSignerWrongConfirm"));
         uint256 expiry = block.timestamp + 1 hours;
         bytes memory payload = _crossChainPayload(solanaEnv, address(aliceIdentity), expiry);
-        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(4)), _sourceEnvelope(), payload);
+        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(4)), solanaEnv, payload);
 
         // Bob's identity tries to confirm a proposal that named Alice's identity.
         vm.prank(address(bobIdentity));
@@ -808,14 +800,32 @@ contract IdentityFactoryTest is OnchainIDSetup {
         uint256 expiry = block.timestamp + 1 hours;
         bytes memory payload = _crossChainPayload(solanaEnv, address(aliceIdentity), expiry);
 
-        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(5)), _sourceEnvelope(), payload);
+        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(5)), solanaEnv, payload);
         vm.prank(address(aliceIdentity));
         onchainidSetup.idFactory.confirmCrossChainLink(solanaEnv);
 
         // A second proposal for the same wallet (different receiveId) is now blocked
         // because the wallet entry status is Active, not None.
         vm.expectRevert(abi.encodeWithSelector(Errors.WalletAlreadyHasEntry.selector, solanaEnv));
-        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(6)), _sourceEnvelope(), payload);
+        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(6)), solanaEnv, payload);
+    }
+
+    /// @notice The bridge `sender` must be the wallet envelope itself; a payload that
+    ///         names wallet `V` but was originated by some other source-chain address
+    ///         is rejected. This blocks the takeover where an attacker on the source
+    ///         chain stages a proposal binding a victim's wallet to the attacker's
+    ///         identity without the victim ever signing.
+    function test_crossChain_senderMustEqualWallet() public {
+        MockERC7786Gateway gateway = _deployTrustedGateway();
+        bytes memory victimEnv = _nonEvmEnvelope(makeAddr("victimWallet"));
+        bytes memory attackerEnv = _nonEvmEnvelope(makeAddr("attackerSourceContract"));
+        uint256 expiry = block.timestamp + 1 hours;
+
+        // Payload names the victim wallet, but the bridge sender is the attacker.
+        bytes memory payload = _crossChainPayload(victimEnv, address(aliceIdentity), expiry);
+
+        vm.expectRevert(abi.encodeWithSelector(Errors.CrossChainSenderWalletMismatch.selector, attackerEnv, victimEnv));
+        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(7)), attackerEnv, payload);
     }
 
     // ============ createIdentityFor with new identity types ============
