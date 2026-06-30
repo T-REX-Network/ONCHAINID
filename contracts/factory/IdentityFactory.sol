@@ -244,8 +244,13 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // MANAGEMENT key on the identity is what actually signs this off.
         bytes32 walletKey = _walletKey(account);
         PendingLink memory pending = _storage().pendingLinks[walletKey];
-        require(pending.identity != address(0), Errors.NoPendingCrossChainLink(account));
-        require(pending.identity == msg.sender, Errors.PendingCrossChainLinkIdentityMismatch(account, pending.identity));
+        // `pending.identity == address(0)` when no proposal exists, which can never
+        // equal `msg.sender`, so a single equality check covers both the missing-
+        // proposal and wrong-identity cases.
+        require(
+            pending.identity == msg.sender,
+            Errors.PendingCrossChainLinkIdentityMismatch(account, msg.sender, pending.identity)
+        );
         require(block.timestamp <= pending.expiry, Errors.ExpiredSignature(pending.expiry));
 
         delete _storage().pendingLinks[walletKey];

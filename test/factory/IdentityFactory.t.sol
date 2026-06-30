@@ -790,7 +790,10 @@ contract IdentityFactoryTest is OnchainIDSetup {
         vm.prank(address(bobIdentity));
         vm.expectRevert(
             abi.encodeWithSelector(
-                Errors.PendingCrossChainLinkIdentityMismatch.selector, solanaEnv, address(aliceIdentity)
+                Errors.PendingCrossChainLinkIdentityMismatch.selector,
+                solanaEnv,
+                address(bobIdentity),
+                address(aliceIdentity)
             )
         );
         onchainidSetup.idFactory.confirmCrossChainLink(solanaEnv);
