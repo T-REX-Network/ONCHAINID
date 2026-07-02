@@ -163,7 +163,7 @@ contract SmartAccountTest is OnchainIDSetup {
         // and own its lifecycle for this test.
         ERC7579Signature validator = new ERC7579Signature();
         vm.startPrank(alice);
-        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), "");
+        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), abi.encodePacked(alice));
         // Validators don't need an ERC 734 purpose. We add one anyway so we can check
         // that uninstall cleans it up.
         aliceIdentity.addKey(keccak256(abi.encodePacked(address(validator))), KeyPurposes.ACTION, KeyTypes.ECDSA);
@@ -189,7 +189,7 @@ contract SmartAccountTest is OnchainIDSetup {
     function test_uninstallModule_byActionKey_reverts() public {
         ERC7579Signature validator = new ERC7579Signature();
         vm.prank(alice);
-        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), "");
+        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), abi.encodePacked(alice));
 
         // david is ACTION on alice's identity (set up in OnchainIDSetup), not MANAGEMENT.
         vm.prank(david);
@@ -242,9 +242,9 @@ contract SmartAccountTest is OnchainIDSetup {
         ERC7579Signature v2 = new ERC7579Signature();
 
         vm.startPrank(alice);
-        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(v1), "");
+        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(v1), abi.encodePacked(alice));
         aliceIdentity.uninstallModule(MODULE_TYPE_VALIDATOR, address(v1), "");
-        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(v2), "");
+        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(v2), abi.encodePacked(alice));
         vm.stopPrank();
 
         assertFalse(
@@ -717,9 +717,11 @@ contract SmartAccountTest is OnchainIDSetup {
     function test_validateUserOp_validatorWithoutAction_fails() public {
         // Install a fresh legacy validator without granting it any purpose. It's a
         // registered validator module, but the account has never blessed it as ACTION.
+        // Seed its signer registry with `david` so the sig passes the validator layer;
+        // the failure must come from the account-level per-target rule, not from crypto.
         ERC7579Signature rogue = new ERC7579Signature();
         vm.prank(alice);
-        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(rogue), "");
+        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(rogue), abi.encodePacked(david));
 
         Counter counter = new Counter();
         bytes memory innerCall = abi.encodeCall(Counter.increment, ());

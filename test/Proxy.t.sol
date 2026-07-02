@@ -37,7 +37,7 @@ contract ProxyTest is OnchainIDSetup {
         modules[0] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_VALIDATOR,
             module: address(onchainidSetup.signatureValidator),
-            initData: "",
+            initData: signer,
             purpose: 0
         });
 

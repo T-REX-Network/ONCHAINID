@@ -206,10 +206,13 @@ library IdentityHelper {
         // rule ("validators-as-keys") authorizes external targets for userOps and
         // executor dispatch signed under this validator. Self-target (MANAGEMENT-gated)
         // calls still require an additional MANAGEMENT purpose granted separately.
+        // `initData` seeds the validator's per-account signer registry with the
+        // initial MANAGEMENT key so signatures from that EOA pass the validator's
+        // membership check.
         modules[0] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_VALIDATOR,
             module: address(signatureValidator),
-            initData: "",
+            initData: mgmtSigner,
             purpose: KeyPurposes.ACTION
         });
         modules[1] = Structs.ModuleInstall({

@@ -42,9 +42,15 @@ contract TokenOidTest is Test {
         setup = IdentityHelper.deployFactory(deployer);
         vm.stopPrank();
 
+        // `initData` seeds the validator's per-account signer registry. These factory
+        // tests never sign userOps through the validator, so any 20-byte signer blob
+        // satisfies the ≥20-byte length check; alice is convenient.
         _defaultModules.push(
             Structs.ModuleInstall({
-                moduleType: MODULE_TYPE_VALIDATOR, module: address(setup.signatureValidator), initData: "", purpose: 0
+                moduleType: MODULE_TYPE_VALIDATOR,
+                module: address(setup.signatureValidator),
+                initData: abi.encodePacked(alice),
+                purpose: 0
             })
         );
     }

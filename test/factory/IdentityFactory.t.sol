@@ -46,13 +46,15 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
     /// @dev Minimal module bundle that satisfies Identity.initialize's "needs a validator
     ///      or an executor" invariant. Returns a fresh single-validator array each call so
-    ///      tests don't share calldata-aliased state.
+    ///      tests don't share calldata-aliased state. `initData` seeds the validator's
+    ///      per-account signer registry; factory tests don't sign through the validator,
+    ///      so any 20-byte signer blob passes the length check (alice is a convenient EOA).
     function _defaultModules() internal view returns (Structs.ModuleInstall[] memory mods) {
         mods = new Structs.ModuleInstall[](1);
         mods[0] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_VALIDATOR,
             module: address(onchainidSetup.signatureValidator),
-            initData: "",
+            initData: abi.encodePacked(alice),
             purpose: 0
         });
     }
@@ -667,7 +669,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         modules[0] = Structs.ModuleInstall({
             moduleType: 1, // MODULE_TYPE_VALIDATOR
             module: address(onchainidSetup.signatureValidator),
-            initData: "",
+            initData: abi.encodePacked(david),
             purpose: 0
         });
         vm.prank(deployer);

@@ -7,8 +7,10 @@ import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/draft-ERC433
 import { IERC1271 } from "@openzeppelin/contracts/interfaces/IERC1271.sol";
 import { IAccount, PackedUserOperation } from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import { MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
+import { ERC7579Signature } from "contracts/modules/validators/ERC7579Signature.sol";
 
 /// @notice PoC coverage for the "validators-as-keys" redesign. The three questions this
 ///         file answers:
@@ -188,6 +190,103 @@ contract ValidatorsAsKeysTest is OnchainIDSetup {
 
         bytes4 magic = IERC1271(address(aliceIdentity)).isValidSignature(digest, outerSig);
         assertEq(magic, IERC1271.isValidSignature.selector, "stock validator 1271 dispatch must succeed");
+    }
+
+    /// @notice Registry hole closure. The legacy validator (installed by the fixture
+    ///         with `david` as its authorized signer) must reject an unregistered EOA
+    ///         even when the signature is cryptographically valid. Before the
+    ///         per-account signer registry was added, ANY EOA producing a valid sig
+    ///         over the digest passed the validator; the account-layer ACTION grant
+    ///         then let them act on external targets. With the registry in place, the
+    ///         membership check fails before we reach the account.
+    function test_registry_unregisteredSignerFails() public {
+        (address stranger, uint256 strangerPk) = makeAddrAndKey("stranger");
+
+        PocCounter counter = new PocCounter();
+        bytes memory innerCall = abi.encodeCall(PocCounter.increment, ());
+        bytes memory executionCalldata = abi.encodePacked(address(counter), uint256(0), innerCall);
+        bytes memory callData =
+            abi.encodeWithSelector(bytes4(keccak256("execute(bytes32,bytes)")), bytes32(0), executionCalldata);
+        PackedUserOperation memory userOp = PackedUserOperation({
+            sender: address(aliceIdentity),
+            nonce: _packNonce(address(onchainidSetup.signatureValidator), 0),
+            initCode: "",
+            callData: callData,
+            accountGasLimits: bytes32(0),
+            preVerificationGas: 0,
+            gasFees: bytes32(0),
+            paymasterAndData: "",
+            signature: ""
+        });
+        bytes32 userOpHash = keccak256(abi.encode(userOp.sender, userOp.nonce, userOp.callData));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(strangerPk, userOpHash);
+        userOp.signature = abi.encode(abi.encodePacked(stranger), abi.encodePacked(r, s, v));
+
+        vm.prank(ENTRY_POINT);
+        uint256 result = IAccount(address(aliceIdentity)).validateUserOp(userOp, userOpHash, 0);
+        assertEq(
+            result,
+            ERC4337Utils.SIG_VALIDATION_FAILED,
+            "unregistered signer must fail at the validator's membership check"
+        );
+    }
+
+    /// @notice setSigner rotation. The account routes a MANAGEMENT-authorized userOp
+    ///         through `execute(...)` that self-calls `validator.setSigner(newSigner)`,
+    ///         swapping `david` for a fresh EOA. After rotation, a userOp signed by
+    ///         `david` must fail and one signed by the new signer must succeed.
+    function test_registry_setSignerRotatesCleanly() public {
+        // Grant the fixture's validator MANAGEMENT so the self-target `setSigner` call
+        // clears the strict-default per-target rule (self-target requires MANAGEMENT).
+        vm.prank(alice);
+        aliceIdentity.addKey(
+            keccak256(abi.encodePacked(address(onchainidSetup.signatureValidator))),
+            KeyPurposes.MANAGEMENT,
+            KeyTypes.MODULE
+        );
+
+        (address newSigner, uint256 newSignerPk) = makeAddrAndKey("newSigner");
+
+        // Route through IKeyExecutor.execute (the KAM queue path) so the account
+        // self-calls setSigner on the validator with `msg.sender == aliceIdentity`.
+        vm.prank(alice);
+        IKeyExecutor(address(aliceIdentity))
+            .execute(
+                address(onchainidSetup.signatureValidator),
+                0,
+                abi.encodeCall(ERC7579Signature.setSigner, (abi.encodePacked(newSigner)))
+            );
+
+        bytes memory stored = onchainidSetup.signatureValidator.signer(address(aliceIdentity));
+        assertEq(keccak256(stored), keccak256(abi.encodePacked(newSigner)), "registry must reflect the rotated signer");
+
+        // OLD signer (david) must now fail — no longer the authorized signer.
+        {
+            PocCounter counter = new PocCounter();
+            bytes memory innerCall = abi.encodeCall(PocCounter.increment, ());
+            (PackedUserOperation memory userOp, bytes32 userOpHash) =
+                _buildUserOp(address(onchainidSetup.signatureValidator), address(counter), innerCall);
+            (uint8 v, bytes32 r, bytes32 s) = vm.sign(davidPk, userOpHash);
+            userOp.signature = abi.encode(abi.encodePacked(david), abi.encodePacked(r, s, v));
+
+            vm.prank(ENTRY_POINT);
+            uint256 result = IAccount(address(aliceIdentity)).validateUserOp(userOp, userOpHash, 0);
+            assertEq(result, ERC4337Utils.SIG_VALIDATION_FAILED, "rotated-out signer must no longer be accepted");
+        }
+
+        // NEW signer must succeed.
+        {
+            PocCounter counter = new PocCounter();
+            bytes memory innerCall = abi.encodeCall(PocCounter.increment, ());
+            (PackedUserOperation memory userOp, bytes32 userOpHash) =
+                _buildUserOp(address(onchainidSetup.signatureValidator), address(counter), innerCall);
+            (uint8 v, bytes32 r, bytes32 s) = vm.sign(newSignerPk, userOpHash);
+            userOp.signature = abi.encode(abi.encodePacked(newSigner), abi.encodePacked(r, s, v));
+
+            vm.prank(ENTRY_POINT);
+            uint256 result = IAccount(address(aliceIdentity)).validateUserOp(userOp, userOpHash, 0);
+            assertEq(result, ERC4337Utils.SIG_VALIDATION_SUCCESS, "rotated-in signer must be accepted");
+        }
     }
 
 }
