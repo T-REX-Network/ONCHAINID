@@ -16,6 +16,7 @@ import { ClaimsModule } from "contracts/modules/claims/ClaimsModule.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
 import { ERC7579Signature } from "contracts/modules/validators/ERC7579Signature.sol";
 import { IdentityUtilitiesProxy } from "contracts/proxy/IdentityUtilitiesProxy.sol";
+import { ReputationRegistry } from "contracts/reputation/ReputationRegistry.sol";
 
 /**
  * @title DeployOnchainID
@@ -75,18 +76,14 @@ contract DeployOnchainID is Script {
         UpgradeableBeacon beacon = new UpgradeableBeacon(address(identityImpl), deployer);
         console.log("Beacon:", address(beacon));
 
-        // 4b. Module singletons. Callers include these in their `_modules` array on
-        //     `createIdentity` to opt into the legacy ERC-734 execute/approve queue
-        //     (KeyApprovalModule) and the full ERC-735 claim surface (ClaimsModule).
+        // 4b. KeyApprovalModule (the legacy ERC-734 execute/approve queue, no deps).
         KeyApprovalModule keyApprovalModule = new KeyApprovalModule();
         console.log("KeyApprovalModule:", address(keyApprovalModule));
-        ClaimsModule claimsModule = new ClaimsModule();
-        console.log("ClaimsModule:", address(claimsModule));
 
-        // 5. AccessManager — single source of truth for IdentityFactory permissions.
-        //    The deployer starts as the AccessManager admin (`ADMIN_ROLE = 0`). Production
-        //    deployments should rotate this to a multisig immediately via
-        //    `am.grantRole(0, multisig, 0); am.revokeRole(0, deployer);`.
+        // 5. AccessManager. Single source of truth for IdentityFactory and
+        //    ReputationRegistry permissions. The deployer starts as the AccessManager admin
+        //    (`ADMIN_ROLE = 0`). Production deployments should rotate this to a multisig
+        //    immediately via `am.grantRole(0, multisig, 0); am.revokeRole(0, deployer);`.
         AccessManager am = new AccessManager(deployer);
         console.log("AccessManager:", address(am));
 
@@ -97,6 +94,16 @@ contract DeployOnchainID is Script {
         // 6. IdentityFactory
         IdentityFactory idFactory = new IdentityFactory(address(beacon), address(am));
         console.log("IdentityFactory:", address(idFactory));
+
+        // 6b. ReputationRegistry. Needs the factory address so its lazy default-tier
+        //     fallback can gate on factory membership. Writes are restricted via the AM.
+        ReputationRegistry reputationRegistry = new ReputationRegistry(address(am), address(idFactory));
+        console.log("ReputationRegistry:", address(reputationRegistry));
+
+        // 6c. ClaimsModule. Needs the factory and the registry for the trusted-issuer
+        //     addClaim path.
+        ClaimsModule claimsModule = new ClaimsModule(address(idFactory), address(reputationRegistry));
+        console.log("ClaimsModule:", address(claimsModule));
 
         // Hand the beacon to the AccessManager so future implementation upgrades
         // (`beacon.upgradeTo(newImpl)`) go through the same role gating as everything else.
