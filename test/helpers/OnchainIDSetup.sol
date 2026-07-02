@@ -122,14 +122,20 @@ contract OnchainIDSetup is Test {
 
         // Install the ERC-7579 signature validator on alice's account so the ERC-1271 / 4337
         // dispatch through the account works. (Claim verification on the issuer does NOT
-        // need this — it goes straight through SignatureChecker.)
-        vm.prank(alice);
+        // need this — it goes straight through SignatureChecker.) Under the
+        // "validators-as-keys" model, also grant the validator address ACTION so the
+        // SmartAccount per-target rule authorizes it for external targets.
+        vm.startPrank(alice);
         aliceIdentity.installModule(
             1,
             /* MODULE_TYPE_VALIDATOR */
             address(onchainidSetup.signatureValidator),
             ""
         );
+        aliceIdentity.addKey(
+            keccak256(abi.encodePacked(address(onchainidSetup.signatureValidator))), KeyPurposes.ACTION, KeyTypes.MODULE
+        );
+        vm.stopPrank();
 
         // Add carol as CLAIM_SIGNER and david as ACTION key on alice's identity
         vm.startPrank(alice);

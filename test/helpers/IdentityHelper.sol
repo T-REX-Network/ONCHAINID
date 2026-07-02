@@ -202,8 +202,15 @@ library IdentityHelper {
         });
 
         Structs.ModuleInstall[] memory modules = new Structs.ModuleInstall[](11);
+        // Grant the validator ACTION at install time so the SmartAccount per-target
+        // rule ("validators-as-keys") authorizes external targets for userOps and
+        // executor dispatch signed under this validator. Self-target (MANAGEMENT-gated)
+        // calls still require an additional MANAGEMENT purpose granted separately.
         modules[0] = Structs.ModuleInstall({
-            moduleType: MODULE_TYPE_VALIDATOR, module: address(signatureValidator), initData: "", purpose: 0
+            moduleType: MODULE_TYPE_VALIDATOR,
+            module: address(signatureValidator),
+            initData: "",
+            purpose: KeyPurposes.ACTION
         });
         modules[1] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_EXECUTOR, module: address(claimsModule), initData: "", purpose: 0

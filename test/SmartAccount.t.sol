@@ -709,20 +709,26 @@ contract SmartAccountTest is OnchainIDSetup {
         assertEq(result, ERC4337Utils.SIG_VALIDATION_FAILED, "ACTION must not be able to self-target addKey");
     }
 
-    /// @notice A signer not registered as a key on the identity fails at the validator's
-    ///         purpose check (signature is valid, but the signer has no ACTION).
-    function test_validateUserOp_unregisteredSigner_fails() public {
-        (address stranger, uint256 strangerPk) = makeAddrAndKey("stranger");
+    /// @notice A validator that is installed but NOT granted ACTION cannot authorize
+    ///         a userOp against an external target. Under "validators-as-keys" the
+    ///         per-target rule is checked against `hashAddress(validator)`, not
+    ///         against the recovered signer, so an unauthorized validator fails
+    ///         even when its signature is cryptographically valid.
+    function test_validateUserOp_validatorWithoutAction_fails() public {
+        // Install a fresh legacy validator without granting it any purpose. It's a
+        // registered validator module, but the account has never blessed it as ACTION.
+        ERC7579Signature rogue = new ERC7579Signature();
+        vm.prank(alice);
+        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(rogue), "");
+
         Counter counter = new Counter();
         bytes memory innerCall = abi.encodeCall(Counter.increment, ());
-
-        // Build the UserOp shell, then sign with the stranger instead of david.
         bytes memory executionCalldata = abi.encodePacked(address(counter), uint256(0), innerCall);
         bytes memory callData =
             abi.encodeWithSelector(bytes4(keccak256("execute(bytes32,bytes)")), bytes32(0), executionCalldata);
         PackedUserOperation memory userOp = PackedUserOperation({
             sender: address(aliceIdentity),
-            nonce: _packNonce(address(onchainidSetup.signatureValidator), 0),
+            nonce: _packNonce(address(rogue), 0),
             initCode: "",
             callData: callData,
             accountGasLimits: bytes32(0),
@@ -732,12 +738,18 @@ contract SmartAccountTest is OnchainIDSetup {
             signature: ""
         });
         bytes32 userOpHash = keccak256(abi.encode(userOp.sender, userOp.nonce, userOp.callData));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(strangerPk, userOpHash);
-        userOp.signature = abi.encode(abi.encodePacked(stranger), abi.encodePacked(r, s, v));
+        // Sign with a valid ACTION-tier signer for the legacy validator; the failure
+        // must come from the account-level per-target rule, not from crypto.
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(davidPk, userOpHash);
+        userOp.signature = abi.encode(abi.encodePacked(david), abi.encodePacked(r, s, v));
 
         vm.prank(ENTRY_POINT);
         uint256 result = IAccount(address(aliceIdentity)).validateUserOp(userOp, userOpHash, 0);
-        assertEq(result, ERC4337Utils.SIG_VALIDATION_FAILED, "unregistered signer must fail at ACTION check");
+        assertEq(
+            result,
+            ERC4337Utils.SIG_VALIDATION_FAILED,
+            "validator without ACTION must fail at the account per-target rule"
+        );
     }
 
 }

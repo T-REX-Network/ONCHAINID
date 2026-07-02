@@ -6,20 +6,30 @@ import { Bytes } from "@openzeppelin/contracts/utils/Bytes.sol";
 import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import { SignatureChecker } from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 
-import { IERC734 } from "../../interface/IERC734.sol";
-import { KeyPurposes } from "../../libraries/KeyPurposes.sol";
 import { ERC7579Validator } from "./ERC7579Validator.sol";
 
 /// @title ERC7579Signature
-/// @notice Single validator for ONCHAINID accounts. Verifies the signature, then checks
-///         the signer has ACTION purpose on the account.
+/// @notice ERC-7913 signature validator for ONCHAINID accounts. Verifies the signature
+///         cryptographically; authorization (ACTION / MANAGEMENT) is enforced at the
+///         account layer against the validator address itself under the
+///         "validators-as-keys" model.
 /// @dev Wire format: `abi.encode(bytes signer, bytes signature)`. The `signer` follows
-///      ERC-7913: 20 bytes = EOA / 1271, longer = `verifier(20) || key(rest)`.
+///      ERC-7913: 20 bytes = EOA / 1271, longer = `verifier(20) || key(rest)`. This is a
+///      validator-local convention (needed to route between ECDSA / 1271 / 7913
+///      verification); the account has no opinion on it and can also host stock
+///      OpenZeppelin validators alongside this one.
 contract ERC7579Signature is ERC7579Validator {
 
     /// @dev Used by both the 1271 path (inherited) and the 4337 path (inherited).
-    ///      Account adds the per-target rule on top for 4337.
-    function _rawERC7579Validation(address account, bytes32 hash, bytes calldata moduleSignature)
+    ///      Purpose enforcement lives on the account: {SmartAccount._validateUserOp}
+    ///      applies the per-target rule against `hashAddress(validator)`, so this
+    ///      validator does not itself query ERC-734 purposes.
+    function _rawERC7579Validation(
+        address,
+        /* account */
+        bytes32 hash,
+        bytes calldata moduleSignature
+    )
         internal
         view
         virtual
@@ -32,25 +42,19 @@ contract ERC7579Signature is ERC7579Validator {
         (bytes memory signer, bytes memory signature) = abi.decode(moduleSignature, (bytes, bytes));
         if (signer.length < 20) return false;
 
-        bool valid;
         if (signer.length == 20) {
             address signerAddr = address(bytes20(signer));
-            valid = SignatureChecker.isValidERC1271SignatureNow(signerAddr, hash, signature);
-            if (!valid) {
-                (address recovered, ECDSA.RecoverError err,) = ECDSA.tryRecover(hash, signature);
-                valid = err == ECDSA.RecoverError.NoError && recovered == signerAddr;
-            }
-        } else {
-            address verifier = address(bytes20(signer));
-            bytes memory key = Bytes.slice(signer, 20);
-            (bool success, bytes memory result) =
-                verifier.staticcall(abi.encodeCall(IERC7913SignatureVerifier.verify, (key, hash, signature)));
-            valid = success && result.length >= 32
-                && abi.decode(result, (bytes32)) == bytes32(IERC7913SignatureVerifier.verify.selector);
+            if (SignatureChecker.isValidERC1271SignatureNow(signerAddr, hash, signature)) return true;
+            (address recovered, ECDSA.RecoverError err,) = ECDSA.tryRecover(hash, signature);
+            return err == ECDSA.RecoverError.NoError && recovered == signerAddr;
         }
 
-        // Check the signer is allowed on this account.
-        return valid && IERC734(account).keyHasPurpose(keccak256(signer), KeyPurposes.ACTION);
+        address verifier = address(bytes20(signer));
+        bytes memory key = Bytes.slice(signer, 20);
+        (bool success, bytes memory result) =
+            verifier.staticcall(abi.encodeCall(IERC7913SignatureVerifier.verify, (key, hash, signature)));
+        return success && result.length >= 32
+            && abi.decode(result, (bytes32)) == bytes32(IERC7913SignatureVerifier.verify.selector);
     }
 
     /// @dev Stateless. No setup.

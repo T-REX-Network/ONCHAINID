@@ -106,31 +106,34 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
 
     /// @notice ERC-4337 user op validation. Validator proves the signature, then this
     ///         function applies the per-target rule.
-    /// @dev The second decode of `(signer, sig)` is intentional. The validator decoded
-    ///      it for crypto; we decode it again to read the signer for policy.
-    ///      Validator contract: installed validators MUST use `abi.encode(bytes signer,
-    ///      bytes sig)` and MUST bind `signer` to verification. Otherwise the keyhash
-    ///      we derive here can diverge from the identity the validator actually checked.
+    /// @dev Under the "validators-as-keys" model the account has no opinion on the
+    ///      signature wire format. The per-target rule is enforced against the
+    ///      **validator address** that just authorized this userOp, not against a
+    ///      recovered signer inside the signature payload. The validator is discovered
+    ///      via {_extractUserOpValidator} (the standard ERC-7579 nonce-key convention),
+    ///      so any stock ERC-7579 validator can be installed and dropped in without
+    ///      an adapter — the account no longer re-decodes the signature.
     function _validateUserOp(PackedUserOperation calldata userOp, bytes32 userOpHash, bytes calldata signature)
         internal
         virtual
         override
         returns (uint256)
     {
-        // Step 1: let the installed validator prove the signature + ACTION purpose.
+        // Step 1: let the installed validator prove the signature.
         // Validators can return a non-zero packed `validationData` that still means success
         // (encoded time bounds, or an aggregator authorizer). Only stop on the literal
         // failure code; otherwise the per-target rule must still run.
         uint256 baseValidation = super._validateUserOp(userOp, userOpHash, signature);
         if (baseValidation == ERC4337Utils.SIG_VALIDATION_FAILED) return baseValidation;
 
-        // Step 2: read the signer. Safe to trust now: the validator just proved it.
-        // Malformed payload reverts here; EntryPoint treats that as a failed user op.
-        (bytes memory signer,) = abi.decode(signature, (bytes, bytes));
-        bytes32 signerKeyHash = keccak256(signer);
+        // Step 2: identify the validator that vouched. OZ's `_extractUserOpValidator`
+        // reads the upper 20 bytes of `userOp.nonce`, which is the same address `super`
+        // just dispatched to above. Hash it into the ERC-734 keyspace so the per-target
+        // rule can look it up alongside module/EOA keys.
+        bytes32 validatorKeyHash = hashAddress(_extractUserOpValidator(userOp));
 
-        // Step 3: per-target rule.
-        if (!_isAuthorizedForUserOpCallData(userOp.callData, signerKeyHash)) {
+        // Step 3: per-target rule against the validator-as-key.
+        if (!_isAuthorizedForUserOpCallData(userOp.callData, validatorKeyHash)) {
             return ERC4337Utils.SIG_VALIDATION_FAILED;
         }
         // Returning `SIG_VALIDATION_SUCCESS` here would strip the time bounds and
