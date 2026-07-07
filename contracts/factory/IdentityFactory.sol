@@ -305,6 +305,9 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
             Errors.WalletAlreadyHasEntry(walletEnvelope)
         );
 
+        // `pendingLinks[walletEnvelope]` is a single slot per wallet; the freshest
+        // proposal is the one that can be confirmed. Safe to overwrite because the
+        // status check above rejects any wallet that is already linked or revoked.
         _storage().pendingLinks[walletEnvelope] = PendingLink({ identity: identity, expiry: expiry });
         emit PendingCrossChainLinkProposed(walletEnvelope, identity, expiry);
     }
