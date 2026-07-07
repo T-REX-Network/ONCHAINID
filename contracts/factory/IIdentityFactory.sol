@@ -146,6 +146,11 @@ interface IIdentityFactory {
     ///         non-trusted address are rejected by {receiveMessage}. `restricted` via
     ///         the AM so the trust surface is operated by the same admin role as the
     ///         rest of the factory.
+    ///
+    ///         Removing a gateway blocks future inbound messages but does not purge
+    ///         pending links it already staged. Operators should audit
+    ///         {getPendingCrossChainLink} and treat entries proposed via the removed
+    ///         gateway as suspect.
     function setTrustedGateway(address gateway, bool trusted) external;
 
     /// @notice Read whether an address is currently a trusted ERC-7786 gateway.
