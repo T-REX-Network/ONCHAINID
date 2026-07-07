@@ -103,6 +103,10 @@ library Errors {
     ///         interoperable address.
     error CrossChainSenderWalletMismatch(bytes sender, bytes wallet);
 
+    /// @notice Reverts when a cross-chain link proposal is delivered or confirmed
+    ///         past its `expiry`.
+    error PendingCrossChainLinkExpired(uint256 expiry);
+
     /* ----- Verifier ----- */
 
     /// @notice The claim topic already exists.

@@ -250,7 +250,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
             pending.identity == msg.sender,
             Errors.PendingCrossChainLinkIdentityMismatch(account, msg.sender, pending.identity)
         );
-        require(block.timestamp <= pending.expiry, Errors.ExpiredSignature(pending.expiry));
+        require(block.timestamp <= pending.expiry, Errors.PendingCrossChainLinkExpired(pending.expiry));
 
         delete _storage().pendingLinks[account];
         _linkAccount(account, msg.sender);
@@ -294,7 +294,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
             keccak256(sender) == keccak256(walletEnvelope),
             Errors.CrossChainSenderWalletMismatch(sender, walletEnvelope)
         );
-        require(block.timestamp <= expiry, Errors.ExpiredSignature(expiry));
+        require(block.timestamp <= expiry, Errors.PendingCrossChainLinkExpired(expiry));
         require(_storage().isFactoryIdentity[identity], Errors.NotFactoryIdentity(identity));
 
         // Sticky binding still applies: a wallet that is already linked or

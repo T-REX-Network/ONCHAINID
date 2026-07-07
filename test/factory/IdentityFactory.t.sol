@@ -764,7 +764,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         uint256 expiredAt = block.timestamp - 1;
         bytes memory payload = _crossChainPayload(solanaEnv, address(aliceIdentity), expiredAt);
 
-        vm.expectRevert(abi.encodeWithSelector(Errors.ExpiredSignature.selector, expiredAt));
+        vm.expectRevert(abi.encodeWithSelector(Errors.PendingCrossChainLinkExpired.selector, expiredAt));
         gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(3)), solanaEnv, payload);
     }
 
