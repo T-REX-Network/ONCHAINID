@@ -88,9 +88,9 @@ library Errors {
     error WalletNotLinkedToIdentity(bytes wallet);
 
     /// @notice Reverts when the caller of {confirmCrossChainLink} does not match the
-    ///         identity recorded in the pending proposal. `expected` is the caller;
-    ///         `actual` is the recorded identity, or `address(0)` if no proposal exists.
-    error PendingCrossChainLinkIdentityMismatch(bytes wallet, address expected, address actual);
+    ///         identity recorded in the pending proposal. `recorded` is `address(0)`
+    ///         if no proposal exists for the wallet.
+    error PendingCrossChainLinkIdentityMismatch(bytes wallet, address caller, address recorded);
 
     /// @notice Reverts when an inbound cross-chain proposal targets a wallet that
     ///         already has a registry entry (active or revoked). Sticky binding
