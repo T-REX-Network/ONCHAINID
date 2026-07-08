@@ -351,6 +351,66 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         );
     }
 
+    /* ----- getAttestationData ----- */
+
+    /// @notice The raw attestation payload round-trips through the adapter.
+    function test_getAttestationData_returnsPayload() public {
+        bytes32 uid = keccak256("payload");
+        bytes memory payload = abi.encode(uint256(1), "US", uint64(19900101));
+        eas.setAttestation(
+            Attestation({
+                uid: uid,
+                schema: SCHEMA,
+                time: uint64(block.timestamp),
+                expirationTime: 0,
+                revocationTime: 0,
+                refUID: bytes32(0),
+                recipient: address(aliceIdentity),
+                attester: attester,
+                revocable: true,
+                data: payload
+            })
+        );
+
+        assertEq(adapter.getAttestationData(_encodeUid(uid)), payload);
+    }
+
+    /// @notice Missing attestation returns empty bytes rather than reverting so callers can
+    ///         branch on `bytes.length == 0` without try/catch.
+    function test_getAttestationData_missingAttestationReturnsEmpty() public view {
+        bytes32 uid = keccak256("never-published");
+        assertEq(adapter.getAttestationData(_encodeUid(uid)).length, 0);
+    }
+
+    /// @notice Malformed sig (not 32 bytes) also returns empty rather than reverting.
+    function test_getAttestationData_shortSignatureReturnsEmpty() public view {
+        assertEq(adapter.getAttestationData(hex"deadbeef").length, 0);
+    }
+
+    /// @notice `getAttestationData` is a raw read: it does NOT re-check schema, attester, or
+    ///         revocation. A revoked attestation still returns its payload; the caller should
+    ///         pair with `getClaimStatus` when validity matters.
+    function test_getAttestationData_returnsPayloadEvenWhenRevoked() public {
+        bytes32 uid = keccak256("revoked-but-readable");
+        bytes memory payload = hex"1234";
+        eas.setAttestation(
+            Attestation({
+                uid: uid,
+                schema: SCHEMA,
+                time: uint64(block.timestamp),
+                expirationTime: 0,
+                revocationTime: uint64(block.timestamp),
+                refUID: bytes32(0),
+                recipient: address(aliceIdentity),
+                attester: attester,
+                revocable: true,
+                data: payload
+            })
+        );
+
+        assertEq(adapter.getAttestationData(_encodeUid(uid)), payload);
+    }
+
     /* ----- full loop through ClaimsModule.addClaim ----- */
 
     /// @notice A holder calls the standard ERC-735 addClaim on their identity with the adapter

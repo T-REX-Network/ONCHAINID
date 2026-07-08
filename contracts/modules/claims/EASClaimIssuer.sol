@@ -116,6 +116,22 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
     }
 
     /**
+     * @notice Return the raw `data` field of the attestation carried by `sig`. Useful for
+     *         schemas that encode attribute values (e.g. `citizenship`, `dateOfBirth`) so
+     *         consumers can decode the payload without re-implementing the UID unpack and
+     *         EAS read.
+     *
+     * @dev    Returns empty bytes when `sig` is not a 32-byte UID or the attestation does
+     *         not exist. Does not validate schema, attester, revocation, or expiry; pair
+     *         with `getClaimStatus` if the caller needs "valid claim's data".
+     */
+    function getAttestationData(bytes calldata sig) external view returns (bytes memory) {
+        if (sig.length != 32) return "";
+        bytes32 uid = bytes32(sig[:32]);
+        return eas.getAttestation(uid).data;
+    }
+
+    /**
      * @inheritdoc IClaimIssuer
      * @dev  `sig` must be a 32-byte EAS attestation UID (see `encodeSignature`). `data` is
      *       ignored: EAS carries its own `time` and `expirationTime`, which are the
