@@ -697,7 +697,13 @@ contract SmartAccountTest is OnchainIDSetup {
     /// @notice The per-target rule fires: an ACTION-only key cannot self-target
     ///         a privileged selector like addKey. The signature is cryptographically
     ///         valid, but step 2 of _validateUserOp rejects it.
-    function test_validateUserOp_actionKey_selfTarget_fails() public {
+    /// @dev Documents a deliberate trade-off, not a passing safety check. The account no
+    ///      longer runs its own per-target rule; that scoping moved into scoping-aware
+    ///      validators like ERC734Validator. The validator installed by the fixture is the
+    ///      stock ERC7579Signature, which does not scope by target/selector, so a signer it
+    ///      accepts can self-target addKey. Self-target protection now comes only from a
+    ///      scoping validator. See claudedocs/validators-as-keys-design.md.
+    function test_validateUserOp_stockValidator_selfTarget_nowUnscoped() public {
         bytes memory innerCall = abi.encodeWithSignature(
             "addKey(bytes32,uint256,uint256)", keccak256("evil"), KeyPurposes.MANAGEMENT, KeyTypes.ECDSA
         );
@@ -706,7 +712,11 @@ contract SmartAccountTest is OnchainIDSetup {
 
         vm.prank(ENTRY_POINT);
         uint256 result = IAccount(address(aliceIdentity)).validateUserOp(userOp, userOpHash, 0);
-        assertEq(result, ERC4337Utils.SIG_VALIDATION_FAILED, "ACTION must not be able to self-target addKey");
+        assertEq(
+            result,
+            ERC4337Utils.SIG_VALIDATION_SUCCESS,
+            "stock validator does not scope: the account no longer blocks self-target addKey"
+        );
     }
 
     /// @notice A validator that is installed but NOT granted ACTION cannot authorize
@@ -714,11 +724,15 @@ contract SmartAccountTest is OnchainIDSetup {
     ///         per-target rule is checked against `hashAddress(validator)`, not
     ///         against the recovered signer, so an unauthorized validator fails
     ///         even when its signature is cryptographically valid.
-    function test_validateUserOp_validatorWithoutAction_fails() public {
-        // Install a fresh legacy validator without granting it any purpose. It's a
-        // registered validator module, but the account has never blessed it as ACTION.
-        // Seed its signer registry with `david` so the sig passes the validator layer;
-        // the failure must come from the account-level per-target rule, not from crypto.
+    /// @dev Documents the same trade-off from the validator-authorization angle. Previously
+    ///      the account required the installed validator to hold an ACTION purpose to act.
+    ///      That check moved out of the account: the OZ base only dispatches to an installed
+    ///      validator, and the validator itself decides authorization. So an installed stock
+    ///      validator with a signer it accepts now validates a plain external call without the
+    ///      account granting it any purpose. Scoping validators still gate this internally.
+    function test_validateUserOp_installedStockValidator_noAccountPurpose_nowPasses() public {
+        // Install a fresh stock validator without granting it any purpose. Seed its signer
+        // registry with `david` so the signature passes the validator's own check.
         ERC7579Signature rogue = new ERC7579Signature();
         vm.prank(alice);
         aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(rogue), abi.encodePacked(david));
@@ -740,8 +754,7 @@ contract SmartAccountTest is OnchainIDSetup {
             signature: ""
         });
         bytes32 userOpHash = keccak256(abi.encode(userOp.sender, userOp.nonce, userOp.callData));
-        // Sign with a valid ACTION-tier signer for the legacy validator; the failure
-        // must come from the account-level per-target rule, not from crypto.
+        // Sign with a signer the stock validator accepts.
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(davidPk, userOpHash);
         userOp.signature = abi.encode(abi.encodePacked(david), abi.encodePacked(r, s, v));
 
@@ -749,8 +762,8 @@ contract SmartAccountTest is OnchainIDSetup {
         uint256 result = IAccount(address(aliceIdentity)).validateUserOp(userOp, userOpHash, 0);
         assertEq(
             result,
-            ERC4337Utils.SIG_VALIDATION_FAILED,
-            "validator without ACTION must fail at the account per-target rule"
+            ERC4337Utils.SIG_VALIDATION_SUCCESS,
+            "account no longer requires a purpose grant: the installed validator decides"
         );
     }
 

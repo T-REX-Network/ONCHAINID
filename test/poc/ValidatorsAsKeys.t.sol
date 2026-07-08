@@ -103,9 +103,12 @@ contract ValidatorsAsKeysTest is OnchainIDSetup {
         );
     }
 
-    /// @notice The strict per-target default still bites: an ACTION-only validator
-    ///         cannot self-target `addKey`.
-    function test_stockValidator_selfTargetFails_needsManagement() public {
+    /// @notice Superseded by the module-owns-scoping model. This test used to assert that the
+    ///         account's own per-target rule blocked an ACTION-only stock validator from
+    ///         self-targeting addKey. The account no longer scopes, so a stock validator (which
+    ///         does not scope either) now passes. Self-target protection lives in scoping-aware
+    ///         validators; see ERC734Validator and claudedocs/validators-as-keys-design.md.
+    function test_stockValidator_selfTarget_nowUnscoped() public {
         _installStock(KeyPurposes.ACTION);
 
         bytes memory innerCall = abi.encodeWithSignature(
@@ -117,7 +120,11 @@ contract ValidatorsAsKeysTest is OnchainIDSetup {
 
         vm.prank(ENTRY_POINT);
         uint256 result = IAccount(address(aliceIdentity)).validateUserOp(userOp, userOpHash, 0);
-        assertEq(result, ERC4337Utils.SIG_VALIDATION_FAILED, "ACTION-only validator must not self-target addKey");
+        assertEq(
+            result,
+            ERC4337Utils.SIG_VALIDATION_SUCCESS,
+            "stock validator does not scope: account no longer blocks self-target addKey"
+        );
     }
 
     /// @notice Grant the validator MANAGEMENT and the same self-target userOp is now

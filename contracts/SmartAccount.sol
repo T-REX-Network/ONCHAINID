@@ -104,68 +104,31 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         return super.executeFromExecutor(mode, executionCalldata);
     }
 
-    /// @notice ERC-4337 user op validation. Validator proves the signature, then this
-    ///         function applies the per-target rule.
-    /// @dev Under the "validators-as-keys" model the account has no opinion on the
-    ///      signature wire format. The per-target rule is enforced against the
-    ///      **validator address** that just authorized this userOp, not against a
-    ///      recovered signer inside the signature payload. The validator is discovered
-    ///      via {_extractUserOpValidator} (the standard ERC-7579 nonce-key convention),
-    ///      so any stock ERC-7579 validator can be installed and dropped in without
-    ///      an adapter — the account no longer re-decodes the signature.
+    /// @notice ERC-4337 user op validation.
+    /// @dev The account defers signature verification and per-target scoping to the installed
+    ///      validator. The OZ base `_validateUserOp` only dispatches to a validator that is
+    ///      actually installed (`isModuleInstalled(MODULE_TYPE_VALIDATOR, ...)`), so "is this
+    ///      validator authorized" is already enforced there. The validator (e.g.
+    ///      {ERC734Validator}) owns the key registry and the target/selector scoping; the
+    ///      account keeps no opinion on the signature format or the call it authorizes, and
+    ///      passes the validator's `validationData` through so any time bounds / aggregator it
+    ///      encoded reach the EntryPoint.
+    ///
+    ///      Historical note: the account used to re-decode the signature and run its own
+    ///      per-target rule here (`_isAuthorizedForUserOpCallData`). That duplicated the
+    ///      validator's scoping and has been removed. The executor path
+    ///      ({executeFromExecutor}) still runs {_isAuthorizedForExecution}; that is a separate
+    ///      surface and is unchanged.
     function _validateUserOp(PackedUserOperation calldata userOp, bytes32 userOpHash, bytes calldata signature)
         internal
         virtual
         override
         returns (uint256)
     {
-        // Step 1: let the installed validator prove the signature.
-        // Validators can return a non-zero packed `validationData` that still means success
-        // (encoded time bounds, or an aggregator authorizer). Only stop on the literal
-        // failure code; otherwise the per-target rule must still run.
-        uint256 baseValidation = super._validateUserOp(userOp, userOpHash, signature);
-        if (baseValidation == ERC4337Utils.SIG_VALIDATION_FAILED) return baseValidation;
-
-        // Step 2: identify the validator that vouched. OZ's `_extractUserOpValidator`
-        // reads the upper 20 bytes of `userOp.nonce`, which is the same address `super`
-        // just dispatched to above. Hash it into the ERC-734 keyspace so the per-target
-        // rule can look it up alongside module/EOA keys.
-        bytes32 validatorKeyHash = hashAddress(_extractUserOpValidator(userOp));
-
-        // Step 3: per-target rule against the validator-as-key.
-        if (!_isAuthorizedForUserOpCallData(userOp.callData, validatorKeyHash)) {
-            return ERC4337Utils.SIG_VALIDATION_FAILED;
-        }
-        // Returning `SIG_VALIDATION_SUCCESS` here would strip the time bounds and
-        // aggregator the validator encoded above. Pass the original word through so
-        // the EntryPoint enforces those constraints.
-        return baseValidation;
+        return super._validateUserOp(userOp, userOpHash, signature);
     }
 
-    /// @dev Unpacks the outer `execute(mode, data)` and forwards to `_isAuthorizedForExecution`.
-    ///      Bounces through `this.` so the inner calldata stays as `calldata` (no memory copy).
-    function _isAuthorizedForUserOpCallData(bytes calldata callData, bytes32 signerKeyHash)
-        private
-        view
-        returns (bool)
-    {
-        // Only the standard execute() selector is accepted.
-        if (callData.length < 4 || bytes4(callData[:4]) != AccountERC7579Upgradeable.execute.selector) {
-            return false;
-        }
-
-        // Decode the outer execute() args.
-        uint256 dataOffset = uint256(bytes32(callData[0x24:0x44]));
-        uint256 lenPos = 4 + dataOffset;
-        uint256 dataStart = lenPos + 0x20;
-        if (dataStart > callData.length) return false;
-        uint256 dataLen = uint256(bytes32(callData[lenPos:]));
-        if (dataStart + dataLen > callData.length) return false;
-        return
-            _isAuthorizedForExecution(bytes32(callData[4:0x24]), callData[dataStart:dataStart + dataLen], signerKeyHash);
-    }
-
-    /// @dev Per-target authorization. Shared by user ops and executor dispatch.
+    /// @dev Per-target authorization. Used by executor dispatch ({executeFromExecutor}).
     ///      Supports SINGLE and BATCH; rejects DELEGATECALL and unknown modes.
     function _isAuthorizedForExecution(bytes32 modeWord, bytes calldata executionCalldata, bytes32 keyHash)
         internal
