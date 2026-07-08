@@ -207,6 +207,19 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         assertTrue(ok, "attestation on a linked wallet must verify");
     }
 
+    /// @notice A non-factory address that is also the EAS recipient cannot self-verify.
+    ///         The self-recipient branch is gated on `isFactoryIdentity`.
+    function test_isClaimValid_selfAttestationByNonFactoryIdentityRejects() public {
+        address rogue = makeAddr("rogueContract");
+        bytes32 uid = keccak256("rogue-self-attest");
+        _publishValid(uid, rogue);
+
+        assertFalse(
+            adapter.isClaimValid(IIdentity(rogue), TOPIC, _encodeUid(uid), emptyData),
+            "non-factory identity must not self-verify"
+        );
+    }
+
     /* ----- isClaimValid rejection paths ----- */
 
     function test_isClaimValid_topicWithoutSchema() public {

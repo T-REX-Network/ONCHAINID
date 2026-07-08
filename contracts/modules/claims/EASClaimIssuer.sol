@@ -174,8 +174,12 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
             return ClaimStatus.Expired;
         }
 
-        // Recipient is the identity contract itself.
-        if (attestation.recipient == address(_identity)) return ClaimStatus.Valid;
+        // Recipient is the identity itself. `isFactoryIdentity` blocks arbitrary contracts
+        // from passing themselves as `_identity`. The linked-wallet branch below does not
+        // need this check; the factory only knows about identities it deployed.
+        if (attestation.recipient == address(_identity)) {
+            return FACTORY.isFactoryIdentity(address(_identity)) ? ClaimStatus.Valid : ClaimStatus.NotIssued;
+        }
 
         // Recipient is an EVM wallet that must be Active-linked to `_identity`.
         bytes memory envelope = InteroperableAddress.formatEvmV1(block.chainid, attestation.recipient);
