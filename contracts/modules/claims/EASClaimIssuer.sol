@@ -108,8 +108,8 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
      *         adapter. Integrators should call this helper so the packing is not a source of
      *         drift.
      *
-     * @dev    Encoding is `abi.encodePacked(uid)`, a bare 32-byte word. `abi.encode` would
-     *         prepend a length prefix and mismatch the adapter's `sig.length == 32` check.
+     * @dev    Returns the UID as a bare 32-byte word, which matches the adapter's
+     *         `sig.length == 32` check.
      */
     function encodeSignature(bytes32 uid) external pure returns (bytes memory) {
         return abi.encodePacked(uid);
