@@ -2,28 +2,38 @@
 pragma solidity ^0.8.28;
 
 import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/draft-ERC4337Utils.sol";
+import { CallType, ERC7579Utils, Mode } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
 import { PackedUserOperation } from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
+import { Execution, IERC7579Execution } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { Bytes } from "@openzeppelin/contracts/utils/Bytes.sol";
 import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import { SignatureChecker } from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
+import { IERC734 } from "../../interface/IERC734.sol";
 import { KeyPurposes } from "../../libraries/KeyPurposes.sol";
 import { ERC7579Validator } from "./ERC7579Validator.sol";
 
 /// @title ERC734Validator
-/// @notice Prototype. Holds the ERC-734 key registry (keys, purposes, and per-target scoping)
-///         inside the validator instead of on the account, so the account only decides whether
-///         a validator is authorized and never decodes the signature.
+/// @notice Holds the authorization side of the ERC-734 registry (keys + MANAGEMENT / ACTION /
+///         PROPOSER purposes) and per-target scoping inside the validator, so the account only
+///         routes to the validator and never decodes the signature.
+///
+///         Dual registry: authorization purposes (MANAGEMENT / ACTION / PROPOSER) live here;
+///         identity purposes (CLAIM_SIGNER / CLAIM_ADDER / ENCRYPTION) stay on the account's
+///         KeyManager, because ERC-735 claim verification reads `keyHasPurpose` on the identity
+///         account (see `ClaimsModule._getClaimStatus`). The claim branches of the scoping rule
+///         therefore query the account, not this registry.
 ///
 ///         The account calls `validateUserOp`; this module verifies the signature, checks the
-///         signer is a registered key, and enforces the purpose the userOp needs. The account
-///         stays agnostic to the signature format.
+///         signer is a registered key, and enforces the purpose the userOp needs.
 ///
-///         Known limitation: ERC-735 claim verification reads `keyHasPurpose` on the identity
-///         account, not on any validator (see `ClaimsModule._getClaimStatus`). A registry that
-///         lives only here is invisible to that path, so the account still has to answer
-///         `keyHasPurpose`. The test suite pins this.
+///         Constraint: the scoping rule guards this validator's own address, but it does not
+///         know about other privileged targets (installed executors, fallback handlers). A
+///         userOp from an ACTION signer that calls `execute(installedExecutor, ...)` reads as an
+///         external target here, so ACTION suffices; the call then reaches the executor with
+///         `msg.sender == account`. Executor and fallback modules must gate their own callers
+///         rather than trust that reaching them implies authorization.
 ///
 /// @dev userOp signature wire format: `abi.encode(bytes signer, bytes signature)`, where
 ///      `signer` is ERC-7913 (20 bytes = EOA/1271, longer = `verifier(20) || key`). Storage is
@@ -44,10 +54,12 @@ contract ERC734Validator is ERC7579Validator {
         bytes clientData;
     }
 
-    /// @dev ERC-734 key registry, scoped to one account.
+    /// @dev ERC-734 key registry, scoped to one account. `allKeys` tracks every registered
+    ///      keyHash so `onUninstall` can delete each `Key` record, not just empty the sets.
     struct AccountRegistry {
         mapping(bytes32 keyHash => Key) keys;
         mapping(uint256 purpose => EnumerableSet.Bytes32Set) byPurpose;
+        EnumerableSet.Bytes32Set allKeys;
     }
 
     /// @dev One registry per account. Singleton deployment shared across all installers.
@@ -73,6 +85,10 @@ contract ERC734Validator is ERC7579Validator {
     error CannotRemoveLastManagementKey();
     /// @dev A registered key's `keyType` differs from the one supplied on re-purpose.
     error KeyTypeMismatch(bytes32 keyHash);
+    /// @dev This validator only holds authorization purposes (MANAGEMENT / ACTION / PROPOSER).
+    ///      Identity purposes (CLAIM_SIGNER / CLAIM_ADDER / ENCRYPTION) live on the account's
+    ///      KeyManager so ERC-735 can read them; registering them here would be silently invisible.
+    error NotAnAuthorizationPurpose(uint256 purpose);
 
     event KeyAdded(address indexed account, bytes32 indexed keyHash, uint256 indexed purpose, uint256 keyType);
     event KeyRemoved(address indexed account, bytes32 indexed keyHash, uint256 indexed purpose);
@@ -92,7 +108,8 @@ contract ERC734Validator is ERC7579Validator {
         );
     }
 
-    /// @dev Clears the caller's registry. Idempotent.
+    /// @dev Clears the caller's registry completely: every `Key` record, every byPurpose set,
+    ///      and the key index. A reinstall starts from a clean slate. Idempotent.
     function onUninstall(
         bytes calldata /* data */
     )
@@ -101,13 +118,16 @@ contract ERC734Validator is ERC7579Validator {
         override
     {
         AccountRegistry storage registry = _store().registries[msg.sender];
-        // Empties the byPurpose sets; the Key structs are left orphaned. A shipping version
-        // would track a per-account key set and delete each record.
-        for (uint256 purpose = KeyPurposes.MANAGEMENT; purpose <= KeyPurposes.PROPOSER; purpose++) {
-            bytes32[] memory keyHashes = registry.byPurpose[purpose].values();
-            for (uint256 index = 0; index < keyHashes.length; index++) {
-                registry.byPurpose[purpose].remove(keyHashes[index]);
+
+        bytes32[] memory keyHashes = registry.allKeys.values();
+        for (uint256 i = 0; i < keyHashes.length; i++) {
+            bytes32 keyHash = keyHashes[i];
+            uint256[] memory purposes = registry.keys[keyHash].purposes.values();
+            for (uint256 j = 0; j < purposes.length; j++) {
+                registry.byPurpose[purposes[j]].remove(keyHash);
             }
+            delete registry.keys[keyHash];
+            registry.allKeys.remove(keyHash);
         }
     }
 
@@ -136,7 +156,10 @@ contract ERC734Validator is ERC7579Validator {
         }
         key.purposes.remove(purpose);
         registry.byPurpose[purpose].remove(keyHash);
-        if (key.purposes.length() == 0) delete registry.keys[keyHash];
+        if (key.purposes.length() == 0) {
+            delete registry.keys[keyHash];
+            registry.allKeys.remove(keyHash);
+        }
 
         emit KeyRemoved(msg.sender, keyHash, purpose);
     }
@@ -222,47 +245,88 @@ contract ERC734Validator is ERC7579Validator {
 
     // --- internal --------------------------------------------------------
 
-    /// @dev Purpose required for what the userOp does, matching `KeyApprovalModule._canAutoApprove`:
-    ///        external target  -> ACTION
-    ///        self + addClaim  -> CLAIM_SIGNER or CLAIM_ADDER
-    ///        self + removeClaim -> CLAIM_SIGNER
-    ///        self, anything else -> MANAGEMENT
-    ///      MANAGEMENT passes everything.
+    /// @dev Whether the signer may run this userOp. Decodes `execute(mode, executionCalldata)`,
+    ///      then applies {_targetAllowed} to the single call or to every call in a batch. Only
+    ///      the standard `execute(bytes32,bytes)` selector is accepted; unknown call types fail.
     function _scopeAllows(address account, bytes32 keyHash, bytes calldata callData) internal view returns (bool) {
+        // MANAGEMENT passes everything.
         if (keyHasPurpose(account, keyHash, KeyPurposes.MANAGEMENT)) return true;
 
-        (address target, bytes4 innerSelector) = _decodeExecuteTarget(callData);
+        if (callData.length < 4 || bytes4(callData[:4]) != IERC7579Execution.execute.selector) return false;
+
+        (bytes32 modeWord, bytes calldata executionCalldata) = _decodeExecute(callData);
+        (CallType callType,,,) = ERC7579Utils.decodeMode(Mode.wrap(modeWord));
+
+        if (callType == ERC7579Utils.CALLTYPE_SINGLE) {
+            if (executionCalldata.length < 52) return false;
+            address target = address(bytes20(executionCalldata[:20]));
+            bytes calldata inner = executionCalldata[52:];
+            return _targetAllowed(account, keyHash, target, inner);
+        }
+
+        if (callType == ERC7579Utils.CALLTYPE_BATCH) {
+            // Every call in the batch must pass. The weakest-authorized call gates the batch.
+            Execution[] calldata batch = ERC7579Utils.decodeBatch(executionCalldata);
+            for (uint256 i = 0; i < batch.length; i++) {
+                if (!_targetAllowed(account, keyHash, batch[i].target, batch[i].callData)) return false;
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    /// @dev Purpose required for one (target, inner-call) pair. MANAGEMENT already short-circuited
+    ///      in {_scopeAllows}, so this only decides the sub-MANAGEMENT cases:
+    ///        target == this validator          -> MANAGEMENT only (self-guard, see below)
+    ///        self + addClaim                    -> CLAIM_SIGNER or CLAIM_ADDER (read on the account)
+    ///        self + removeClaim                 -> CLAIM_SIGNER (read on the account)
+    ///        self, anything else                -> MANAGEMENT only
+    ///        external target                    -> ACTION
+    ///      Claim purposes are read from the ACCOUNT's KeyManager, not this registry: identity
+    ///      purposes live there (dual registry).
+    function _targetAllowed(address account, bytes32 keyHash, address target, bytes calldata inner)
+        private
+        view
+        returns (bool)
+    {
         if (target == address(0)) target = account; // OZ aliases target 0 to self.
+
+        // Self-guard: a call to this validator can rotate its own registry (addKey, etc.).
+        // Only MANAGEMENT may do that, and MANAGEMENT already passed in _scopeAllows, so any
+        // non-MANAGEMENT signer reaching here must be rejected. Without this, an ACTION signer
+        // could execute(validator, addKey(attacker, MANAGEMENT)) — external target, ACTION
+        // suffices — and escalate itself.
+        if (target == address(this)) return false;
 
         if (target != account) {
             return keyHasPurpose(account, keyHash, KeyPurposes.ACTION);
         }
+
+        bytes4 innerSelector = inner.length >= 4 ? bytes4(inner[:4]) : bytes4(0);
         if (innerSelector == _ADD_CLAIM_SELECTOR) {
-            return keyHasPurpose(account, keyHash, KeyPurposes.CLAIM_SIGNER)
-                || keyHasPurpose(account, keyHash, KeyPurposes.CLAIM_ADDER);
+            return IERC734(account).keyHasPurpose(keyHash, KeyPurposes.CLAIM_SIGNER)
+                || IERC734(account).keyHasPurpose(keyHash, KeyPurposes.CLAIM_ADDER);
         }
         if (innerSelector == _REMOVE_CLAIM_SELECTOR) {
-            return keyHasPurpose(account, keyHash, KeyPurposes.CLAIM_SIGNER);
+            return IERC734(account).keyHasPurpose(keyHash, KeyPurposes.CLAIM_SIGNER);
         }
         return false;
     }
 
-    /// @dev Reads the target and inner selector out of `execute(bytes32,bytes)` callData.
-    ///      Handles CALLTYPE_SINGLE only; batch is not covered by this prototype.
-    function _decodeExecuteTarget(bytes calldata callData) internal pure returns (address target, bytes4 selector) {
-        // execute(bytes32,bytes): [0:4] selector, [4:36] mode, [36:68] offset, then the bytes.
-        if (callData.length < 68) return (address(0), bytes4(0));
+    /// @dev Splits `execute(bytes32 mode, bytes executionCalldata)` calldata into its two args,
+    ///      keeping `executionCalldata` as a calldata slice.
+    function _decodeExecute(bytes calldata callData)
+        private
+        pure
+        returns (bytes32 modeWord, bytes calldata executionCalldata)
+    {
+        modeWord = bytes32(callData[4:36]);
         uint256 dataOffset = uint256(bytes32(callData[36:68]));
         uint256 lenPos = 4 + dataOffset;
-        if (lenPos + 32 > callData.length) return (address(0), bytes4(0));
+        uint256 dataLen = uint256(bytes32(callData[lenPos:lenPos + 32]));
         uint256 dataStart = lenPos + 32;
-        // SINGLE layout: target(20) value(32) data(...).
-        if (dataStart + 52 > callData.length) return (address(0), bytes4(0));
-        target = address(bytes20(callData[dataStart:dataStart + 20]));
-        uint256 innerStart = dataStart + 52;
-        if (innerStart + 4 <= callData.length) {
-            selector = bytes4(callData[innerStart:innerStart + 4]);
-        }
+        executionCalldata = callData[dataStart:dataStart + dataLen];
     }
 
     /// @dev ERC-7913 dispatch: 20-byte signer = EOA/1271, longer = verifier+key. Uses the
@@ -290,6 +354,11 @@ contract ERC734Validator is ERC7579Validator {
         uint256 purpose,
         uint256 keyType
     ) internal {
+        // This validator only holds authorization purposes. Identity purposes belong on the
+        // account's KeyManager, where ERC-735 reads them; accepting one here would let it be
+        // set somewhere claim verification never looks.
+        require(_isAuthorizationPurpose(purpose), NotAnAuthorizationPurpose(purpose));
+
         // keyHash is derived from signerData, so the record always commits to its own bytes.
         bytes32 keyHash = keccak256(signerData);
         AccountRegistry storage registry = _store().registries[account];
@@ -299,6 +368,7 @@ contract ERC734Validator is ERC7579Validator {
             key.signerData = signerData;
             key.clientData = clientData;
             key.keyType = keyType;
+            registry.allKeys.add(keyHash);
         } else {
             // Re-purposing an existing key: keep the stored type, reject a mismatch.
             require(key.keyType == keyType, KeyTypeMismatch(keyHash));
@@ -307,6 +377,11 @@ contract ERC734Validator is ERC7579Validator {
         require(key.purposes.add(purpose), KeyAlreadyRegistered(keyHash));
         registry.byPurpose[purpose].add(keyHash);
         emit KeyAdded(account, keyHash, purpose, keyType);
+    }
+
+    /// @dev MANAGEMENT / ACTION / PROPOSER are the authorization purposes this validator owns.
+    function _isAuthorizationPurpose(uint256 purpose) private pure returns (bool) {
+        return purpose == KeyPurposes.MANAGEMENT || purpose == KeyPurposes.ACTION || purpose == KeyPurposes.PROPOSER;
     }
 
     function _store() private pure returns (ModuleStorage storage store) {

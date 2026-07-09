@@ -3,26 +3,23 @@ pragma solidity ^0.8.27;
 
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/draft-ERC4337Utils.sol";
+import { ERC7579Utils } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
 import { IAccount, PackedUserOperation } from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
-import { MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import { Execution, MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
+import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
 
-/// @notice Coverage for `ERC734Validator`. Checks the registry, per-target scoping, and the
-///         claim-visibility limitation:
-///           - multi-purpose signer (ACTION + CLAIM_SIGNER)
-///           - claim-signer-only scoping
-///           - management self-targets anything
-///           - full signerData/clientData round-trip per account
-///           - account delegates the decision to the validator
-///           - a module-held CLAIM_SIGNER is not visible to ERC-735 claim verification
+/// @notice Coverage for `ERC734Validator`. Exercises the dual registry (authorization purposes
+///         in the validator, identity purposes on the account), per-target scoping, the
+///         self-target escalation guard, BATCH scoping, and full uninstall cleanup.
 contract ERC734ValidatorTest is OnchainIDSetup {
 
     address internal constant ENTRY_POINT = 0x433709009B8330FDa32311DF1C2AFA402eD8D009;
 
     ERC734Validator internal validator;
 
-    // Signer registered INSIDE the module as the account's manager at install.
+    // Signer registered in the module as the account's MANAGEMENT key at install.
     address internal mgr;
     uint256 internal mgrPk;
 
@@ -31,27 +28,22 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         (mgr, mgrPk) = makeAddrAndKey("erc734-mgr");
         validator = new ERC734Validator();
 
-        // Install on alice with `mgr` as the module's MANAGEMENT key. The account no longer
-        // scopes userOps, so no account-layer purpose grant to the validator is needed; the
-        // module is the sole authority on what its signers may do.
+        // Install on alice with `mgr` seeded as the module's MANAGEMENT key.
         vm.prank(alice);
         aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), abi.encodePacked(mgr));
     }
 
     // --- helpers ---------------------------------------------------------
 
-    function _packNonce(address v, uint96 seq) internal pure returns (uint256) {
-        return (uint256(uint160(v)) << 96) | uint256(seq);
+    function _packNonce(address validatorAddr, uint96 seq) internal pure returns (uint256) {
+        return (uint256(uint160(validatorAddr)) << 96) | uint256(seq);
     }
 
-    function _buildUserOp(address target, bytes memory innerCall)
+    function _buildUserOp(bytes memory callData)
         internal
         view
         returns (PackedUserOperation memory userOp, bytes32 userOpHash)
     {
-        bytes memory executionCalldata = abi.encodePacked(target, uint256(0), innerCall);
-        bytes memory callData =
-            abi.encodeWithSelector(bytes4(keccak256("execute(bytes32,bytes)")), bytes32(0), executionCalldata);
         userOp = PackedUserOperation({
             sender: address(aliceIdentity),
             nonce: _packNonce(address(validator), 0),
@@ -66,103 +58,105 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         userOpHash = keccak256(abi.encode(userOp.sender, userOp.nonce, userOp.callData));
     }
 
-    function _sign(uint256 pk, address who, bytes32 hash) internal pure returns (bytes memory) {
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, hash);
+    function _singleExecute(address target, bytes memory innerCall) internal pure returns (bytes memory) {
+        bytes memory executionCalldata = abi.encodePacked(target, uint256(0), innerCall);
+        return abi.encodeWithSelector(bytes4(keccak256("execute(bytes32,bytes)")), bytes32(0), executionCalldata);
+    }
+
+    function _userOpTo(address target, bytes memory innerCall)
+        internal
+        view
+        returns (PackedUserOperation memory userOp, bytes32 userOpHash)
+    {
+        return _buildUserOp(_singleExecute(target, innerCall));
+    }
+
+    function _sign(uint256 signerPk, address who, bytes32 hash) internal pure returns (bytes memory) {
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerPk, hash);
         return abi.encode(abi.encodePacked(who), abi.encodePacked(r, s, v));
     }
 
-    /// @dev Register `who` as an ECDSA key with `purpose` in the module, via a self-call from
-    ///      the account (`msg.sender == aliceIdentity`). `signerData = abi.encodePacked(who)`,
-    ///      empty `clientData`. Uses vm.prank on the account address.
-    function _moduleAddKey(address who, uint256 purpose) internal {
+    /// @dev Register `who` in the validator with an authorization purpose (via account self-call).
+    function _validatorAddKey(address who, uint256 purpose) internal {
         vm.prank(address(aliceIdentity));
-        validator.addKey(
-            abi.encodePacked(who),
-            "",
-            purpose,
-            1 /* ECDSA */
+        validator.addKey(abi.encodePacked(who), "", purpose, KeyTypes.ECDSA);
+    }
+
+    /// @dev Register `who` on the account's KeyManager with an identity purpose.
+    function _accountAddKey(address who, uint256 purpose) internal {
+        vm.prank(alice);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(who)), purpose, KeyTypes.ECDSA, abi.encodePacked(who), ""
         );
     }
 
-    // --- tests -----------------------------------------------------------
+    function _validate(PackedUserOperation memory userOp, bytes32 userOpHash) internal returns (uint256) {
+        vm.prank(ENTRY_POINT);
+        return IAccount(address(aliceIdentity)).validateUserOp(userOp, userOpHash, 0);
+    }
 
-    /// @notice One signer holding ACTION + CLAIM_SIGNER: external transfer and self-addClaim
-    ///         pass, self-addKey fails.
-    function test_multiPurposeSigner() public {
-        (address multi, uint256 multiPk) = makeAddrAndKey("multi");
-        _moduleAddKey(multi, KeyPurposes.ACTION);
-        _moduleAddKey(multi, KeyPurposes.CLAIM_SIGNER);
+    // --- dual registry --------------------------------------------------
 
-        PocCounter counter = new PocCounter();
+    /// @notice The validator only accepts authorization purposes. Registering an identity
+    ///         purpose (CLAIM_SIGNER) reverts, because it would be invisible to ERC-735.
+    function test_validatorRejectsIdentityPurpose() public {
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(
+            abi.encodeWithSelector(ERC734Validator.NotAnAuthorizationPurpose.selector, KeyPurposes.CLAIM_SIGNER)
+        );
+        validator.addKey(abi.encodePacked(makeAddr("x")), "", KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+    }
 
-        // external target -> ACTION -> ok
+    /// @notice A signer that is an ACTION member of the validator AND a CLAIM_SIGNER on the
+    ///         account: external transfer passes (ACTION, validator), self-addClaim passes
+    ///         (CLAIM_SIGNER read on the account), self-addKey fails (needs MANAGEMENT).
+    function test_multiPurpose_actionInValidator_claimOnAccount() public {
+        (address who, uint256 whoPk) = makeAddrAndKey("multi");
+        _validatorAddKey(who, KeyPurposes.ACTION); // authorization purpose -> validator
+        _accountAddKey(who, KeyPurposes.CLAIM_SIGNER); // identity purpose -> account
+
+        // external -> ACTION
         {
+            PocCounter counter = new PocCounter();
             (PackedUserOperation memory userOp, bytes32 userOpHash) =
-                _buildUserOp(address(counter), abi.encodeCall(PocCounter.increment, ()));
-            userOp.signature = _sign(multiPk, multi, userOpHash);
-            vm.prank(ENTRY_POINT);
-            assertEq(
-                IAccount(address(aliceIdentity)).validateUserOp(userOp, userOpHash, 0),
-                ERC4337Utils.SIG_VALIDATION_SUCCESS,
-                "ACTION external must pass"
-            );
+                _userOpTo(address(counter), abi.encodeCall(PocCounter.increment, ()));
+            userOp.signature = _sign(whoPk, who, userOpHash);
+            assertEq(_validate(userOp, userOpHash), ERC4337Utils.SIG_VALIDATION_SUCCESS, "ACTION external must pass");
         }
 
-        // self + addClaim -> CLAIM_SIGNER -> ok
+        // self + addClaim -> CLAIM_SIGNER (read on account)
         {
             bytes memory addClaim = abi.encodeWithSignature(
                 "addClaim(uint256,uint256,address,bytes,bytes,string)",
                 uint256(1),
                 uint256(1),
                 address(claimIssuer),
-                bytes("sig"),
-                bytes("data"),
-                "uri"
+                bytes("s"),
+                bytes("d"),
+                "u"
             );
-            (PackedUserOperation memory userOp, bytes32 userOpHash) = _buildUserOp(address(aliceIdentity), addClaim);
-            userOp.signature = _sign(multiPk, multi, userOpHash);
-            vm.prank(ENTRY_POINT);
-            assertEq(
-                IAccount(address(aliceIdentity)).validateUserOp(userOp, userOpHash, 0),
-                ERC4337Utils.SIG_VALIDATION_SUCCESS,
-                "CLAIM_SIGNER self-addClaim must pass"
-            );
+            (PackedUserOperation memory userOp, bytes32 userOpHash) = _userOpTo(address(aliceIdentity), addClaim);
+            userOp.signature = _sign(whoPk, who, userOpHash);
+            assertEq(_validate(userOp, userOpHash), ERC4337Utils.SIG_VALIDATION_SUCCESS, "self-addClaim must pass");
         }
 
-        // self + addKey -> needs MANAGEMENT -> fail
+        // self + addKey -> needs MANAGEMENT
         {
             bytes memory addKey = abi.encodeWithSignature(
                 "addKey(bytes32,uint256,uint256)", keccak256("evil"), KeyPurposes.MANAGEMENT, uint256(1)
             );
-            (PackedUserOperation memory userOp, bytes32 userOpHash) = _buildUserOp(address(aliceIdentity), addKey);
-            userOp.signature = _sign(multiPk, multi, userOpHash);
-            vm.prank(ENTRY_POINT);
-            assertEq(
-                IAccount(address(aliceIdentity)).validateUserOp(userOp, userOpHash, 0),
-                ERC4337Utils.SIG_VALIDATION_FAILED,
-                "non-MANAGEMENT self-addKey must fail"
-            );
+            (PackedUserOperation memory userOp, bytes32 userOpHash) = _userOpTo(address(aliceIdentity), addKey);
+            userOp.signature = _sign(whoPk, who, userOpHash);
+            assertEq(_validate(userOp, userOpHash), ERC4337Utils.SIG_VALIDATION_FAILED, "self-addKey must fail");
         }
     }
 
-    /// @notice Claim-signer only: self-addClaim passes, external transfer fails.
-    function test_claimSignerOnlyScoping() public {
-        (address cs, uint256 csPk) = makeAddrAndKey("claimsigner");
-        _moduleAddKey(cs, KeyPurposes.CLAIM_SIGNER);
+    /// @notice Claim scoping reads the account: an ACTION member of the validator who is NOT a
+    ///         CLAIM_SIGNER on the account cannot self-addClaim.
+    function test_actionMember_withoutAccountClaimSigner_cannotAddClaim() public {
+        (address who, uint256 whoPk) = makeAddrAndKey("action-only");
+        _validatorAddKey(who, KeyPurposes.ACTION);
 
-        // external transfer -> no ACTION -> fail
-        PocCounter counter = new PocCounter();
-        (PackedUserOperation memory userOp1, bytes32 userOpHash1) =
-            _buildUserOp(address(counter), abi.encodeCall(PocCounter.increment, ()));
-        userOp1.signature = _sign(csPk, cs, userOpHash1);
-        vm.prank(ENTRY_POINT);
-        assertEq(
-            IAccount(address(aliceIdentity)).validateUserOp(userOp1, userOpHash1, 0),
-            ERC4337Utils.SIG_VALIDATION_FAILED,
-            "claim-signer must not act externally"
-        );
-
-        // self addClaim -> ok
         bytes memory addClaim = abi.encodeWithSignature(
             "addClaim(uint256,uint256,address,bytes,bytes,string)",
             uint256(1),
@@ -172,50 +166,134 @@ contract ERC734ValidatorTest is OnchainIDSetup {
             bytes("d"),
             "u"
         );
-        (PackedUserOperation memory userOp2, bytes32 userOpHash2) = _buildUserOp(address(aliceIdentity), addClaim);
-        userOp2.signature = _sign(csPk, cs, userOpHash2);
-        vm.prank(ENTRY_POINT);
+        (PackedUserOperation memory userOp, bytes32 userOpHash) = _userOpTo(address(aliceIdentity), addClaim);
+        userOp.signature = _sign(whoPk, who, userOpHash);
         assertEq(
-            IAccount(address(aliceIdentity)).validateUserOp(userOp2, userOpHash2, 0),
-            ERC4337Utils.SIG_VALIDATION_SUCCESS,
-            "claim-signer self-addClaim must pass"
+            _validate(userOp, userOpHash),
+            ERC4337Utils.SIG_VALIDATION_FAILED,
+            "no account CLAIM_SIGNER -> addClaim fails"
         );
     }
+
+    // --- scoping --------------------------------------------------------
 
     /// @notice The MANAGEMENT signer from install can self-target addKey.
     function test_managementSelfTargets() public {
         bytes memory addKey =
             abi.encodeWithSignature("addKey(bytes32,uint256,uint256)", keccak256("ok"), KeyPurposes.ACTION, uint256(1));
-        (PackedUserOperation memory userOp, bytes32 userOpHash) = _buildUserOp(address(aliceIdentity), addKey);
+        (PackedUserOperation memory userOp, bytes32 userOpHash) = _userOpTo(address(aliceIdentity), addKey);
         userOp.signature = _sign(mgrPk, mgr, userOpHash);
-        vm.prank(ENTRY_POINT);
         assertEq(
-            IAccount(address(aliceIdentity)).validateUserOp(userOp, userOpHash, 0),
-            ERC4337Utils.SIG_VALIDATION_SUCCESS,
-            "MANAGEMENT must self-target addKey"
+            _validate(userOp, userOpHash), ERC4337Utils.SIG_VALIDATION_SUCCESS, "MANAGEMENT must self-target addKey"
         );
     }
 
-    /// @notice An unregistered signer with a valid signature still fails at the module's
-    ///         membership check.
-    function test_accountDelegatesToValidator_unregisteredFails() public {
+    /// @notice An unregistered signer with a valid signature fails at the module's membership check.
+    function test_unregisteredSignerFails() public {
         (address stranger, uint256 strangerPk) = makeAddrAndKey("stranger734");
         PocCounter counter = new PocCounter();
         (PackedUserOperation memory userOp, bytes32 userOpHash) =
-            _buildUserOp(address(counter), abi.encodeCall(PocCounter.increment, ()));
+            _userOpTo(address(counter), abi.encodeCall(PocCounter.increment, ()));
         userOp.signature = _sign(strangerPk, stranger, userOpHash);
-        vm.prank(ENTRY_POINT);
+        assertEq(_validate(userOp, userOpHash), ERC4337Utils.SIG_VALIDATION_FAILED, "unregistered signer must fail");
+    }
+
+    // --- §5.1 self-target escalation guard ------------------------------
+
+    /// @notice An ACTION member cannot escalate by calling addKey on the validator itself.
+    ///         Without the self-target guard, execute(validator, addKey(...)) reads as an
+    ///         external target (ACTION suffices) and would grant the attacker MANAGEMENT.
+    function test_actionSigner_cannotEscalate_viaValidatorAddKey() public {
+        (address who, uint256 whoPk) = makeAddrAndKey("escalator");
+        _validatorAddKey(who, KeyPurposes.ACTION);
+
+        (address attacker,) = makeAddrAndKey("attacker");
+        bytes memory addMgmt = abi.encodeCall(
+            ERC734Validator.addKey, (abi.encodePacked(attacker), "", KeyPurposes.MANAGEMENT, KeyTypes.ECDSA)
+        );
+
+        (PackedUserOperation memory userOp, bytes32 userOpHash) = _userOpTo(address(validator), addMgmt);
+        userOp.signature = _sign(whoPk, who, userOpHash);
         assertEq(
-            IAccount(address(aliceIdentity)).validateUserOp(userOp, userOpHash, 0),
+            _validate(userOp, userOpHash),
             ERC4337Utils.SIG_VALIDATION_FAILED,
-            "unregistered signer must fail at module membership"
+            "ACTION must not self-escalate by writing the validator registry"
         );
     }
 
-    /// @notice signerData and clientData round-trip through getKeyData/getKey and stay scoped
-    ///         to the account. Uses a WebAuthn-shaped key (verifier+pubkey, credentialId).
+    // --- §7.4 BATCH scoping ---------------------------------------------
+
+    /// @notice BATCH: every call must pass. An ACTION member can batch two external calls, but a
+    ///         batch that includes a self-target addKey fails (needs MANAGEMENT).
+    function test_batch_allExternal_pass_but_selfTarget_fails() public {
+        (address who, uint256 whoPk) = makeAddrAndKey("batcher");
+        _validatorAddKey(who, KeyPurposes.ACTION);
+
+        PocCounter counter = new PocCounter();
+
+        // two external calls -> ok
+        {
+            Execution[] memory batch = new Execution[](2);
+            batch[0] = Execution(address(counter), 0, abi.encodeCall(PocCounter.increment, ()));
+            batch[1] = Execution(address(counter), 0, abi.encodeCall(PocCounter.increment, ()));
+            bytes memory callData = abi.encodeWithSelector(
+                bytes4(keccak256("execute(bytes32,bytes)")),
+                bytes32(uint256(0x01) << 248),
+                ERC7579Utils.encodeBatch(batch)
+            );
+            (PackedUserOperation memory userOp, bytes32 userOpHash) = _buildUserOp(callData);
+            userOp.signature = _sign(whoPk, who, userOpHash);
+            assertEq(_validate(userOp, userOpHash), ERC4337Utils.SIG_VALIDATION_SUCCESS, "all-external batch must pass");
+        }
+
+        // one external + one self-target addKey -> fail
+        {
+            Execution[] memory batch = new Execution[](2);
+            batch[0] = Execution(address(counter), 0, abi.encodeCall(PocCounter.increment, ()));
+            batch[1] = Execution(
+                address(aliceIdentity),
+                0,
+                abi.encodeWithSignature(
+                    "addKey(bytes32,uint256,uint256)", keccak256("evil"), KeyPurposes.ACTION, uint256(1)
+                )
+            );
+            bytes memory callData = abi.encodeWithSelector(
+                bytes4(keccak256("execute(bytes32,bytes)")),
+                bytes32(uint256(0x01) << 248),
+                ERC7579Utils.encodeBatch(batch)
+            );
+            (PackedUserOperation memory userOp, bytes32 userOpHash) = _buildUserOp(callData);
+            userOp.signature = _sign(whoPk, who, userOpHash);
+            assertEq(
+                _validate(userOp, userOpHash), ERC4337Utils.SIG_VALIDATION_FAILED, "batch with self-target must fail"
+            );
+        }
+    }
+
+    // --- §7.3 full uninstall cleanup ------------------------------------
+
+    /// @notice onUninstall deletes every key record, not just the byPurpose sets. After
+    ///         uninstall + reinstall, an old ACTION key is gone (getKeyData returns empty).
+    function test_uninstall_deletesEveryKeyRecord() public {
+        (address who,) = makeAddrAndKey("cleanup");
+        bytes32 keyHash = keccak256(abi.encodePacked(who));
+        _validatorAddKey(who, KeyPurposes.ACTION);
+
+        (bytes memory before,) = validator.getKeyData(address(aliceIdentity), keyHash);
+        assertGt(before.length, 0, "key present before uninstall");
+
+        vm.prank(alice);
+        aliceIdentity.uninstallModule(MODULE_TYPE_VALIDATOR, address(validator), "");
+
+        (bytes memory afterSigner,) = validator.getKeyData(address(aliceIdentity), keyHash);
+        assertEq(afterSigner.length, 0, "key record fully deleted on uninstall");
+        assertFalse(validator.keyHasPurpose(address(aliceIdentity), keyHash, KeyPurposes.ACTION), "no residual purpose");
+    }
+
+    // --- data preservation ----------------------------------------------
+
+    /// @notice signerData and clientData round-trip through getKeyData/getKey, scoped per account.
     function test_signerAndClientDataPreservedPerAccount() public {
-        // WebAuthn-shaped signerData: verifier(20) || pubkey(...). clientData: credentialId.
         bytes memory verifier = abi.encodePacked(makeAddr("p256verifier"));
         bytes memory pubkey = abi.encodePacked(keccak256("qx"), keccak256("qy"));
         bytes memory signerData = bytes.concat(verifier, pubkey);
@@ -223,55 +301,33 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         bytes32 keyHash = keccak256(signerData);
 
         vm.prank(address(aliceIdentity));
-        validator.addKey(
-            signerData,
-            clientData,
-            KeyPurposes.ACTION,
-            3 /* WEBAUTHN */
-        );
+        validator.addKey(signerData, clientData, KeyPurposes.ACTION, KeyTypes.WEBAUTHN);
 
-        // Round-trips, scoped to alice.
         (bytes memory gotSigner, bytes memory gotClient) = validator.getKeyData(address(aliceIdentity), keyHash);
-        assertEq(gotSigner, signerData, "signerData must be preserved");
-        assertEq(gotClient, clientData, "clientData must be preserved (not collapsed)");
+        assertEq(gotSigner, signerData, "signerData preserved");
+        assertEq(gotClient, clientData, "clientData preserved");
 
-        (uint256[] memory purposes, uint256 keyType, bytes32 key) = validator.getKey(address(aliceIdentity), keyHash);
-        assertEq(keyType, 3, "keyType must be WEBAUTHN");
-        assertEq(key, keyHash, "getKey must echo the committed keyHash");
-        assertEq(purposes.length, 1, "one purpose");
+        (, uint256 keyType, bytes32 key) = validator.getKey(address(aliceIdentity), keyHash);
+        assertEq(keyType, KeyTypes.WEBAUTHN, "keyType WEBAUTHN");
+        assertEq(key, keyHash, "getKey echoes committed keyHash");
 
-        // Per-account isolation: bob's registry does not see alice's key.
         (bytes memory bobSigner,) = validator.getKeyData(address(bobIdentity), keyHash);
-        assertEq(bobSigner.length, 0, "another account must not see this key's data");
+        assertEq(bobSigner.length, 0, "another account must not see this key");
     }
 
-    /// @notice A CLAIM_SIGNER registered only in the module is invisible to ERC-735 claim
-    ///         verification, which reads `keyHasPurpose` on the identity account (see
-    ///         `ClaimsModule._getClaimStatus`). The module knows the key but the account does
-    ///         not, so a claim from this signer would resolve to NotIssued. The account has to
-    ///         keep answering keyHasPurpose for claims to work.
-    function test_moduleHeldClaimSignerIsInvisibleToERC735() public {
-        (address csOnlyInModule,) = makeAddrAndKey("cs-module-only");
-        bytes32 keyHash = keccak256(abi.encodePacked(csOnlyInModule));
+    // --- §3.4 claim read path pinned ------------------------------------
 
-        _moduleAddKey(csOnlyInModule, KeyPurposes.CLAIM_SIGNER);
-
-        // The module knows the key.
+    /// @notice Identity purposes live on the account, not the validator. A CLAIM_SIGNER on the
+    ///         account is visible to ERC-735; the validator never holds it (see
+    ///         test_validatorRejectsIdentityPurpose). This pins the dual-registry split.
+    function test_claimSignerLivesOnAccount_notValidator() public view {
+        bytes32 carolKey = keccak256(abi.encodePacked(carol));
         assertTrue(
-            validator.keyHasPurpose(address(aliceIdentity), keyHash, KeyPurposes.CLAIM_SIGNER),
-            "module registry must know the claim signer"
+            aliceIdentity.keyHasPurpose(carolKey, KeyPurposes.CLAIM_SIGNER), "account holds CLAIM_SIGNER for ERC-735"
         );
-
-        // The identity's own registry does not. This is what claim verification reads.
         assertFalse(
-            aliceIdentity.keyHasPurpose(keyHash, KeyPurposes.CLAIM_SIGNER),
-            "identity account must not see a module-only claim signer"
-        );
-
-        // Control: carol is a CLAIM_SIGNER on the account (from OnchainIDSetup) and is visible.
-        assertTrue(
-            aliceIdentity.keyHasPurpose(keccak256(abi.encodePacked(carol)), KeyPurposes.CLAIM_SIGNER),
-            "account-registered claim signer must be visible"
+            validator.keyHasPurpose(address(aliceIdentity), carolKey, KeyPurposes.CLAIM_SIGNER),
+            "validator does not hold identity purposes"
         );
     }
 
