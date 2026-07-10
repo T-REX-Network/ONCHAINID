@@ -19,7 +19,7 @@ import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { ClaimsModule } from "contracts/modules/claims/ClaimsModule.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
-import { ERC7579Signature } from "contracts/modules/validators/ERC7579Signature.sol";
+import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 
 /// @notice Helper library for deploying OnchainID Identity Factory infrastructure
@@ -36,7 +36,7 @@ library IdentityHelper {
         AccessManager accessManager;
         IdentityFactory idFactory;
         KeyApprovalModule keyApprovalModule;
-        ERC7579Signature signatureValidator;
+        ERC734Validator signatureValidator;
         ClaimsModule claimsModule;
     }
 
@@ -51,7 +51,7 @@ library IdentityHelper {
     /// @return setup Struct containing all deployed contracts
     function deployFactory(address managementKey) internal returns (OnchainIDSetup memory setup) {
         // Deploy module singletons
-        setup.signatureValidator = new ERC7579Signature();
+        setup.signatureValidator = new ERC734Validator();
         setup.keyApprovalModule = new KeyApprovalModule();
         setup.claimsModule = new ClaimsModule();
 
@@ -167,25 +167,25 @@ library IdentityHelper {
     }
 
     /// @notice Deploys an Identity through a standalone BeaconProxy and installs an
-    ///         {ERC7579Signature} validator on it so it can verify ERC-1271 / 4337 signatures.
+    ///         {ERC734Validator} validator on it so it can verify ERC-1271 / 4337 signatures.
     /// @param initialManagementKey The management key for the identity.
     /// @return identity The Identity contract at the proxy address.
     /// @return signatureValidator The ERC-7579 signature validator installed on the identity.
     function deployIdentityWithProxy(address initialManagementKey)
         internal
-        returns (Identity identity, ERC7579Signature signatureValidator)
+        returns (Identity identity, ERC734Validator signatureValidator)
     {
         return deployIdentityWithProxy(initialManagementKey, IdentityTypes.INDIVIDUAL);
     }
 
     function deployIdentityWithProxy(address initialManagementKey, uint256 identityType)
         internal
-        returns (Identity identity, ERC7579Signature signatureValidator)
+        returns (Identity identity, ERC734Validator signatureValidator)
     {
         Identity impl = new Identity(false);
         UpgradeableBeacon b = new UpgradeableBeacon(address(impl), initialManagementKey);
 
-        signatureValidator = new ERC7579Signature();
+        signatureValidator = new ERC734Validator();
         ClaimsModule claimsModule = new ClaimsModule();
 
         // Bundle the management key + validator + ClaimsModule fallback surface into a
@@ -202,18 +202,13 @@ library IdentityHelper {
         });
 
         Structs.ModuleInstall[] memory modules = new Structs.ModuleInstall[](11);
-        // Grant the validator ACTION at install time so the SmartAccount per-target
-        // rule ("validators-as-keys") authorizes external targets for userOps and
-        // executor dispatch signed under this validator. Self-target (MANAGEMENT-gated)
-        // calls still require an additional MANAGEMENT purpose granted separately.
-        // `initData` seeds the validator's per-account signer registry with the
-        // initial MANAGEMENT key so signatures from that EOA pass the validator's
-        // membership check.
+        // `initData` seeds the validator's own registry with the initial MANAGEMENT key, so
+        // signatures from that EOA pass the validator's membership check and it can manage the
+        // identity. The validator owns scoping now, so no account-level purpose is granted to
+        // the validator address (purpose: 0). Additional keys (e.g. ACTION signers) are added
+        // afterwards via a self-call to `validator.addKey`.
         modules[0] = Structs.ModuleInstall({
-            moduleType: MODULE_TYPE_VALIDATOR,
-            module: address(signatureValidator),
-            initData: mgmtSigner,
-            purpose: KeyPurposes.ACTION
+            moduleType: MODULE_TYPE_VALIDATOR, module: address(signatureValidator), initData: mgmtSigner, purpose: 0
         });
         modules[1] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_EXECUTOR, module: address(claimsModule), initData: "", purpose: 0

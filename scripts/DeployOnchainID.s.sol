@@ -14,7 +14,7 @@ import { IdentityFactory } from "contracts/factory/IdentityFactory.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { ClaimsModule } from "contracts/modules/claims/ClaimsModule.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
-import { ERC7579Signature } from "contracts/modules/validators/ERC7579Signature.sol";
+import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
 import { IdentityUtilitiesProxy } from "contracts/proxy/IdentityUtilitiesProxy.sol";
 
 /**
@@ -52,8 +52,8 @@ contract DeployOnchainID is Script {
         // 1. Validator module singleton — one module, ERC-7913 signer shape, EOA/1271/7913
         //    crypto dispatch via OZ `SignatureChecker`, ACTION purpose enforced against the
         //    calling account's ERC-734 registry.
-        ERC7579Signature signatureValidator = new ERC7579Signature();
-        console.log("ERC7579Signature Validator:", address(signatureValidator));
+        ERC734Validator signatureValidator = new ERC734Validator();
+        console.log("ERC734Validator:", address(signatureValidator));
 
         // 2. Identity implementation (library mode — prevents direct initialization)
         Identity identityImpl = new Identity(true);
@@ -143,7 +143,7 @@ contract DeployOnchainID is Script {
         console.log("Beacon:                 ", address(beacon));
         console.log("AccessManager:          ", address(am));
         console.log("IdentityFactory:        ", address(idFactory));
-        console.log("ERC7579Signature:       ", address(signatureValidator));
+        console.log("ERC734Validator:        ", address(signatureValidator));
         console.log("KeyApprovalModule:      ", address(keyApprovalModule));
         console.log("ClaimsModule:           ", address(claimsModule));
         console.log("ERC7913WebAuthnVerifier:", address(webAuthnVerifier));

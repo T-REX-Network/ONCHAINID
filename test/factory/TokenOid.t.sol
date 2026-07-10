@@ -30,7 +30,7 @@ contract TokenOidTest is Test {
     address internal bob;
 
     /// @dev Minimal module bundle that satisfies Identity.initialize's "needs a validator
-    ///      or an executor" invariant. A single ERC7579Signature validator is enough.
+    ///      or an executor" invariant. A single ERC734Validator is enough.
     Structs.ModuleInstall[] internal _defaultModules;
 
     function setUp() public {

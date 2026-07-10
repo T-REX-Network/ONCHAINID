@@ -331,7 +331,7 @@ contract ERC734Validator is ERC7579Validator {
 
     /// @dev ERC-7913 dispatch: 20-byte signer = EOA/1271, longer = verifier+key. Uses the
     ///      ECDSA path directly instead of `SignatureChecker.isValidSignatureNow(bytes,...)` to
-    ///      avoid its code-length check under ERC-7562, matching {ERC7579Signature}.
+    ///      avoid its `signer.code.length` check, which violates ERC-7562 bundler validation rules.
     function _verify(bytes memory signer, bytes32 hash, bytes memory signature) internal view returns (bool) {
         if (signer.length == 20) {
             address signerAddr = address(bytes20(signer));

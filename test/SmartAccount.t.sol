@@ -2,6 +2,7 @@
 pragma solidity ^0.8.27;
 
 import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/draft-ERC4337Utils.sol";
+import { IERC1271 } from "@openzeppelin/contracts/interfaces/IERC1271.sol";
 import { PackedUserOperation } from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import { IAccount } from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import {
@@ -20,11 +21,11 @@ import { Errors } from "contracts/libraries/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
-import { ERC7579Signature } from "contracts/modules/validators/ERC7579Signature.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 
 import { ClaimSignerHelper } from "./helpers/ClaimSignerHelper.sol";
 import { OnchainIDSetup } from "./helpers/OnchainIDSetup.sol";
+import { MockStockECDSAValidator } from "./mocks/MockStockECDSAValidator.sol";
 
 /// @notice Coverage for the SmartAccount execution surface and ERC-734 purpose invariants.
 contract SmartAccountTest is OnchainIDSetup {
@@ -161,7 +162,7 @@ contract SmartAccountTest is OnchainIDSetup {
     function test_uninstallModule_byManagement_succeeds() public {
         // The fixture only installs the queue module, so we add a fresh validator here
         // and own its lifecycle for this test.
-        ERC7579Signature validator = new ERC7579Signature();
+        MockStockECDSAValidator validator = new MockStockECDSAValidator();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), abi.encodePacked(alice));
         // Validators don't need an ERC 734 purpose. We add one anyway so we can check
@@ -187,7 +188,7 @@ contract SmartAccountTest is OnchainIDSetup {
 
     /// An ACTION key shouldn't be able to uninstall a module — uninstall is MANAGEMENT only.
     function test_uninstallModule_byActionKey_reverts() public {
-        ERC7579Signature validator = new ERC7579Signature();
+        MockStockECDSAValidator validator = new MockStockECDSAValidator();
         vm.prank(alice);
         aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), abi.encodePacked(alice));
 
@@ -238,8 +239,8 @@ contract SmartAccountTest is OnchainIDSetup {
 
     /// How you upgrade a module with ERC 7579. Uninstall the old one, install the new one.
     function test_uninstallModule_then_reinstall_upgradePath() public {
-        ERC7579Signature v1 = new ERC7579Signature();
-        ERC7579Signature v2 = new ERC7579Signature();
+        MockStockECDSAValidator v1 = new MockStockECDSAValidator();
+        MockStockECDSAValidator v2 = new MockStockECDSAValidator();
 
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(v1), abi.encodePacked(alice));
@@ -697,13 +698,10 @@ contract SmartAccountTest is OnchainIDSetup {
     /// @notice The per-target rule fires: an ACTION-only key cannot self-target
     ///         a privileged selector like addKey. The signature is cryptographically
     ///         valid, but step 2 of _validateUserOp rejects it.
-    /// @dev Documents a deliberate trade-off, not a passing safety check. The account no
-    ///      longer runs its own per-target rule; that scoping moved into scoping-aware
-    ///      validators like ERC734Validator. The validator installed by the fixture is the
-    ///      stock ERC7579Signature, which does not scope by target/selector, so a signer it
-    ///      accepts can self-target addKey. Self-target protection now comes only from a
-    ///      scoping validator. See claudedocs/validators-as-keys-design.md.
-    function test_validateUserOp_stockValidator_selfTarget_nowUnscoped() public {
+    /// @notice The fixture installs `ERC734Validator`, which scopes by target/selector. `david`
+    ///         holds ACTION inside it, so a self-target `addKey` (MANAGEMENT-grade) is rejected
+    ///         at the validator. Scoping lives in the validator, not the account.
+    function test_validateUserOp_actionSigner_selfTargetAddKey_rejectedByValidator() public {
         bytes memory innerCall = abi.encodeWithSignature(
             "addKey(bytes32,uint256,uint256)", keccak256("evil"), KeyPurposes.MANAGEMENT, KeyTypes.ECDSA
         );
@@ -714,8 +712,8 @@ contract SmartAccountTest is OnchainIDSetup {
         uint256 result = IAccount(address(aliceIdentity)).validateUserOp(userOp, userOpHash, 0);
         assertEq(
             result,
-            ERC4337Utils.SIG_VALIDATION_SUCCESS,
-            "stock validator does not scope: the account no longer blocks self-target addKey"
+            ERC4337Utils.SIG_VALIDATION_FAILED,
+            "ACTION signer must not self-target addKey; the scoping validator blocks it"
         );
     }
 
@@ -733,7 +731,7 @@ contract SmartAccountTest is OnchainIDSetup {
     function test_validateUserOp_installedStockValidator_noAccountPurpose_nowPasses() public {
         // Install a fresh stock validator without granting it any purpose. Seed its signer
         // registry with `david` so the signature passes the validator's own check.
-        ERC7579Signature rogue = new ERC7579Signature();
+        MockStockECDSAValidator rogue = new MockStockECDSAValidator();
         vm.prank(alice);
         aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(rogue), abi.encodePacked(david));
 
@@ -754,9 +752,9 @@ contract SmartAccountTest is OnchainIDSetup {
             signature: ""
         });
         bytes32 userOpHash = keccak256(abi.encode(userOp.sender, userOp.nonce, userOp.callData));
-        // Sign with a signer the stock validator accepts.
+        // MockStockECDSAValidator takes a raw 65-byte ECDSA signature (no signer wrapper).
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(davidPk, userOpHash);
-        userOp.signature = abi.encode(abi.encodePacked(david), abi.encodePacked(r, s, v));
+        userOp.signature = abi.encodePacked(r, s, v);
 
         vm.prank(ENTRY_POINT);
         uint256 result = IAccount(address(aliceIdentity)).validateUserOp(userOp, userOpHash, 0);
@@ -764,6 +762,26 @@ contract SmartAccountTest is OnchainIDSetup {
             result,
             ERC4337Utils.SIG_VALIDATION_SUCCESS,
             "account no longer requires a purpose grant: the installed validator decides"
+        );
+    }
+
+    /// @notice ERC-1271 dispatch. The account routes `isValidSignature` to the validator named
+    ///         by the first 20 bytes of the outer signature (OZ `_extractSignatureValidator`),
+    ///         then returns whatever magic value the validator produces.
+    function test_isValidSignature_routesToValidatorByModulePrefix() public {
+        (address signer, uint256 signerPk) = makeAddrAndKey("erc1271-signer");
+        MockStockECDSAValidator validator = new MockStockECDSAValidator();
+        vm.prank(alice);
+        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), abi.encodePacked(signer));
+
+        bytes32 digest = keccak256("erc1271-dispatch");
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerPk, digest);
+        bytes memory outerSig = abi.encodePacked(address(validator), abi.encodePacked(r, s, v));
+
+        assertEq(
+            IERC1271(address(aliceIdentity)).isValidSignature(digest, outerSig),
+            IERC1271.isValidSignature.selector,
+            "account must route isValidSignature to the prefixed validator"
         );
     }
 
