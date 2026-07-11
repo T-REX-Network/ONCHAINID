@@ -12,7 +12,7 @@ import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.so
 
 /// @notice Coverage for `ERC734Validator`. Exercises the dual registry (authorization purposes
 ///         in the validator, identity purposes on the account), per-target scoping, the
-///         self-target escalation guard, BATCH scoping, and full uninstall cleanup.
+///         self-target escalation guard, BATCH scoping, and reinstall cleanup.
 contract ERC734ValidatorTest is OnchainIDSetup {
 
     address internal constant ENTRY_POINT = 0x433709009B8330FDa32311DF1C2AFA402eD8D009;
@@ -274,7 +274,10 @@ contract ERC734ValidatorTest is OnchainIDSetup {
 
     /// @notice onUninstall deletes every key record, not just the byPurpose sets. After
     ///         uninstall + reinstall, an old ACTION key is gone (getKeyData returns empty).
-    function test_uninstall_deletesEveryKeyRecord() public {
+    /// @notice Cleanup happens on (re)install, not on uninstall. `onUninstall` is a no-op
+    ///         because it can be bypassed by a gas-starved subcall, so keys stay dormant after
+    ///         uninstall and are wiped when the module is installed again.
+    function test_reinstall_wipesStaleKeys_uninstallLeavesThemDormant() public {
         (address who,) = makeAddrAndKey("cleanup");
         bytes32 keyHash = keccak256(abi.encodePacked(who));
         _validatorAddKey(who, KeyPurposes.ACTION);
@@ -282,11 +285,18 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         (bytes memory before,) = validator.getKeyData(address(aliceIdentity), keyHash);
         assertGt(before.length, 0, "key present before uninstall");
 
+        // Uninstall leaves the record dormant (onUninstall is a documented no-op).
         vm.prank(alice);
         aliceIdentity.uninstallModule(MODULE_TYPE_VALIDATOR, address(validator), "");
+        (bytes memory afterUninstall,) = validator.getKeyData(address(aliceIdentity), keyHash);
+        assertGt(afterUninstall.length, 0, "uninstall leaves the record dormant");
 
-        (bytes memory afterSigner,) = validator.getKeyData(address(aliceIdentity), keyHash);
-        assertEq(afterSigner.length, 0, "key record fully deleted on uninstall");
+        // Reinstall wipes the stale registry, then seeds only the new manager.
+        vm.prank(alice);
+        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), abi.encodePacked(alice));
+
+        (bytes memory afterReinstall,) = validator.getKeyData(address(aliceIdentity), keyHash);
+        assertEq(afterReinstall.length, 0, "reinstall wipes the stale key record");
         assertFalse(validator.keyHasPurpose(address(aliceIdentity), keyHash, KeyPurposes.ACTION), "no residual purpose");
     }
 

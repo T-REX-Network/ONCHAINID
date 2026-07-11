@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/draft-ERC4337Utils.sol";
 import { CallType, ERC7579Utils, Mode } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
+import { IERC7913SignatureVerifier } from "@openzeppelin/contracts/interfaces/IERC7913.sol";
 import { PackedUserOperation } from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import { Execution, IERC7579Execution } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { Bytes } from "@openzeppelin/contracts/utils/Bytes.sol";
@@ -55,7 +56,8 @@ contract ERC734Validator is ERC7579Validator {
     }
 
     /// @dev ERC-734 key registry, scoped to one account. `allKeys` tracks every registered
-    ///      keyHash so `onUninstall` can delete each `Key` record, not just empty the sets.
+    ///      keyHash so `_clearRegistry` can delete each `Key` record on reinstall, not just empty
+    ///      the sets.
     struct AccountRegistry {
         mapping(bytes32 keyHash => Key) keys;
         mapping(uint256 purpose => EnumerableSet.Bytes32Set) byPurpose;
@@ -95,10 +97,18 @@ contract ERC734Validator is ERC7579Validator {
 
     // --- installation ----------------------------------------------------
 
-    /// @dev Seeds the registry with a single MANAGEMENT key from `data` (an ERC-7913 signer
-    ///      blob). keyType is inferred by length; clientData is empty at install.
+    /// @dev Clears any leftover state from a prior install, then seeds the registry with a
+    ///      single MANAGEMENT key from `data` (an ERC-7913 signer blob). keyType is inferred by
+    ///      length; clientData is empty at install.
+    ///
+    ///      Cleanup happens here, not in {onUninstall}: OZ's `AccountERC7579._uninstallModule`
+    ///      calls `onUninstall` with `callNoReturn`, so an aggressive gas estimator can starve
+    ///      that subcall and skip it while the outer uninstall still succeeds. Doing the wipe on
+    ///      (re)install means a stale registry can never leak into a fresh install regardless of
+    ///      whether `onUninstall` ran.
     function onInstall(bytes calldata data) public virtual override {
         require(data.length >= 20, InvalidSignerLength());
+        _clearRegistry(msg.sender);
         _addKey(
             msg.sender,
             data,
@@ -108,17 +118,22 @@ contract ERC734Validator is ERC7579Validator {
         );
     }
 
-    /// @dev Clears the caller's registry completely: every `Key` record, every byPurpose set,
-    ///      and the key index. A reinstall starts from a clean slate. Idempotent.
+    /// @dev No-op by design. Cleanup lives in {onInstall} instead, because this hook can be
+    ///      bypassed by a gas-starved `callNoReturn` (see {onInstall}). Relying on it to clear
+    ///      state would leave the registry populated after a bypassed uninstall; a reinstall
+    ///      wipes it anyway. Uninstalling without reinstalling leaves the old keys dormant, which
+    ///      is harmless: the account no longer routes to this validator once it is uninstalled.
     function onUninstall(
         bytes calldata /* data */
     )
         public
         virtual
         override
-    {
-        AccountRegistry storage registry = _store().registries[msg.sender];
+    { }
 
+    /// @dev Deletes every `Key` record, every byPurpose entry, and the key index for `account`.
+    function _clearRegistry(address account) private {
+        AccountRegistry storage registry = _store().registries[account];
         bytes32[] memory keyHashes = registry.allKeys.values();
         for (uint256 i = 0; i < keyHashes.length; i++) {
             bytes32 keyHash = keyHashes[i];
@@ -391,11 +406,5 @@ contract ERC734Validator is ERC7579Validator {
             store.slot := slot
         }
     }
-
-}
-
-interface IERC7913SignatureVerifier {
-
-    function verify(bytes calldata key, bytes32 hash, bytes calldata signature) external view returns (bytes4);
 
 }
