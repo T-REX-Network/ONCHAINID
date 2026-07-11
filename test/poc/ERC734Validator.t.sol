@@ -272,8 +272,6 @@ contract ERC734ValidatorTest is OnchainIDSetup {
 
     // --- §7.3 full uninstall cleanup ------------------------------------
 
-    /// @notice onUninstall deletes every key record, not just the byPurpose sets. After
-    ///         uninstall + reinstall, an old ACTION key is gone (getKeyData returns empty).
     /// @notice Cleanup happens on (re)install, not on uninstall. `onUninstall` is a no-op
     ///         because it can be bypassed by a gas-starved subcall, so keys stay dormant after
     ///         uninstall and are wiped when the module is installed again.
@@ -298,6 +296,31 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         (bytes memory afterReinstall,) = validator.getKeyData(address(aliceIdentity), keyHash);
         assertEq(afterReinstall.length, 0, "reinstall wipes the stale key record");
         assertFalse(validator.keyHasPurpose(address(aliceIdentity), keyHash, KeyPurposes.ACTION), "no residual purpose");
+    }
+
+    /// @notice Re-registering the same keyHash after a wipe starts from clean purpose state.
+    ///         Guards the EnumerableSet gotcha: a plain `delete keys[keyHash]` would leave the
+    ///         nested `purposes._positions` mapping behind, so `.clear()` must be used.
+    function test_reinstall_reregisterSameKeyHash_hasCleanPurposes() public {
+        (address who,) = makeAddrAndKey("recycle");
+        bytes32 keyHash = keccak256(abi.encodePacked(who));
+
+        // Give the key two purposes, then wipe via uninstall + reinstall.
+        _validatorAddKey(who, KeyPurposes.ACTION);
+        _validatorAddKey(who, KeyPurposes.PROPOSER);
+        vm.startPrank(alice);
+        aliceIdentity.uninstallModule(MODULE_TYPE_VALIDATOR, address(validator), "");
+        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), abi.encodePacked(alice));
+        vm.stopPrank();
+
+        // Re-register the same keyHash with a single purpose; it must hold exactly that one.
+        _validatorAddKey(who, KeyPurposes.ACTION);
+        uint256[] memory purposes = validator.getKeyPurposes(address(aliceIdentity), keyHash);
+        assertEq(purposes.length, 1, "recycled key must have exactly one purpose, not stale entries");
+        assertEq(purposes[0], KeyPurposes.ACTION, "recycled key purpose must be ACTION");
+        assertFalse(
+            validator.keyHasPurpose(address(aliceIdentity), keyHash, KeyPurposes.PROPOSER), "no stale PROPOSER purpose"
+        );
     }
 
     // --- data preservation ----------------------------------------------

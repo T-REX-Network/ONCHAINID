@@ -131,19 +131,25 @@ contract ERC734Validator is ERC7579Validator {
         override
     { }
 
-    /// @dev Deletes every `Key` record, every byPurpose entry, and the key index for `account`.
+    /// @dev Wipes every `Key` record, every byPurpose entry, and the key index for `account`.
+    ///      Each `Key.purposes` is an EnumerableSet, so it is `.clear()`ed explicitly: a plain
+    ///      `delete keys[keyHash]` would leave the set's `_positions` mapping behind (see the
+    ///      warning in OZ's EnumerableSet), which would corrupt a later re-registration.
     function _clearRegistry(address account) private {
         AccountRegistry storage registry = _store().registries[account];
         bytes32[] memory keyHashes = registry.allKeys.values();
         for (uint256 i = 0; i < keyHashes.length; i++) {
-            bytes32 keyHash = keyHashes[i];
-            uint256[] memory purposes = registry.keys[keyHash].purposes.values();
-            for (uint256 j = 0; j < purposes.length; j++) {
-                registry.byPurpose[purposes[j]].remove(keyHash);
-            }
-            delete registry.keys[keyHash];
-            registry.allKeys.remove(keyHash);
+            Key storage key = registry.keys[keyHashes[i]];
+            key.purposes.clear();
+            delete key.keyType;
+            delete key.signerData;
+            delete key.clientData;
         }
+        // Only the authorization purposes are ever populated here (see _isAuthorizationPurpose).
+        registry.byPurpose[KeyPurposes.MANAGEMENT].clear();
+        registry.byPurpose[KeyPurposes.ACTION].clear();
+        registry.byPurpose[KeyPurposes.PROPOSER].clear();
+        registry.allKeys.clear();
     }
 
     // --- registry (called by the account on itself) ----------------------
