@@ -401,14 +401,16 @@ contract SmartAccountTest is OnchainIDSetup {
         batch[0] = Execution({
             target: address(aliceIdentity),
             value: 0,
-            callData: abi.encodeWithSignature(
-                "addClaim(uint256,uint256,address,bytes,bytes,string)",
-                uint256(100),
-                uint256(1),
-                address(aliceIdentity),
-                bytes(""),
-                bytes("payload"),
-                string("")
+            callData: abi.encodeCall(
+                IERC735.addClaim,
+                (
+                    uint256(100),
+                    uint256(1),
+                    address(aliceIdentity),
+                    bytes(""),
+                    Structs.ClaimData({ issuedAt: 0, validUntil: 0, payload: bytes("payload") }),
+                    string("")
+                )
             )
         });
         batch[1] = Execution({
@@ -553,14 +555,16 @@ contract SmartAccountTest is OnchainIDSetup {
         aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
         vm.stopPrank();
 
-        bytes memory addClaimData = abi.encodeWithSignature(
-            "addClaim(uint256,uint256,address,bytes,bytes,string)",
-            uint256(202),
-            uint256(1),
-            address(aliceIdentity),
-            bytes(""),
-            bytes("payload"),
-            string("")
+        bytes memory addClaimData = abi.encodeCall(
+            IERC735.addClaim,
+            (
+                uint256(202),
+                uint256(1),
+                address(aliceIdentity),
+                bytes(""),
+                Structs.ClaimData({ issuedAt: 0, validUntil: 0, payload: bytes("payload") }),
+                string("")
+            )
         );
         bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity), uint256(0), addClaimData);
 
@@ -587,14 +591,16 @@ contract SmartAccountTest is OnchainIDSetup {
         aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
         vm.stopPrank();
 
-        bytes memory addClaimData = abi.encodeWithSignature(
-            "addClaim(uint256,uint256,address,bytes,bytes,string)",
-            uint256(203),
-            uint256(1),
-            address(aliceIdentity),
-            bytes(""),
-            bytes("payload"),
-            string("")
+        bytes memory addClaimData = abi.encodeCall(
+            IERC735.addClaim,
+            (
+                uint256(203),
+                uint256(1),
+                address(aliceIdentity),
+                bytes(""),
+                Structs.ClaimData({ issuedAt: 0, validUntil: 0, payload: bytes("payload") }),
+                string("")
+            )
         );
         bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity), uint256(0), addClaimData);
 

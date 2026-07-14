@@ -6,9 +6,11 @@ import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/draft-ERC433
 import { ERC7579Utils } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
 import { IAccount, PackedUserOperation } from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import { Execution, MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import { IERC735 } from "contracts/interface/IERC735.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
+import { Structs } from "contracts/storage/Structs.sol";
 
 /// @notice Coverage for `ERC734Validator`. Exercises the dual registry (authorization purposes
 ///         in the validator, identity purposes on the account), per-target scoping, the
@@ -126,14 +128,16 @@ contract ERC734ValidatorTest is OnchainIDSetup {
 
         // self + addClaim -> CLAIM_SIGNER (read on account)
         {
-            bytes memory addClaim = abi.encodeWithSignature(
-                "addClaim(uint256,uint256,address,bytes,bytes,string)",
-                uint256(1),
-                uint256(1),
-                address(claimIssuer),
-                bytes("s"),
-                bytes("d"),
-                "u"
+            bytes memory addClaim = abi.encodeCall(
+                IERC735.addClaim,
+                (
+                    uint256(1),
+                    uint256(1),
+                    address(claimIssuer),
+                    bytes("s"),
+                    Structs.ClaimData({ issuedAt: 0, validUntil: 0, payload: bytes("d") }),
+                    "u"
+                )
             );
             (PackedUserOperation memory userOp, bytes32 userOpHash) = _userOpTo(address(aliceIdentity), addClaim);
             userOp.signature = _sign(whoPk, who, userOpHash);
@@ -157,14 +161,16 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         (address who, uint256 whoPk) = makeAddrAndKey("action-only");
         _validatorAddKey(who, KeyPurposes.ACTION);
 
-        bytes memory addClaim = abi.encodeWithSignature(
-            "addClaim(uint256,uint256,address,bytes,bytes,string)",
-            uint256(1),
-            uint256(1),
-            address(claimIssuer),
-            bytes("s"),
-            bytes("d"),
-            "u"
+        bytes memory addClaim = abi.encodeCall(
+            IERC735.addClaim,
+            (
+                uint256(1),
+                uint256(1),
+                address(claimIssuer),
+                bytes("s"),
+                Structs.ClaimData({ issuedAt: 0, validUntil: 0, payload: bytes("d") }),
+                "u"
+            )
         );
         (PackedUserOperation memory userOp, bytes32 userOpHash) = _userOpTo(address(aliceIdentity), addClaim);
         userOp.signature = _sign(whoPk, who, userOpHash);
