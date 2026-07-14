@@ -273,9 +273,9 @@ contract ERC734Validator is ERC7579Validator {
         (CallType callType,,,) = ERC7579Utils.decodeMode(Mode.wrap(modeWord));
 
         if (callType == ERC7579Utils.CALLTYPE_SINGLE) {
+            // A single execution is at least 52 bytes (20 target + 32 value).
             if (executionCalldata.length < 52) return false;
-            address target = address(bytes20(executionCalldata[:20]));
-            bytes calldata inner = executionCalldata[52:];
+            (address target,, bytes calldata inner) = ERC7579Utils.decodeSingle(executionCalldata);
             return _targetAllowed(account, keyHash, target, inner);
         }
 
