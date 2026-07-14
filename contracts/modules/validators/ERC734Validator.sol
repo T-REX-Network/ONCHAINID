@@ -232,10 +232,8 @@ contract ERC734Validator is ERC7579Validator {
     {
         (bytes memory signer, bytes memory signature) = abi.decode(moduleSignature, (bytes, bytes));
         if (signer.length < 20) return false;
-        if (!_verify(signer, hash, signature)) return false;
-
-        bytes32 keyHash = keccak256(signer);
-        return _store().registries[account].keys[keyHash].signerData.length != 0;
+        if (!_store().registries[account].allKeys.contains(keccak256(signer))) return false;
+        return _verify(signer, hash, signature);
     }
 
     /// @dev Adds per-target scoping on top of crypto + membership. The account routes
