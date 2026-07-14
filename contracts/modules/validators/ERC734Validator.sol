@@ -183,7 +183,7 @@ contract ERC734Validator is ERC7579Validator {
     /// @notice `IERC734.keyHasPurpose`, scoped to `account`. MANAGEMENT satisfies any purpose.
     function keyHasPurpose(address account, bytes32 keyHash, uint256 purpose) public view returns (bool) {
         AccountRegistry storage registry = _store().registries[account];
-        if (registry.keys[keyHash].signerData.length == 0) return false;
+        if (!registry.allKeys.contains(keyHash)) return false;
         return registry.keys[keyHash].purposes.contains(purpose)
             || registry.keys[keyHash].purposes.contains(KeyPurposes.MANAGEMENT);
     }
