@@ -383,7 +383,7 @@ contract ERC734Validator is ERC7579Validator {
         AccountRegistry storage registry = _store().registries[account];
         Key storage key = registry.keys[keyHash];
 
-        if (key.signerData.length == 0) {
+        if (!registry.allKeys.contains(keyHash)) {
             key.signerData = signerData;
             key.clientData = clientData;
             key.keyType = keyType;
