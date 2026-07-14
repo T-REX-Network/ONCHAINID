@@ -5,7 +5,12 @@ import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/draft-ERC433
 import { CallType, ERC7579Utils, Mode } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
 import { IERC7913SignatureVerifier } from "@openzeppelin/contracts/interfaces/IERC7913.sol";
 import { PackedUserOperation } from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
-import { Execution, IERC7579Execution } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import {
+    Execution,
+    IERC7579Execution,
+    MODULE_TYPE_FALLBACK,
+    MODULE_TYPE_VALIDATOR
+} from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { Bytes } from "@openzeppelin/contracts/utils/Bytes.sol";
 import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import { SignatureChecker } from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
@@ -103,6 +108,15 @@ contract ERC734Validator is ERC7579Validator {
     ///      (re)install means a stale registry can never leak into a fresh install regardless of
     ///      whether `onUninstall` ran.
     function onInstall(bytes calldata data) public virtual override {
+        // Empty data is a fallback-handler install: there is no key to seed, the registry already
+        // exists from the validator install. Just require the account already has a MANAGEMENT key.
+        if (data.length == 0) {
+            require(
+                _store().registries[msg.sender].byPurpose[KeyPurposes.MANAGEMENT].length() > 0, InvalidSignerLength()
+            );
+            return;
+        }
+
         _clearRegistry(msg.sender);
         _addKey(
             msg.sender,
@@ -111,6 +125,12 @@ contract ERC734Validator is ERC7579Validator {
             KeyPurposes.MANAGEMENT,
             data.length == 20 ? 1 /* ECDSA */  : 3 /* WEBAUTHN */
         );
+    }
+
+    /// @dev Works as a validator and as a fallback handler, so the account can expose the ERC-734
+    ///      getters below.
+    function isModuleType(uint256 moduleTypeId) public pure virtual override returns (bool) {
+        return moduleTypeId == MODULE_TYPE_VALIDATOR || moduleTypeId == MODULE_TYPE_FALLBACK;
     }
 
     /// @dev No-op by design. Cleanup lives in {onInstall} instead, because this hook can be
@@ -216,6 +236,31 @@ contract ERC734Validator is ERC7579Validator {
     {
         Key storage stored = _store().registries[account].keys[keyHash];
         return (stored.purposes.values(), stored.keyType, stored.signerData.length == 0 ? bytes32(0) : keyHash);
+    }
+
+    // --- ERC-734 getters, account taken from msg.sender ------------------
+    // The standard ERC-734 read functions, without the account argument. When this module is a
+    // fallback handler, msg.sender is the account, so these read that account's registry.
+
+    /// @notice ERC-734 keyHasPurpose for the calling account.
+    function keyHasPurpose(bytes32 _key, uint256 _purpose) external view returns (bool) {
+        return keyHasPurpose(msg.sender, _key, _purpose);
+    }
+
+    /// @notice ERC-734 getKeyPurposes for the calling account.
+    function getKeyPurposes(bytes32 _key) external view returns (uint256[] memory) {
+        return _store().registries[msg.sender].keys[_key].purposes.values();
+    }
+
+    /// @notice ERC-734 getKeysByPurpose for the calling account.
+    function getKeysByPurpose(uint256 _purpose) external view returns (bytes32[] memory) {
+        return _store().registries[msg.sender].byPurpose[_purpose].values();
+    }
+
+    /// @notice ERC-734 getKey for the calling account.
+    function getKey(bytes32 _key) external view returns (uint256[] memory purposes, uint256 keyType, bytes32 key) {
+        Key storage stored = _store().registries[msg.sender].keys[_key];
+        return (stored.purposes.values(), stored.keyType, stored.signerData.length == 0 ? bytes32(0) : _key);
     }
 
     // --- validation ------------------------------------------------------

@@ -393,6 +393,36 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         );
     }
 
+    // --- ERC-734 getters (msg.sender scoped) ----------------------------
+
+    /// @notice The account-less ERC-734 getters read the caller's registry, so they return the
+    ///         same data as the account-scoped getters when called by the account. This is the
+    ///         path used when the module is installed as a fallback handler.
+    function test_accountLessGetters_readCallerRegistry() public {
+        (address who,) = makeAddrAndKey("getter-key");
+        bytes32 keyHash = keccak256(abi.encodePacked(who));
+        _validatorAddKey(who, KeyPurposes.ACTION);
+
+        vm.startPrank(address(aliceIdentity));
+        assertTrue(validator.keyHasPurpose(keyHash, KeyPurposes.ACTION), "keyHasPurpose(bytes32,uint256)");
+
+        uint256[] memory purposes = validator.getKeyPurposes(keyHash);
+        assertEq(purposes.length, 1, "getKeyPurposes(bytes32)");
+        assertEq(purposes[0], KeyPurposes.ACTION, "purpose is ACTION");
+
+        bytes32[] memory actionKeys = validator.getKeysByPurpose(KeyPurposes.ACTION);
+        assertEq(actionKeys.length, 1, "getKeysByPurpose(uint256)");
+        assertEq(actionKeys[0], keyHash, "returns the registered key");
+
+        (,, bytes32 gotKey) = validator.getKey(keyHash);
+        assertEq(gotKey, keyHash, "getKey(bytes32)");
+        vm.stopPrank();
+
+        // A different caller sees an empty registry, since the getters are msg.sender scoped.
+        vm.prank(address(bobIdentity));
+        assertFalse(validator.keyHasPurpose(keyHash, KeyPurposes.ACTION), "another account sees nothing");
+    }
+
 }
 
 /// @notice PoC-local counter target.
