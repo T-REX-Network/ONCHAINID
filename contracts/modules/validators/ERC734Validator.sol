@@ -220,9 +220,9 @@ contract ERC734Validator is ERC7579Validator {
 
     // --- validation ------------------------------------------------------
 
-    /// @dev Crypto + membership. Verifies the signer signed `hash` and is a registered key on
-    ///      `account`. The 1271 path stops here (no callData); userOps also run scoping in
-    ///      {_validateUserOp}.
+    /// @dev Verifies the signer is a registered key on `account`, then that it signed `hash`.
+    ///      Membership is checked first so an unknown key skips signature verification. The 1271
+    ///      path stops here; userOps also run scoping in {_validateUserOp}.
     function _rawERC7579Validation(address account, bytes32 hash, bytes calldata moduleSignature)
         internal
         view
