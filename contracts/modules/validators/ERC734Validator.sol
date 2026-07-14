@@ -266,7 +266,8 @@ contract ERC734Validator is ERC7579Validator {
         // MANAGEMENT passes everything.
         if (keyHasPurpose(account, keyHash, KeyPurposes.MANAGEMENT)) return true;
 
-        if (callData.length < 4 || bytes4(callData[:4]) != IERC7579Execution.execute.selector) return false;
+        // Short calldata zero-pads and can't match the execute selector.
+        if (bytes4(callData) != IERC7579Execution.execute.selector) return false;
 
         (bytes32 modeWord, bytes calldata executionCalldata) = _decodeExecute(callData);
         (CallType callType,,,) = ERC7579Utils.decodeMode(Mode.wrap(modeWord));
