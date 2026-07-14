@@ -12,6 +12,7 @@ import { SignatureChecker } from "@openzeppelin/contracts/utils/cryptography/Sig
 import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 import { IERC734 } from "../../interface/IERC734.sol";
+import { IERC735 } from "../../interface/IERC735.sol";
 import { KeyPurposes } from "../../libraries/KeyPurposes.sol";
 import { ERC7579Validator } from "./ERC7579Validator.sol";
 
@@ -74,12 +75,6 @@ contract ERC734Validator is ERC7579Validator {
     bytes32 private constant _MODULE_STORAGE_SLOT = keccak256(
         abi.encode(uint256(keccak256(bytes("onchainid.validators.erc734-validator"))) - 1)
     ) & ~bytes32(uint256(0xff));
-
-    /// @dev Claim selectors a CLAIM_SIGNER / CLAIM_ADDER may self-target. Everything else
-    ///      self-targeted (addKey, removeKey, ...) requires MANAGEMENT and needs no constant.
-    bytes4 private constant _ADD_CLAIM_SELECTOR =
-        bytes4(keccak256("addClaim(uint256,uint256,address,bytes,bytes,string)"));
-    bytes4 private constant _REMOVE_CLAIM_SELECTOR = bytes4(keccak256("removeClaim(bytes32)"));
 
     error KeyAlreadyRegistered(bytes32 keyHash);
     error KeyNotRegistered(bytes32 keyHash);
@@ -325,11 +320,11 @@ contract ERC734Validator is ERC7579Validator {
         }
 
         bytes4 innerSelector = inner.length >= 4 ? bytes4(inner[:4]) : bytes4(0);
-        if (innerSelector == _ADD_CLAIM_SELECTOR) {
+        if (innerSelector == IERC735.addClaim.selector) {
             return IERC734(account).keyHasPurpose(keyHash, KeyPurposes.CLAIM_SIGNER)
                 || IERC734(account).keyHasPurpose(keyHash, KeyPurposes.CLAIM_ADDER);
         }
-        if (innerSelector == _REMOVE_CLAIM_SELECTOR) {
+        if (innerSelector == IERC735.removeClaim.selector) {
             return IERC734(account).keyHasPurpose(keyHash, KeyPurposes.CLAIM_SIGNER);
         }
         return false;
