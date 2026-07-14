@@ -162,8 +162,8 @@ contract ERC734Validator is ERC7579Validator {
     ///         removed. Deletes the record once its last purpose is gone.
     function removeKey(bytes32 keyHash, uint256 purpose) external {
         AccountRegistry storage registry = _store().registries[msg.sender];
+        require(registry.allKeys.contains(keyHash), KeyNotRegistered(keyHash));
         Key storage key = registry.keys[keyHash];
-        require(key.signerData.length != 0, KeyNotRegistered(keyHash));
 
         if (purpose == KeyPurposes.MANAGEMENT) {
             require(registry.byPurpose[KeyPurposes.MANAGEMENT].length() > 1, CannotRemoveLastManagementKey());
