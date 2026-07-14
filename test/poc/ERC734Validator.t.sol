@@ -109,6 +109,16 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         validator.addKey(abi.encodePacked(makeAddr("x")), "", KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
     }
 
+    /// @notice A signer shorter than 20 bytes is rejected. The guard lives in `_addKey`, so it
+    ///         applies to every caller (here via the public `addKey`).
+    function test_addKey_shortSigner_reverts() public {
+        // 19 bytes: one short of the 20-byte ERC-7913 minimum.
+        bytes memory tooShort = new bytes(19);
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(ERC734Validator.InvalidSignerLength.selector);
+        validator.addKey(tooShort, "", KeyPurposes.ACTION, KeyTypes.ECDSA);
+    }
+
     /// @notice A signer that is an ACTION member of the validator AND a CLAIM_SIGNER on the
     ///         account: external transfer passes (ACTION, validator), self-addClaim passes
     ///         (CLAIM_SIGNER read on the account), self-addKey fails (needs MANAGEMENT).

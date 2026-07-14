@@ -102,7 +102,6 @@ contract ERC734Validator is ERC7579Validator {
     ///      (re)install means a stale registry can never leak into a fresh install regardless of
     ///      whether `onUninstall` ran.
     function onInstall(bytes calldata data) public virtual override {
-        require(data.length >= 20, InvalidSignerLength());
         _clearRegistry(msg.sender);
         _addKey(
             msg.sender,
@@ -156,7 +155,6 @@ contract ERC734Validator is ERC7579Validator {
     /// @param purpose Purpose to grant.
     /// @param keyType ECDSA / RSA / WEBAUTHN / MODULE.
     function addKey(bytes calldata signerData, bytes calldata clientData, uint256 purpose, uint256 keyType) external {
-        require(signerData.length >= 20, InvalidSignerLength());
         _addKey(msg.sender, signerData, clientData, purpose, keyType);
     }
 
@@ -370,6 +368,10 @@ contract ERC734Validator is ERC7579Validator {
         uint256 purpose,
         uint256 keyType
     ) internal {
+        // An ERC-7913 signer is at least 20 bytes (a 20-byte EOA/1271 address, or verifier+key).
+        // Checked here so every caller (onInstall, addKey) is covered by a single guard.
+        require(signerData.length >= 20, InvalidSignerLength());
+
         // This validator only holds authorization purposes. Identity purposes belong on the
         // account's KeyManager, where ERC-735 reads them; accepting one here would let it be
         // set somewhere claim verification never looks.
