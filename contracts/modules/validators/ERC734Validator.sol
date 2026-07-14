@@ -13,6 +13,7 @@ import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableS
 
 import { IERC734 } from "../../interface/IERC734.sol";
 import { IERC735 } from "../../interface/IERC735.sol";
+import { Errors } from "../../libraries/Errors.sol";
 import { KeyPurposes } from "../../libraries/KeyPurposes.sol";
 import { ERC7579Validator } from "./ERC7579Validator.sol";
 
@@ -168,7 +169,8 @@ contract ERC734Validator is ERC7579Validator {
         if (purpose == KeyPurposes.MANAGEMENT) {
             require(registry.byPurpose[KeyPurposes.MANAGEMENT].length() > 1, CannotRemoveLastManagementKey());
         }
-        key.purposes.remove(purpose);
+        // Revert if the key doesn't have this purpose.
+        require(key.purposes.remove(purpose), Errors.KeyDoesNotHavePurpose(keyHash, purpose));
         registry.byPurpose[purpose].remove(keyHash);
         if (key.purposes.length() == 0) {
             delete registry.keys[keyHash];

@@ -7,6 +7,7 @@ import { ERC7579Utils } from "@openzeppelin/contracts/account/utils/draft-ERC757
 import { IAccount, PackedUserOperation } from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import { Execution, MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { IERC735 } from "contracts/interface/IERC735.sol";
+import { Errors } from "contracts/libraries/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
@@ -117,6 +118,18 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         vm.prank(address(aliceIdentity));
         vm.expectRevert(ERC734Validator.InvalidSignerLength.selector);
         validator.addKey(tooShort, "", KeyPurposes.ACTION, KeyTypes.ECDSA);
+    }
+
+    /// @notice Removing a purpose the key does not hold reverts instead of silently succeeding.
+    function test_removeKey_purposeNotHeld_reverts() public {
+        (address who,) = makeAddrAndKey("action-only-key");
+        bytes32 keyHash = keccak256(abi.encodePacked(who));
+        _validatorAddKey(who, KeyPurposes.ACTION);
+
+        // The key only has ACTION; removing PROPOSER must revert.
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(abi.encodeWithSelector(Errors.KeyDoesNotHavePurpose.selector, keyHash, KeyPurposes.PROPOSER));
+        validator.removeKey(keyHash, KeyPurposes.PROPOSER);
     }
 
     /// @notice A signer that is an ACTION member of the validator AND a CLAIM_SIGNER on the
