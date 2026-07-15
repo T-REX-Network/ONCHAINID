@@ -419,10 +419,12 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         }
         address verifier = address(bytes20(Bytes.slice(signer, 0, 20)));
         bytes memory key = Bytes.slice(signer, 20);
-        (bool success, bytes memory result) =
-            verifier.staticcall(abi.encodeCall(IERC7913SignatureVerifier.verify, (key, hash, signature)));
-        return success && result.length >= 32
-            && abi.decode(result, (bytes32)) == bytes32(IERC7913SignatureVerifier.verify.selector);
+        // A verifier with no code makes this call revert; catch it and treat as an invalid signer.
+        try IERC7913SignatureVerifier(verifier).verify(key, hash, signature) returns (bytes4 result) {
+            return result == IERC7913SignatureVerifier.verify.selector;
+        } catch {
+            return false;
+        }
     }
 
     function _addKey(
