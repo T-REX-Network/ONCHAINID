@@ -223,18 +223,18 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     /// @notice `IERC734.keyHasPurpose`, scoped to `account`. MANAGEMENT satisfies any purpose.
     function keyHasPurpose(address account, bytes32 keyHash, uint256 purpose) public view returns (bool) {
         AccountRegistry storage registry = _store().registries[account];
-        if (!registry.allKeys.contains(keyHash)) return false;
-        return registry.keys[keyHash].purposes.contains(purpose)
-            || registry.keys[keyHash].purposes.contains(KeyPurposes.MANAGEMENT);
+        return registry.allKeys.contains(keyHash)
+            && (registry.keys[keyHash].purposes.contains(purpose)
+                || registry.keys[keyHash].purposes.contains(KeyPurposes.MANAGEMENT));
     }
 
     /// @notice Purposes held by `keyHash` on `account`.
-    function getKeyPurposes(address account, bytes32 keyHash) external view returns (uint256[] memory) {
+    function getKeyPurposes(address account, bytes32 keyHash) public view returns (uint256[] memory) {
         return _store().registries[account].keys[keyHash].purposes.values();
     }
 
     /// @notice Key hashes with `purpose` on `account`.
-    function getKeysByPurpose(address account, uint256 purpose) external view returns (bytes32[] memory) {
+    function getKeysByPurpose(address account, uint256 purpose) public view returns (bytes32[] memory) {
         return _store().registries[account].byPurpose[purpose].values();
     }
 
@@ -250,7 +250,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
 
     /// @notice `IERC734.getKey` for `account`.
     function getKey(address account, bytes32 keyHash)
-        external
+        public
         view
         returns (uint256[] memory purposes, uint256 keyType, bytes32 key)
     {
@@ -260,7 +260,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
 
     // --- ERC-734 getters, account taken from msg.sender ------------------
     // The standard ERC-734 read functions, without the account argument. When this module is a
-    // fallback handler, msg.sender is the account, so these read that account's registry.
+    // fallback handler, msg.sender is the account, so each reuses the account-scoped version above.
 
     /// @notice ERC-734 keyHasPurpose for the calling account.
     function keyHasPurpose(bytes32 _key, uint256 _purpose) external view returns (bool) {
@@ -269,18 +269,17 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
 
     /// @notice ERC-734 getKeyPurposes for the calling account.
     function getKeyPurposes(bytes32 _key) external view returns (uint256[] memory) {
-        return _store().registries[msg.sender].keys[_key].purposes.values();
+        return getKeyPurposes(msg.sender, _key);
     }
 
     /// @notice ERC-734 getKeysByPurpose for the calling account.
     function getKeysByPurpose(uint256 _purpose) external view returns (bytes32[] memory) {
-        return _store().registries[msg.sender].byPurpose[_purpose].values();
+        return getKeysByPurpose(msg.sender, _purpose);
     }
 
     /// @notice ERC-734 getKey for the calling account.
     function getKey(bytes32 _key) external view returns (uint256[] memory purposes, uint256 keyType, bytes32 key) {
-        Key storage stored = _store().registries[msg.sender].keys[_key];
-        return (stored.purposes.values(), stored.keyType, stored.signerData.length == 0 ? bytes32(0) : _key);
+        return getKey(msg.sender, _key);
     }
 
     // --- validation ------------------------------------------------------
@@ -296,9 +295,8 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         returns (bool)
     {
         (bytes memory signer, bytes memory signature) = abi.decode(moduleSignature, (bytes, bytes));
-        if (signer.length < 20) return false;
-        if (!_store().registries[account].allKeys.contains(keccak256(signer))) return false;
-        return _verify(signer, hash, signature);
+        // A too-short signer can't be in `allKeys`, so membership alone rejects it.
+        return _store().registries[account].allKeys.contains(keccak256(signer)) && _verify(signer, hash, signature);
     }
 
     /// @dev Adds per-target scoping on top of crypto + membership. The account routes
