@@ -154,9 +154,9 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         if (uid == bytes32(0)) return ClaimStatus.BadSignature;
 
         Attestation memory attestation = EAS.getAttestation(uid);
-        if (attestation.uid == bytes32(0)) return ClaimStatus.NotIssued;
-        if (attestation.schema != schema) return ClaimStatus.NotIssued;
-        if (!isAttesterAllowed[attestation.attester]) return ClaimStatus.NotIssued;
+        if (attestation.uid == bytes32(0) || attestation.schema != schema || !isAttesterAllowed[attestation.attester]) {
+            return ClaimStatus.NotIssued;
+        }
 
         if (attestation.revocationTime != 0) return ClaimStatus.Revoked;
         if (attestation.expirationTime != 0 && block.timestamp > attestation.expirationTime) {
