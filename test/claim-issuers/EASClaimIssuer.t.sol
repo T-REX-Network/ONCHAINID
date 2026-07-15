@@ -474,32 +474,32 @@ contract EASClaimIssuerTest is OnchainIDSetup {
     /* ----- unsupported surface ----- */
 
     function test_revokeClaimByDigest_reverts() public {
-        vm.expectRevert(Errors.NotSupported.selector);
+        vm.expectRevert(Errors.EASNotSupported.selector);
         adapter.revokeClaimByDigest(bytes32(uint256(1)));
     }
 
     function test_isDigestRevoked_reverts() public {
-        vm.expectRevert(Errors.NotSupported.selector);
+        vm.expectRevert(Errors.EASNotSupported.selector);
         adapter.isDigestRevoked(bytes32(uint256(1)));
     }
 
     function test_addClaimTo_reverts() public {
-        vm.expectRevert(Errors.NotSupported.selector);
+        vm.expectRevert(Errors.EASNotSupported.selector);
         adapter.addClaimTo(TOPIC, 1, hex"", emptyData, "", IIdentity(address(aliceIdentity)));
     }
 
     function test_addKey_reverts() public {
-        vm.expectRevert(Errors.NotSupported.selector);
+        vm.expectRevert(Errors.EASNotSupported.selector);
         adapter.addKey(bytes32(uint256(1)), 1, 1);
     }
 
     function test_getIdentityType_reverts() public {
-        vm.expectRevert(Errors.NotSupported.selector);
+        vm.expectRevert(Errors.EASNotSupported.selector);
         adapter.getIdentityType();
     }
 
     function test_addClaim_reverts() public {
-        vm.expectRevert(Errors.NotSupported.selector);
+        vm.expectRevert(Errors.EASNotSupported.selector);
         adapter.addClaim(TOPIC, 1, address(this), hex"", emptyData, "");
     }
 

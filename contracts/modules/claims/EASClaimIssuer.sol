@@ -34,7 +34,7 @@ import { Attestation, IEAS } from "../../vendor/eas/IEAS.sol";
  *
  *         Not supported in v1: off-chain EAS attestations, non-EVM linked wallets, and
  *         cross-chain EAS reads. Every method that would mutate identity or claim state
- *         reverts with `Errors.NotSupported` because the adapter is not itself an Identity.
+ *         reverts with `Errors.EASNotSupported` because the adapter is not itself an Identity.
  */
 contract EASClaimIssuer is IClaimIssuer, AccessManaged {
 
@@ -211,12 +211,12 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
 
     /// @inheritdoc IClaimIssuer
     function revokeClaimByDigest(bytes32) external pure {
-        revert Errors.NotSupported();
+        revert Errors.EASNotSupported();
     }
 
     /// @inheritdoc IClaimIssuer
     function isDigestRevoked(bytes32) external pure returns (bool) {
-        revert Errors.NotSupported();
+        revert Errors.EASNotSupported();
     }
 
     /// @inheritdoc IClaimIssuer
@@ -224,43 +224,43 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         external
         pure
     {
-        revert Errors.NotSupported();
+        revert Errors.EASNotSupported();
     }
 
     /// @inheritdoc IIdentity
     function getClaimHash(address, uint256, Structs.ClaimData memory) external pure returns (bytes32) {
-        revert Errors.NotSupported();
+        revert Errors.EASNotSupported();
     }
 
     /// @inheritdoc IIdentity
     function getIdentityType() external pure returns (uint256) {
-        revert Errors.NotSupported();
+        revert Errors.EASNotSupported();
     }
 
     // ERC-734 (key registry). The adapter is not an Identity so every method reverts.
 
     function addKey(bytes32, uint256, uint256) external pure returns (bool) {
-        revert Errors.NotSupported();
+        revert Errors.EASNotSupported();
     }
 
     function removeKey(bytes32, uint256) external pure returns (bool) {
-        revert Errors.NotSupported();
+        revert Errors.EASNotSupported();
     }
 
     function getKey(bytes32) external pure returns (uint256[] memory, uint256, bytes32) {
-        revert Errors.NotSupported();
+        revert Errors.EASNotSupported();
     }
 
     function getKeyPurposes(bytes32) external pure returns (uint256[] memory) {
-        revert Errors.NotSupported();
+        revert Errors.EASNotSupported();
     }
 
     function getKeysByPurpose(uint256) external pure returns (bytes32[] memory) {
-        revert Errors.NotSupported();
+        revert Errors.EASNotSupported();
     }
 
     function keyHasPurpose(bytes32, uint256) external pure returns (bool) {
-        revert Errors.NotSupported();
+        revert Errors.EASNotSupported();
     }
 
     // ERC-735 (claim registry). The adapter holds no claims so every method reverts.
@@ -270,11 +270,11 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         pure
         returns (bytes32)
     {
-        revert Errors.NotSupported();
+        revert Errors.EASNotSupported();
     }
 
     function removeClaim(bytes32) external pure returns (bool) {
-        revert Errors.NotSupported();
+        revert Errors.EASNotSupported();
     }
 
     function getClaim(bytes32)
@@ -282,11 +282,11 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         pure
         returns (uint256, uint256, address, bytes memory, Structs.ClaimData memory, string memory)
     {
-        revert Errors.NotSupported();
+        revert Errors.EASNotSupported();
     }
 
     function getClaimIdsByTopic(uint256) external pure returns (bytes32[] memory) {
-        revert Errors.NotSupported();
+        revert Errors.EASNotSupported();
     }
 
 }
