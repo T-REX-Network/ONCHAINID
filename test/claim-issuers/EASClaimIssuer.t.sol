@@ -13,7 +13,7 @@ import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { EASClaimIssuer } from "contracts/modules/claims/EASClaimIssuer.sol";
 import { Structs } from "contracts/storage/Structs.sol";
-import { Attestation, IEAS } from "contracts/vendor/eas/IEAS.sol";
+import { Attestation } from "contracts/vendor/eas/IEAS.sol";
 
 /// @notice Coverage for the stateless EAS `ClaimIssuer` adapter. Each test targets one branch
 ///         of `isClaimValid` / `getClaimStatus` so the acceptance criteria from issue #10 map
@@ -43,10 +43,9 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         // Grant the deployer permission to call the adapter's `restricted` setters.
         vm.startPrank(deployer);
         onchainidSetup.accessManager.grantRole(ROLE_EAS_ADMIN, deployer, 0);
-        bytes4[] memory sels = new bytes4[](3);
+        bytes4[] memory sels = new bytes4[](2);
         sels[0] = EASClaimIssuer.setSchemaForTopic.selector;
         sels[1] = EASClaimIssuer.setAttester.selector;
-        sels[2] = EASClaimIssuer.setEAS.selector;
         onchainidSetup.accessManager.setTargetFunctionRole(address(adapter), sels, ROLE_EAS_ADMIN);
 
         adapter.setSchemaForTopic(TOPIC, SCHEMA);
@@ -147,41 +146,6 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         vm.prank(bob);
         vm.expectRevert();
         adapter.setAttester(attester, true);
-    }
-
-    function test_setAttester_revertsOnZero() public {
-        vm.prank(deployer);
-        vm.expectRevert(Errors.ZeroAddress.selector);
-        adapter.setAttester(address(0), true);
-    }
-
-    function test_setEAS_revertsWithoutRole() public {
-        vm.prank(bob);
-        vm.expectRevert();
-        adapter.setEAS(eas);
-    }
-
-    function test_setEAS_revertsOnZero() public {
-        vm.prank(deployer);
-        vm.expectRevert(Errors.ZeroAddress.selector);
-        adapter.setEAS(IEAS(address(0)));
-    }
-
-    /// @notice Repointing the adapter at a new EAS deployment routes all subsequent reads
-    ///         to the new instance. The prior deployment stops feeding claims.
-    function test_setEAS_repointRoutesReadsToNewInstance() public {
-        // Publish a valid attestation on the ORIGINAL EAS instance and confirm it verifies.
-        bytes32 uid = keccak256("repoint");
-        _publishValid(uid, address(aliceIdentity));
-        assertTrue(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData));
-
-        // Deploy a fresh EAS with NO attestations and repoint.
-        MockEAS freshEAS = new MockEAS();
-        vm.prank(deployer);
-        adapter.setEAS(freshEAS);
-
-        // Same uid no longer verifies because the new instance has never heard of it.
-        assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData));
     }
 
     /* ----- isClaimValid happy paths ----- */
@@ -421,7 +385,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         bytes32 uid = keccak256("full-loop");
         _publishValid(uid, address(aliceIdentity));
 
-        bytes memory sig = adapter.encodeSignature(uid);
+        bytes memory sig = _encodeUid(uid);
 
         vm.prank(alice);
         bytes32 claimId =
@@ -445,7 +409,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
     function test_fullLoop_easRevocationFlipsStoredClaim() public {
         bytes32 uid = keccak256("full-loop-revoke");
         _publishValid(uid, address(aliceIdentity));
-        bytes memory sig = adapter.encodeSignature(uid);
+        bytes memory sig = _encodeUid(uid);
 
         vm.prank(alice);
         bytes32 claimId =
@@ -464,7 +428,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
     ///         the adapter.
     function test_fullLoop_addClaim_revertsWhenAttestationMissing() public {
         bytes32 uid = keccak256("never-published");
-        bytes memory sig = adapter.encodeSignature(uid);
+        bytes memory sig = _encodeUid(uid);
 
         vm.prank(alice);
         vm.expectRevert(Errors.InvalidClaim.selector);

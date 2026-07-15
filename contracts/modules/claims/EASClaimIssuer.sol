@@ -29,8 +29,8 @@ import { Attestation, IEAS } from "../../vendor/eas/IEAS.sol";
  *         with no configured schema.
  *
  *         The IClaimIssuer `signature` bytes carry the EAS attestation UID (a bare 32-byte
- *         word). This keeps the interface compatible with ClaimsModule without changing it.
- *         Use `encodeSignature` so the packing is consistent across integrators.
+ *         word, i.e. `abi.encodePacked(uid)`). This keeps the interface compatible with
+ *         ClaimsModule without changing it.
  *
  *         Not supported in v1: off-chain EAS attestations, non-EVM linked wallets, and
  *         cross-chain EAS reads. Every method that would mutate identity or claim state
@@ -38,10 +38,10 @@ import { Attestation, IEAS } from "../../vendor/eas/IEAS.sol";
  */
 contract EASClaimIssuer is IClaimIssuer, AccessManaged {
 
-    /// @dev EAS deployment this adapter reads from. Same-chain only. Settable behind
-    ///      `restricted` so operators can point the adapter at a different EAS deployment
-    ///      (chain migration, upgraded EAS instance) without redeploying.
-    IEAS public eas;
+    /// @dev EAS deployment this adapter reads from. Same-chain only. Immutable: EAS core
+    ///      contracts are deployed once per chain by the EAS team and never change. To
+    ///      point at a different attestation source, redeploy the adapter.
+    IEAS public immutable EAS;
 
     /// @dev Global identity registry consulted to resolve linked wallets.
     IIdentityFactory public immutable FACTORY;
@@ -59,9 +59,6 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
     /// @dev Emitted when the accepted attester allowlist changes.
     event AttesterSet(address indexed attester, bool allowed);
 
-    /// @dev Emitted when the EAS instance the adapter reads from is repointed.
-    event EASSet(address indexed eas);
-
     /**
      * @param authority_ AccessManager instance backing `restricted` setters.
      * @param eas_ The EAS core contract on this chain.
@@ -70,18 +67,8 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
     constructor(address authority_, IEAS eas_, IIdentityFactory factory_) AccessManaged(authority_) {
         require(address(eas_) != address(0), Errors.ZeroAddress());
         require(address(factory_) != address(0), Errors.ZeroAddress());
-        eas = eas_;
+        EAS = eas_;
         FACTORY = factory_;
-        emit EASSet(address(eas_));
-    }
-
-    /**
-     * @notice Point the adapter at a different EAS deployment. Zero rejects.
-     */
-    function setEAS(IEAS newEAS) external restricted {
-        require(address(newEAS) != address(0), Errors.ZeroAddress());
-        eas = newEAS;
-        emit EASSet(address(newEAS));
     }
 
     /**
@@ -97,22 +84,8 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
      * @notice Add or remove an attester from the accepted set.
      */
     function setAttester(address attester, bool allowed) external restricted {
-        require(attester != address(0), Errors.ZeroAddress());
         isAttesterAllowed[attester] = allowed;
         emit AttesterSet(attester, allowed);
-    }
-
-    /**
-     * @notice Encode an EAS attestation UID into the `signature` bytes expected by
-     *         `isClaimValid`, `getClaimStatus`, and `IERC735.addClaim` when the issuer is this
-     *         adapter. Integrators should call this helper so the packing is not a source of
-     *         drift.
-     *
-     * @dev    Returns the UID as a bare 32-byte word, which matches the adapter's
-     *         `sig.length == 32` check.
-     */
-    function encodeSignature(bytes32 uid) external pure returns (bytes memory) {
-        return abi.encodePacked(uid);
     }
 
     /**
@@ -128,13 +101,13 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
     function getAttestationData(bytes calldata sig) external view returns (bytes memory) {
         if (sig.length != 32) return "";
         bytes32 uid = bytes32(sig[:32]);
-        return eas.getAttestation(uid).data;
+        return EAS.getAttestation(uid).data;
     }
 
     /**
      * @inheritdoc IClaimIssuer
-     * @dev  `sig` must be a 32-byte EAS attestation UID (see `encodeSignature`). `data` is
-     *       ignored: EAS carries its own `time` and `expirationTime`, which are the
+     * @dev  `sig` must be a 32-byte EAS attestation UID (`abi.encodePacked(uid)`). `data`
+     *       is ignored: EAS carries its own `time` and `expirationTime`, which are the
      *       authoritative time bounds.
      */
     function isClaimValid(IIdentity _identity, uint256 claimTopic, bytes calldata sig, Structs.ClaimData calldata data)
@@ -180,7 +153,7 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         bytes32 uid = bytes32(sig[:32]);
         if (uid == bytes32(0)) return ClaimStatus.BadSignature;
 
-        Attestation memory attestation = eas.getAttestation(uid);
+        Attestation memory attestation = EAS.getAttestation(uid);
         if (attestation.uid == bytes32(0)) return ClaimStatus.NotIssued;
         if (attestation.schema != schema) return ClaimStatus.NotIssued;
         if (!isAttesterAllowed[attestation.attester]) return ClaimStatus.NotIssued;
