@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
+import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
+import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
+import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
+import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
 
 /// @notice Tests for the legacy ERC-734 execute/approve queue served by KeyApprovalModule.
 ///         The identity holds the ETH; the module never keeps any after a call returns.
@@ -121,6 +125,76 @@ contract ExecutionsTest is OnchainIDSetup {
         assertEq(address(aliceIdentity).balance, 5 ether, "identity keeps the 5 ETH");
         assertEq(kam.balance, 0, "module empty");
         assertEq(address(bad).balance, 0, "reverting target received nothing");
+    }
+
+    // -----------------------------------------------------------------------
+    // PROPOSER purpose: queue gate
+    // -----------------------------------------------------------------------
+
+    /// @dev Add `who` as a PROPOSER key on alice's identity.
+    function _grantProposer(address who) internal {
+        vm.prank(alice);
+        aliceIdentity.addKeyWithData(
+            ClaimSignerHelper.addressToKey(who), KeyPurposes.PROPOSER, KeyTypes.ECDSA, abi.encodePacked(who), ""
+        );
+    }
+
+    /// @notice A caller with no key cannot queue an execution.
+    function test_execute_revertWhenCallerHasNoKey() public {
+        address stranger = makeAddr("strangerNoKey");
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(Errors.SenderCannotPropose.selector, stranger));
+        IKeyExecutor(address(aliceIdentity)).execute(address(0xBEEF), 0, "");
+    }
+
+    /// @notice A PROPOSER-only key can queue, but the request stays pending: PROPOSER
+    ///         never satisfies the auto-approve ladder.
+    function test_execute_proposerQueuesPendingRequest() public {
+        address proposer = makeAddr("proposer");
+        _grantProposer(proposer);
+
+        vm.prank(proposer);
+        uint256 id = IKeyExecutor(address(aliceIdentity)).execute(address(0xBEEF), 0, "");
+
+        KeyApprovalModule.Execution memory exec =
+            onchainidSetup.keyApprovalModule.getExecutionData(address(aliceIdentity), id);
+        assertEq(exec.to, address(0xBEEF));
+        assertFalse(exec.approved, "PROPOSER alone must not auto-approve");
+        assertFalse(exec.executed, "PROPOSER alone must not auto-execute");
+    }
+
+    /// @notice A PROPOSER-only key cannot self-approve its pending request: the approve
+    ///         ladder still requires ACTION (external) or MANAGEMENT (self).
+    function test_execute_proposerCannotSelfApprove() public {
+        address proposer = makeAddr("proposer2");
+        _grantProposer(proposer);
+
+        vm.prank(proposer);
+        uint256 id = IKeyExecutor(address(aliceIdentity)).execute(address(0xBEEF), 0, "");
+
+        vm.prank(proposer);
+        vm.expectRevert(Errors.SenderDoesNotHaveActionKey.selector);
+        IKeyExecutor(address(aliceIdentity)).approve(id, true);
+    }
+
+    /// @notice A PROPOSER-queued request runs after a purpose-appropriate approver
+    ///         (ACTION for external targets) signs off.
+    function test_execute_proposerQueuedRequestRunsAfterActionApproval() public {
+        address proposer = makeAddr("proposer3");
+        _grantProposer(proposer);
+
+        ETHReceiver receiver = new ETHReceiver();
+        vm.deal(address(aliceIdentity), 1 ether);
+
+        vm.prank(proposer);
+        uint256 id = IKeyExecutor(address(aliceIdentity)).execute(address(receiver), 1 ether, "");
+
+        // david is ACTION on alice's identity; approval dispatches the queued request.
+        vm.prank(david);
+        IKeyExecutor(address(aliceIdentity)).approve(id, true);
+
+        assertEq(address(receiver).balance, 1 ether, "receiver paid out");
+        assertEq(address(aliceIdentity).balance, 0, "identity drained");
     }
 
 }

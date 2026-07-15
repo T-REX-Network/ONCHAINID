@@ -88,9 +88,9 @@ library Errors {
     error WalletNotLinkedToIdentity(bytes wallet);
 
     /// @notice Reverts when the caller of {confirmCrossChainLink} does not match the
-    ///         identity recorded in the pending proposal. `expected` is the caller;
-    ///         `actual` is the recorded identity, or `address(0)` if no proposal exists.
-    error PendingCrossChainLinkIdentityMismatch(bytes wallet, address expected, address actual);
+    ///         identity recorded in the pending proposal. `recorded` is `address(0)`
+    ///         if no proposal exists for the wallet.
+    error PendingCrossChainLinkIdentityMismatch(bytes wallet, address caller, address recorded);
 
     /// @notice Reverts when an inbound cross-chain proposal targets a wallet that
     ///         already has a registry entry (active or revoked). Sticky binding
@@ -102,6 +102,10 @@ library Errors {
     ///         the bridge call itself, so `sender` and `wallet` must be the same
     ///         interoperable address.
     error CrossChainSenderWalletMismatch(bytes sender, bytes wallet);
+
+    /// @notice Reverts when a cross-chain link proposal is delivered or confirmed
+    ///         past its `expiry`.
+    error PendingCrossChainLinkExpired(uint256 expiry);
 
     /* ----- Verifier ----- */
 
@@ -128,6 +132,29 @@ library Errors {
     /// @notice The claim already exists.
     error ClaimAlreadyRevoked();
 
+    /* ----- ClaimsModule trusted-issuer path ----- */
+
+    /// @notice Reverts when {ClaimsModule.addClaimByTrustedIssuer} is called by a wallet
+    ///         that the factory does not resolve to any identity. The trusted-issuer path
+    ///         requires the caller wallet to be a linked account on a factory-deployed
+    ///         identity.
+    error CallerNotLinkedToFactoryIdentity(address caller);
+
+    /// @notice Reverts when the claim's declared `issuer` field does not match the
+    ///         identity the caller wallet resolves to. A trusted issuer cannot ship a
+    ///         claim attributed to a different issuer.
+    error DeclaredIssuerMismatch(address declaredIssuer, address resolvedIdentity);
+
+    /// @notice Reverts when the resolved issuer identity is not of type
+    ///         {IdentityTypes.CLAIM_ISSUER}. The trusted-issuer path is reserved for
+    ///         identities deployed under the role-gated CLAIM_ISSUER type so a high
+    ///         reputation score on another type cannot grant claim-write capability.
+    error IdentityNotClaimIssuerType(address identity);
+
+    /// @notice Reverts when the resolved CLAIM_ISSUER identity's reputation score is
+    ///         below the consumer's claim-add threshold.
+    error ReputationBelowClaimAddThreshold(address identity, uint256 score, uint256 threshold);
+
     /* ----- Identity ----- */
 
     /// @notice Interacting with the library contract is forbidden.
@@ -141,6 +168,10 @@ library Errors {
 
     /// @notice The sender does not have the action key.
     error SenderDoesNotHaveActionKey();
+
+    /// @notice The caller holds no key on the target identity that authorizes proposing an
+    ///         execution. PROPOSER, ACTION, CLAIM_SIGNER, CLAIM_ADDER, or MANAGEMENT works.
+    error SenderCannotPropose(address sender);
 
     /// @notice The initial key was already setup.
     error InitialKeyAlreadySetup();

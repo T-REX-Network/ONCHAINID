@@ -764,7 +764,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         uint256 expiredAt = block.timestamp - 1;
         bytes memory payload = _crossChainPayload(solanaEnv, address(aliceIdentity), expiredAt);
 
-        vm.expectRevert(abi.encodeWithSelector(Errors.ExpiredSignature.selector, expiredAt));
+        vm.expectRevert(abi.encodeWithSelector(Errors.PendingCrossChainLinkExpired.selector, expiredAt));
         gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(3)), solanaEnv, payload);
     }
 
@@ -826,6 +826,48 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
         vm.expectRevert(abi.encodeWithSelector(Errors.CrossChainSenderWalletMismatch.selector, attackerEnv, victimEnv));
         gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(7)), attackerEnv, payload);
+    }
+
+    /// @notice An inbound proposal that names an identity this factory never deployed
+    ///         is rejected. Prevents a compromised gateway from staging proposals
+    ///         against arbitrary contracts that happen to satisfy the confirm caller
+    ///         check by other means.
+    function test_crossChain_processMessageRejectsNonFactoryIdentity() public {
+        MockERC7786Gateway gateway = _deployTrustedGateway();
+        bytes memory solanaEnv = _nonEvmEnvelope(makeAddr("solanaSignerOrphan"));
+        address stranger = makeAddr("nonFactoryIdentity");
+        uint256 expiry = block.timestamp + 1 hours;
+        bytes memory payload = _crossChainPayload(solanaEnv, stranger, expiry);
+
+        vm.expectRevert(abi.encodeWithSelector(Errors.NotFactoryIdentity.selector, stranger));
+        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(8)), solanaEnv, payload);
+    }
+
+    /// @notice A proposal delivered while fresh but confirmed after its expiry is
+    ///         rejected. Distinct from the deliver-time expiry check — this covers
+    ///         the identity sitting on a pending proposal too long.
+    function test_crossChain_confirmAfterExpiryRejected() public {
+        MockERC7786Gateway gateway = _deployTrustedGateway();
+        bytes memory solanaEnv = _nonEvmEnvelope(makeAddr("solanaSignerLate"));
+        uint256 expiry = block.timestamp + 1 hours;
+        bytes memory payload = _crossChainPayload(solanaEnv, address(aliceIdentity), expiry);
+        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(9)), solanaEnv, payload);
+
+        // Skip past the proposal's expiry; the confirm-side check must trip.
+        vm.warp(expiry + 1);
+
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(abi.encodeWithSelector(Errors.PendingCrossChainLinkExpired.selector, expiry));
+        onchainidSetup.idFactory.confirmCrossChainLink(solanaEnv);
+    }
+
+    /// @notice Reading a pending link for a wallet that was never proposed returns the
+    ///         zero record. Locks in the read shape for off-chain indexers.
+    function test_getPendingCrossChainLink_unknownWalletReturnsZero() public {
+        bytes memory unknownEnv = _nonEvmEnvelope(makeAddr("neverProposed"));
+        (address id, uint256 exp) = onchainidSetup.idFactory.getPendingCrossChainLink(unknownEnv);
+        assertEq(id, address(0));
+        assertEq(exp, 0);
     }
 
     // ============ createIdentityFor with new identity types ============

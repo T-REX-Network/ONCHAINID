@@ -92,7 +92,10 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         ///      anyone else are rejected. Manage via {setTrustedGateway}.
         mapping(address gateway => bool trusted) trustedGateways;
         /// @dev Cross-chain link proposals awaiting identity-side confirmation.
-        ///      Keyed by the wallet envelope bytes. Cleared on {confirmCrossChainLink}.
+        ///      Keyed by the wallet envelope bytes rather than `_walletKey` because
+        ///      this map never participates in `accounts[identity]` enumeration
+        ///      (which requires `EnumerableSet.Bytes32Set`). Cleared on
+        ///      {confirmCrossChainLink}.
         mapping(bytes wallet => PendingLink proposal) pendingLinks;
     }
 
@@ -243,14 +246,13 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // rejected. The identity reaches us via its own execution path, so a
         // MANAGEMENT key on the identity is what actually signs this off.
         PendingLink memory pending = _storage().pendingLinks[account];
-        // `pending.identity == address(0)` when no proposal exists, which can never
-        // equal `msg.sender`, so a single equality check covers both the missing-
-        // proposal and wrong-identity cases.
+        // Missing proposal: `pending.identity == address(0)` never equals
+        // `msg.sender`, so one equality check covers both cases.
         require(
             pending.identity == msg.sender,
             Errors.PendingCrossChainLinkIdentityMismatch(account, msg.sender, pending.identity)
         );
-        require(block.timestamp <= pending.expiry, Errors.ExpiredSignature(pending.expiry));
+        require(block.timestamp <= pending.expiry, Errors.PendingCrossChainLinkExpired(pending.expiry));
 
         delete _storage().pendingLinks[account];
         _linkAccount(account, msg.sender);
@@ -294,7 +296,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
             keccak256(sender) == keccak256(walletEnvelope),
             Errors.CrossChainSenderWalletMismatch(sender, walletEnvelope)
         );
-        require(block.timestamp <= expiry, Errors.ExpiredSignature(expiry));
+        require(block.timestamp <= expiry, Errors.PendingCrossChainLinkExpired(expiry));
         require(_storage().isFactoryIdentity[identity], Errors.NotFactoryIdentity(identity));
 
         // Sticky binding still applies: a wallet that is already linked or
@@ -305,6 +307,9 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
             Errors.WalletAlreadyHasEntry(walletEnvelope)
         );
 
+        // `pendingLinks[walletEnvelope]` is a single slot per wallet; the freshest
+        // proposal is the one that can be confirmed. Safe to overwrite because the
+        // status check above rejects any wallet that is already linked or revoked.
         _storage().pendingLinks[walletEnvelope] = PendingLink({ identity: identity, expiry: expiry });
         emit PendingCrossChainLinkProposed(walletEnvelope, identity, expiry);
     }

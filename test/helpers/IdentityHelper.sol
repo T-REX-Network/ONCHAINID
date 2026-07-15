@@ -20,6 +20,7 @@ import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { ClaimsModule } from "contracts/modules/claims/ClaimsModule.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
 import { ERC7579Signature } from "contracts/modules/validators/ERC7579Signature.sol";
+import { ReputationRegistry } from "contracts/reputation/ReputationRegistry.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 
 /// @notice Helper library for deploying OnchainID Identity Factory infrastructure
@@ -35,6 +36,7 @@ library IdentityHelper {
         UpgradeableBeacon beacon;
         AccessManager accessManager;
         IdentityFactory idFactory;
+        ReputationRegistry reputationRegistry;
         KeyApprovalModule keyApprovalModule;
         ERC7579Signature signatureValidator;
         ClaimsModule claimsModule;
@@ -50,15 +52,23 @@ library IdentityHelper {
     ///        AccessManager).
     /// @return setup Struct containing all deployed contracts
     function deployFactory(address managementKey) internal returns (OnchainIDSetup memory setup) {
-        // Deploy module singletons
+        // Stateless singletons that depend on nothing else can go first.
         setup.signatureValidator = new ERC7579Signature();
         setup.keyApprovalModule = new KeyApprovalModule();
-        setup.claimsModule = new ClaimsModule();
 
+        // Identity implementation + beacon + AccessManager + factory. The factory needs
+        // the AccessManager; nothing later in this function reaches back into the factory
+        // for state, so this ordering is the minimum-coupling shape.
         setup.identityImplementation = new Identity(false);
         setup.beacon = new UpgradeableBeacon(address(setup.identityImplementation), managementKey);
         setup.accessManager = new AccessManager(managementKey);
         setup.idFactory = new IdentityFactory(address(setup.beacon), address(setup.accessManager));
+
+        // Reputation registry needs the factory (for the lazy default-tier fallback
+        // factory-membership check). ClaimsModule needs both the factory and registry
+        // for the trusted-issuer addClaim path.
+        setup.reputationRegistry = new ReputationRegistry(address(setup.accessManager), address(setup.idFactory));
+        setup.claimsModule = new ClaimsModule(address(setup.idFactory), address(setup.reputationRegistry));
 
         // Register every standard type with PUBLIC_ROLE and selfDeployable = true for
         // a permissive test default.
@@ -84,7 +94,7 @@ library IdentityHelper {
         pure
         returns (Structs.ModuleInstall[] memory installs)
     {
-        installs = new Structs.ModuleInstall[](14);
+        installs = new Structs.ModuleInstall[](15);
         // ----- KeyApprovalModule: 1 executor + 3 fallbacks -----
         installs[0] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_EXECUTOR, module: keyApprovalModule, initData: "", purpose: KeyPurposes.MANAGEMENT
@@ -164,6 +174,12 @@ library IdentityHelper {
             initData: abi.encodePacked(IClaimIssuer.addClaimTo.selector),
             purpose: 0
         });
+        installs[14] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: claimsModule,
+            initData: abi.encodePacked(ClaimsModule.addClaimByTrustedIssuer.selector),
+            purpose: 0
+        });
     }
 
     /// @notice Deploys an Identity through a standalone BeaconProxy and installs an
@@ -186,7 +202,16 @@ library IdentityHelper {
         UpgradeableBeacon b = new UpgradeableBeacon(address(impl), initialManagementKey);
 
         signatureValidator = new ERC7579Signature();
-        ClaimsModule claimsModule = new ClaimsModule();
+
+        // Minimal AccessManager + IdentityFactory + ReputationRegistry so the
+        // ClaimsModule constructor has real addresses to bind to. These identities
+        // do not exercise the trusted-issuer path, so the addresses can be local
+        // throwaways. They are real contracts so the constructor's zero-address
+        // checks pass.
+        AccessManager am = new AccessManager(initialManagementKey);
+        IdentityFactory localFactory = new IdentityFactory(address(b), address(am));
+        ReputationRegistry localRegistry = new ReputationRegistry(address(am), address(localFactory));
+        ClaimsModule claimsModule = new ClaimsModule(address(localFactory), address(localRegistry));
 
         // Bundle the management key + validator + ClaimsModule fallback surface into a
         // single `initialize` call. Identity now bootstraps atomically inside the proxy

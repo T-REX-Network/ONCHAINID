@@ -9,15 +9,19 @@ import {
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import { SignatureChecker } from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
+import { InteroperableAddress } from "@openzeppelin/contracts/utils/draft-InteroperableAddress.sol";
 import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
+import { IIdentityFactory } from "../../factory/IIdentityFactory.sol";
 import { IClaimIssuer } from "../../interface/IClaimIssuer.sol";
 import { IERC734 } from "../../interface/IERC734.sol";
 import { IERC735 } from "../../interface/IERC735.sol";
 import { IIdentity } from "../../interface/IIdentity.sol";
 import { Errors } from "../../libraries/Errors.sol";
 import { hashAddress } from "../../libraries/Hashing.sol";
+import { IdentityTypes } from "../../libraries/IdentityTypes.sol";
 import { KeyPurposes } from "../../libraries/KeyPurposes.sol";
+import { IReputationRegistry } from "../../reputation/IReputationRegistry.sol";
 import { Structs } from "../../storage/Structs.sol";
 
 /**
@@ -73,6 +77,14 @@ contract ClaimsModule is IERC7579Module, IERC735 {
     /// @dev Storage shared across all identities that install this module.
     mapping(address => AccountState) private _state;
 
+    /// @notice Factory used by {addClaimByTrustedIssuer} to resolve a caller wallet to
+    ///         its issuer identity and to confirm that identity came from the factory.
+    IIdentityFactory public immutable factory;
+
+    /// @notice Registry consulted by {addClaimByTrustedIssuer} to confirm the issuer
+    ///         identity meets the global claim-add threshold.
+    IReputationRegistry public immutable reputationRegistry;
+
     /// @dev EIP-712 typehash for `Claim`. The nested `ClaimData` type is appended per
     ///      the EIP-712 rule for nested struct types (alphabetical).
     bytes32 internal constant _CLAIM_TYPEHASH = keccak256(
@@ -91,6 +103,17 @@ contract ClaimsModule is IERC7579Module, IERC735 {
 
     /// @notice Emitted when `addClaimTo` successfully writes a claim to another identity.
     event ClaimAddedTo(address indexed identity, uint256 topic, bytes signature, Structs.ClaimData data);
+
+    /// @param identityFactory Factory used to resolve a caller wallet to its issuer
+    ///                        identity in {addClaimByTrustedIssuer}. Reverts on zero.
+    /// @param registry Reputation registry consulted by {addClaimByTrustedIssuer}.
+    ///                 Reverts on zero.
+    constructor(address identityFactory, address registry) {
+        require(identityFactory != address(0), Errors.ZeroAddress());
+        require(registry != address(0), Errors.ZeroAddress());
+        factory = IIdentityFactory(identityFactory);
+        reputationRegistry = IReputationRegistry(registry);
+    }
 
     /**
      * @inheritdoc IERC7579Module
@@ -133,41 +156,105 @@ contract ClaimsModule is IERC7579Module, IERC735 {
         string memory _uri
     ) public override returns (bytes32 claimRequestId) {
         // When reached via fallback, msg.sender is the Identity and _msgSender() is the off-chain caller.
-        address account = msg.sender;
         // CLAIM_SIGNER or CLAIM_ADDER can add a claim. Self-issued claims still need a real signature
-        // (see the `isClaimValid` call below), so a CLAIM_ADDER cannot fabricate self-attestations.
+        // (see _addClaim's isClaimValid check), so a CLAIM_ADDER cannot fabricate self-attestations.
         _requireClaimKey(
-            account,
+            msg.sender,
             _msgSender(),
             /* onlyClaimSigner */
             false
         );
+        return _addClaim(msg.sender, _topic, _scheme, _issuer, _signature, _data, _uri);
+    }
 
-        // Always ask the issuer to confirm — self-issued claims included. For external issuers
+    /**
+     * @notice Add a claim without holding a CLAIM_ADDER / CLAIM_SIGNER key on the target
+     *         identity, by proving the caller is a trusted issuer in the {ReputationRegistry}.
+     *
+     *         Trust check:
+     *           1. The caller's wallet resolves through the factory to a non-zero issuer
+     *              identity (i.e. the wallet is a linked account on a factory-deployed
+     *              identity).
+     *           2. `_issuer` equals that resolved identity. A trusted issuer cannot ship
+     *              a claim attributed to a different issuer.
+     *           3. The issuer's score in the registry meets the global claim-add threshold.
+     *
+     *         When all three hold the rest of the flow is identical to {addClaim}: the
+     *         issuer's `isClaimValid` confirms the signature, the storage write happens,
+     *         and `ClaimAdded` / `ClaimChanged` fires.
+     *
+     *         Auth is intentionally tighter than {addClaim} in one direction (no holder
+     *         key needed) and equal in another (signature must still verify). Removal is
+     *         not exposed via this path; only adds.
+     */
+    function addClaimByTrustedIssuer(
+        uint256 _topic,
+        uint256 _scheme,
+        address _issuer,
+        bytes memory _signature,
+        Structs.ClaimData memory _data,
+        string memory _uri
+    ) public returns (bytes32 claimRequestId) {
+        _requireTrustedIssuer(_msgSender(), _issuer);
+        return _addClaim(msg.sender, _topic, _scheme, _issuer, _signature, _data, _uri);
+    }
+
+    /// @dev Trusted-issuer gate. Four conditions, all required:
+    ///        1. The caller wallet resolves through the factory to a non-zero issuer
+    ///           identity (i.e. it is a linked account on a factory-deployed identity).
+    ///        2. That identity equals the claim's declared issuer (issuer-bound rule).
+    ///        3. That identity self-declares type `CLAIM_ISSUER`. Without this, any
+    ///           identity that happens to be scored above the threshold (e.g. an
+    ///           INDIVIDUAL elevated by the manager) could write claims silently.
+    ///        4. Its reputation in the registry meets the global claim-add threshold.
+    ///      `reputationOf` already returns `0` for non-factory identities, so the
+    ///      score check implicitly re-confirms factory membership.
+    function _requireTrustedIssuer(address caller, address expectedIssuer) internal view {
+        address callerIdentity = factory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, caller));
+        require(callerIdentity != address(0), Errors.CallerNotLinkedToFactoryIdentity(caller));
+        require(expectedIssuer == callerIdentity, Errors.DeclaredIssuerMismatch(expectedIssuer, callerIdentity));
+        require(
+            IIdentity(callerIdentity).getIdentityType() == IdentityTypes.CLAIM_ISSUER,
+            Errors.IdentityNotClaimIssuerType(callerIdentity)
+        );
+        IReputationRegistry registry = reputationRegistry;
+        uint128 score = registry.reputationOf(callerIdentity);
+        uint128 threshold = registry.claimAddThreshold();
+        require(score >= threshold, Errors.ReputationBelowClaimAddThreshold(callerIdentity, score, threshold));
+    }
+
+    /// @dev Shared write path for `addClaim` and `addClaimByTrustedIssuer`. The issuer-side
+    ///      `isClaimValid` is called unconditionally; the storage write and event match
+    ///      the standard `addClaim` body.
+    function _addClaim(
+        address account,
+        uint256 topic,
+        uint256 scheme,
+        address issuer,
+        bytes memory signature,
+        Structs.ClaimData memory data,
+        string memory uri
+    ) internal returns (bytes32 claimId) {
+        // Always ask the issuer to confirm, self-issued claims included. For external issuers
         // this is a cross-contract round trip. For self-issued claims the call routes back into
         // this module's `_getClaimStatus` on the same identity, enforcing the exact same rules
         // (CLAIM_SIGNER on issuer, signature valid for the digest, time bounds, digest not revoked).
-        require(
-            IClaimIssuer(_issuer).isClaimValid(IIdentity(account), _topic, _signature, _data), Errors.InvalidClaim()
-        );
+        require(IClaimIssuer(issuer).isClaimValid(IIdentity(account), topic, signature, data), Errors.InvalidClaim());
 
         // Claim id is `(issuer, topic)`. Adding the same id again overwrites the previous record.
-        // The previous record is NOT counted as revoked — overwriting is an update, not a removal.
+        // The previous record is NOT counted as revoked: overwriting is an update, not a removal.
         AccountState storage s = _state[account];
-        bytes32 claimId = keccak256(abi.encode(_issuer, _topic));
-        s.claims[claimId] = Structs.Claim({
-            topic: _topic, scheme: _scheme, issuer: _issuer, signature: _signature, data: _data, uri: _uri
-        });
+        claimId = keccak256(abi.encode(issuer, topic));
+        s.claims[claimId] =
+            Structs.Claim({ topic: topic, scheme: scheme, issuer: issuer, signature: signature, data: data, uri: uri });
 
         // `EnumerableSet.add` returns true on first insert (emit ClaimAdded);
         // false when the id was already present (emit ClaimChanged).
-        if (s.claimsByTopic[_topic].add(claimId)) {
-            emit ClaimAdded(claimId, _topic, _scheme, _issuer, _signature, _data, _uri);
+        if (s.claimsByTopic[topic].add(claimId)) {
+            emit ClaimAdded(claimId, topic, scheme, issuer, signature, data, uri);
         } else {
-            emit ClaimChanged(claimId, _topic, _scheme, _issuer, _signature, _data, _uri);
+            emit ClaimChanged(claimId, topic, scheme, issuer, signature, data, uri);
         }
-
-        return claimId;
     }
 
     /**
