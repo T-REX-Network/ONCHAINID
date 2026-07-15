@@ -18,12 +18,15 @@ an immutable, so both contracts must be etched at their mainnet addresses for
 
 ## Refresh
 
-Sourced from Sourcify:
+Sourced from the canonical Ethereum mainnet deployment. Verified against
+Etherscan's contract page for [EAS](https://etherscan.io/address/0xA1207F3BBa224E2c9c3c6D5aF63D0eb1582Ce587#code).
+
+To refresh, read the runtime bytecode straight from mainnet and store it as
+raw binary:
 
 ```
-curl "https://sourcify.dev/server/v2/contract/1/<address>?fields=runtimeBytecode.onchainBytecode" \
-  | jq -r '.runtimeBytecode.onchainBytecode' \
-  | sed 's/^0x//' | tr -d '\n' > <name>.bytecode
+cast code <address> --rpc-url <mainnet_rpc> \
+  | sed 's/^0x//' | tr -d '\n' | xxd -r -p > <name>.bytecode
 ```
 
 The deployed EAS contracts are non-upgradable, so these files rarely need
