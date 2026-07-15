@@ -100,7 +100,7 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
      */
     function getAttestationData(bytes calldata sig) external view returns (bytes memory) {
         if (sig.length != 32) return "";
-        bytes32 uid = bytes32(sig[:32]);
+        bytes32 uid = bytes32(sig);
         return EAS.getAttestation(uid).data;
     }
 
@@ -150,7 +150,7 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         if (schema == bytes32(0)) return ClaimStatus.NotIssued;
 
         if (sig.length != 32) return ClaimStatus.BadSignature;
-        bytes32 uid = bytes32(sig[:32]);
+        bytes32 uid = bytes32(sig);
         if (uid == bytes32(0)) return ClaimStatus.BadSignature;
 
         Attestation memory attestation = EAS.getAttestation(uid);
