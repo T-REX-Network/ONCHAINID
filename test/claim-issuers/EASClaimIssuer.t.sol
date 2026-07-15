@@ -3,6 +3,7 @@ pragma solidity ^0.8.27;
 
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 import { MockEAS } from "../mocks/MockEAS.sol";
+import { IERC5267 } from "@openzeppelin/contracts/interfaces/IERC5267.sol";
 import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import { InteroperableAddress } from "@openzeppelin/contracts/utils/draft-InteroperableAddress.sol";
 import { IIdentityFactory } from "contracts/factory/IIdentityFactory.sol";
@@ -79,8 +80,9 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         );
     }
 
-    /// @dev EIP-712 helpers to link a wallet to alice's identity, mirroring the pattern used
-    ///      in IdentityFactory.t.sol.
+    /// @dev EIP-712 helper to build a `LinkAccount` digest for linking a wallet to an
+    ///      identity. Reads the domain from the factory via EIP-5267 so this test does not
+    ///      hardcode the factory's name/version.
     bytes32 internal constant _LINK_ACCOUNT_TYPEHASH =
         keccak256("LinkAccount(bytes account,address identity,uint256 nonce,uint256 expiry)");
 
@@ -89,13 +91,16 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         view
         returns (bytes32)
     {
+        (, string memory name, string memory version, uint256 chainId, address verifyingContract,,) =
+            IERC5267(address(onchainidSetup.idFactory)).eip712Domain();
+
         bytes32 domain = keccak256(
             abi.encode(
                 keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
-                keccak256(bytes("IdentityFactory")),
-                keccak256(bytes("1")),
-                block.chainid,
-                address(onchainidSetup.idFactory)
+                keccak256(bytes(name)),
+                keccak256(bytes(version)),
+                chainId,
+                verifyingContract
             )
         );
         bytes32 structHash = keccak256(abi.encode(_LINK_ACCOUNT_TYPEHASH, keccak256(account), identity, nonce, expiry));
