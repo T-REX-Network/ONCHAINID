@@ -15,15 +15,33 @@ import { Structs } from "../storage/Structs.sol";
 ///
 ///         {setIdentityTypePolicy} itself is `restricted` (resolved by the AM).
 ///
-///         Wallets are addressed as `bytes`. EVM addresses pass `abi.encodePacked(addr)`.
-///         ERC-7913 signers (passkeys, WebAuthn, custom verifiers) pass their raw signer
-///         blob. The registry treats signers and wallets the same; whatever can sign for
-///         an identity can also be linked as a wallet on it.
+///         Wallets are addressed as ERC-7930 interoperable address envelopes (`bytes`).
+///         EVM wallets are wrapped via OZ `InteroperableAddress.formatEvmV1(chainId, addr)`.
+///         Non-EVM wallets (Solana, Bitcoin, Stellar, ...) supply the envelope for their
+///         own chain; ERC-7913 signers (passkeys, WebAuthn, custom verifiers) are linked
+///         the same way once wrapped into an envelope. The registry treats signers and
+///         wallets the same; whatever can sign for an identity can also be linked as a
+///         wallet on it.
 ///
-///         Bindings are sticky: once linked, a wallet stays bound to that identity.
-///         Revocation flips the status to `Revoked` permanently. Tokens share the same
-///         keyspace as wallets: an ASSET identity's auto-linked wallet is the token,
-///         looked up via `getIdentity(bytes)` or `getAccounts(identity)[0]`.
+///         Proof of control for the wallet being linked depends on the wallet's chain.
+///         For EVM and ERC-7913 signers, {linkAccount} runs the signature check on-chain
+///         via `SignatureChecker`. For non-EVM wallets, the wallet proves control on its
+///         native chain and the proof is relayed through an ERC-7786 cross-chain message;
+///         the named identity then calls {confirmCrossChainLink} on this chain. Both
+///         halves (wallet control + identity ownership) are required, with one inbound
+///         message.
+///
+///         Bindings are sticky: once linked, a wallet stays bound to that identity, even
+///         after revocation. Revocation flips the status to `Revoked` and the wallet can
+///         never be relinked to any identity. The wallet -> identity record stays
+///         on-chain so compliance modules can resolve historical ownership.
+///         Token recovery for tokens still sitting in a revoked wallet is the policy of
+///         the compliance / token modules, not this registry; ONCHAINID only guarantees
+///         the link is visible and immutable.
+///
+///         Tokens share the same keyspace as wallets: an ASSET identity's auto-linked
+///         wallet is the token, looked up via `getIdentity(bytes)` or
+///         `getAccounts(identity)[0]`.
 interface IIdentityFactory {
 
     /// @notice Lifecycle state of a wallet entry. `None` means "never seen" and is
@@ -48,6 +66,17 @@ interface IIdentityFactory {
     ///         gates {createIdentity}: true allows self-deploy, false reserves the type
     ///         for {createIdentityFor}.
     event IdentityTypePolicySet(uint256 indexed identityType, uint64 indexed roleId, bool selfDeployable);
+
+    /// @notice Emitted when an inbound ERC-7786 message has staged a wallet -> identity
+    ///         binding awaiting identity-side confirmation. The link is not active yet.
+    event PendingCrossChainLinkProposed(bytes account, address indexed identity, uint256 expiry);
+
+    /// @notice Emitted when an identity confirms a pending cross-chain proposal and the
+    ///         wallet becomes active.
+    event CrossChainLinkConfirmed(bytes account, address indexed identity);
+
+    /// @notice Emitted when admin adds or removes an authorized ERC-7786 gateway.
+    event TrustedGatewaySet(address indexed gateway, bool trusted);
 
     /// @notice Self-deploy. Caller is the account being deployed for and is auto-linked
     ///         as the new identity's first wallet. Gated per type by `selfDeployable`:
@@ -82,13 +111,13 @@ interface IIdentityFactory {
     /// @notice Read the per-type policy. `roleId == 0` means the type is unregistered.
     function getIdentityTypePolicy(uint256 _identityType) external view returns (uint64 roleId, bool selfDeployable);
 
-    /// @notice Link a wallet (signer bytes) to the calling identity. The wallet
-    ///         authorizes the link via an EIP-712 `LinkAccount` signature. Supports
-    ///         EOAs, ERC-1271 smart wallets, and ERC-7913 verifiers (passkeys, etc.)
-    ///         uniformly via `SignatureChecker`.
+    /// @notice Link a wallet to the calling identity. The wallet authorizes the link via
+    ///         an EIP-712 `LinkAccount` signature. Supports EOAs, ERC-1271 smart wallets,
+    ///         and ERC-7913 verifiers (passkeys, etc.) uniformly via `SignatureChecker`.
     ///
-    /// @param account signer bytes. `abi.encodePacked(address)` for EOAs and ERC-1271
-    ///         smart wallets, raw ERC-7913 signer blob for passkeys / custom verifiers.
+    /// @param account ERC-7930 interoperable address envelope. EVM wallets are wrapped
+    ///         via OZ `InteroperableAddress.formatEvmV1(chainId, addr)`. Non-EVM wallets
+    ///         supply the envelope for their own chain. Malformed envelopes revert.
     /// @param signature EIP-712 signature produced by `account` over
     ///         `LinkAccount(bytes account,address identity,uint256 nonce,uint256 expiry)`.
     /// @param nonce current nonce for `account` (see {nonceForAccount}).
@@ -101,6 +130,31 @@ interface IIdentityFactory {
     ///         remains on-chain; status flips to `Revoked`. A revoked wallet can never
     ///         be re-linked (terminal revocation).
     function revokeAccount(bytes calldata account) external;
+
+    /// @notice Confirm a cross-chain link previously proposed via an authenticated
+    ///         ERC-7786 message. Caller must be the identity named in the proposal —
+    ///         that's the identity-ownership half of the proof. The wallet-control
+    ///         half came from the inbound message. After this call the wallet is
+    ///         linked with the same sticky-binding rules as any EVM-side link.
+    function confirmCrossChainLink(bytes calldata account) external;
+
+    /// @notice Read a pending cross-chain proposal. Returns (address(0), 0) when no
+    ///         proposal is staged for `account`.
+    function getPendingCrossChainLink(bytes calldata account) external view returns (address identity, uint256 expiry);
+
+    /// @notice Add or remove an authorized ERC-7786 gateway. Inbound messages from any
+    ///         non-trusted address are rejected by {receiveMessage}. `restricted` via
+    ///         the AM so the trust surface is operated by the same admin role as the
+    ///         rest of the factory.
+    ///
+    ///         Removing a gateway blocks future inbound messages but does not purge
+    ///         pending links it already staged. Operators should audit
+    ///         {getPendingCrossChainLink} and treat entries proposed via the removed
+    ///         gateway as suspect.
+    function setTrustedGateway(address gateway, bool trusted) external;
+
+    /// @notice Read whether an address is currently a trusted ERC-7786 gateway.
+    function isTrustedGateway(address gateway) external view returns (bool);
 
     /// @notice Resolve a wallet to its bound identity. Returns `address(0)` when the
     ///         wallet's status is not `Active` (never linked, or revoked).
@@ -116,7 +170,8 @@ interface IIdentityFactory {
     /// @notice Read the current lifecycle status of a wallet entry.
     function getAccountStatus(bytes calldata account) external view returns (AccountStatus);
 
-    /// @notice Enumerate the active wallets currently linked to `identity`.
+    /// @notice Enumerate the active wallets currently linked to `identity`. Each entry
+    ///         is the ERC-7930 envelope that was used to link the wallet.
     function getAccounts(address identity) external view returns (bytes[] memory);
 
     /// @notice Paginated variant of {getAccounts}.

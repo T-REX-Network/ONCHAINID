@@ -9,6 +9,7 @@ import {
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import { SignatureChecker } from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
+import { InteroperableAddress } from "@openzeppelin/contracts/utils/draft-InteroperableAddress.sol";
 import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 import { IIdentityFactory } from "../../factory/IIdentityFactory.sol";
@@ -209,7 +210,7 @@ contract ClaimsModule is IERC7579Module, IERC735 {
     ///      `reputationOf` already returns `0` for non-factory identities, so the
     ///      score check implicitly re-confirms factory membership.
     function _requireTrustedIssuer(address caller, address expectedIssuer) internal view {
-        address callerIdentity = factory.getIdentity(abi.encodePacked(caller));
+        address callerIdentity = factory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, caller));
         require(callerIdentity != address(0), Errors.CallerNotLinkedToFactoryIdentity(caller));
         require(expectedIssuer == callerIdentity, Errors.DeclaredIssuerMismatch(expectedIssuer, callerIdentity));
         require(
