@@ -2,7 +2,14 @@
 pragma solidity ^0.8.27;
 
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
-import { MockEAS } from "../mocks/MockEAS.sol";
+import {
+    AttestationRequest,
+    AttestationRequestData,
+    IEASTest,
+    ISchemaRegistryTest,
+    RevocationRequest,
+    RevocationRequestData
+} from "../vendored/eas/EASTypes.sol";
 import { IERC5267 } from "@openzeppelin/contracts/interfaces/IERC5267.sol";
 import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import { InteroperableAddress } from "@openzeppelin/contracts/utils/draft-InteroperableAddress.sol";
@@ -14,22 +21,32 @@ import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { EASClaimIssuer } from "contracts/modules/claims/EASClaimIssuer.sol";
 import { Structs } from "contracts/storage/Structs.sol";
-import { Attestation } from "contracts/vendor/eas/IEAS.sol";
+import { IEAS } from "contracts/vendor/eas/IEAS.sol";
 
 /// @notice Coverage for the stateless EAS `ClaimIssuer` adapter. Each test targets one branch
 ///         of `isClaimValid` / `getClaimStatus` so the acceptance criteria from issue #10 map
 ///         1:1 to test cases.
+///
+/// @dev The real EAS mainnet runtime bytecode is etched at its canonical addresses so tests
+///      run against the production contract, not a mock. Attestation UIDs are chosen by EAS
+///      itself and captured from `attest`.
 contract EASClaimIssuerTest is OnchainIDSetup {
+
+    /// @dev Mainnet addresses. EAS embeds SchemaRegistry as an immutable, so both must be
+    ///      etched at these exact addresses for `_attest` to reach the registry correctly.
+    address internal constant EAS_ADDR = 0xA1207F3BBa224E2c9c3c6D5aF63D0eb1582Ce587;
+    address internal constant SCHEMA_REGISTRY_ADDR = 0xA7b39296258348C78294F95B872b282326A97BDF;
 
     uint64 internal constant ROLE_EAS_ADMIN = 42;
 
-    MockEAS internal eas;
+    IEASTest internal eas;
+    ISchemaRegistryTest internal schemaRegistry;
     EASClaimIssuer internal adapter;
 
     address internal attester;
 
     uint256 internal constant TOPIC = 777;
-    bytes32 internal constant SCHEMA = bytes32(uint256(0xABCDEF));
+    bytes32 internal SCHEMA;
 
     Structs.ClaimData internal emptyData;
 
@@ -38,8 +55,16 @@ contract EASClaimIssuerTest is OnchainIDSetup {
 
         (attester,) = makeAddrAndKey("easAttester");
 
-        eas = new MockEAS();
-        adapter = new EASClaimIssuer(address(onchainidSetup.accessManager), eas, onchainidSetup.idFactory);
+        // Etch mainnet EAS + SchemaRegistry so the adapter reads real bytecode.
+        vm.etch(EAS_ADDR, vm.readFileBinary("test/vendored/eas/EAS.bytecode"));
+        vm.etch(SCHEMA_REGISTRY_ADDR, vm.readFileBinary("test/vendored/eas/SchemaRegistry.bytecode"));
+        eas = IEASTest(EAS_ADDR);
+        schemaRegistry = ISchemaRegistryTest(SCHEMA_REGISTRY_ADDR);
+
+        // Register a schema for the topic; EAS returns the schema UID.
+        SCHEMA = schemaRegistry.register("bytes claimData", address(0), true);
+
+        adapter = new EASClaimIssuer(address(onchainidSetup.accessManager), IEAS(EAS_ADDR), onchainidSetup.idFactory);
 
         // Grant the deployer permission to call the adapter's `restricted` setters.
         vm.startPrank(deployer);
@@ -62,22 +87,35 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         return abi.encodePacked(uid);
     }
 
-    /// @dev Publish an attestation the adapter will accept as Valid before the recipient check.
-    function _publishValid(bytes32 uid, address recipient) internal {
-        eas.setAttestation(
-            Attestation({
-                uid: uid,
-                schema: SCHEMA,
-                time: uint64(block.timestamp),
-                expirationTime: 0,
-                revocationTime: 0,
-                refUID: bytes32(0),
+    /// @dev Attest under our configured SCHEMA, from the configured attester, and return the
+    ///      UID EAS assigned. This replaces the previous mock's `setAttestation` shortcut.
+    function _attestValid(address recipient) internal returns (bytes32) {
+        return _attestAs(attester, SCHEMA, recipient, 0, hex"");
+    }
+
+    function _attestAs(address who, bytes32 schema, address recipient, uint64 expirationTime, bytes memory data)
+        internal
+        returns (bytes32)
+    {
+        AttestationRequest memory req = AttestationRequest({
+            schema: schema,
+            data: AttestationRequestData({
                 recipient: recipient,
-                attester: attester,
+                expirationTime: expirationTime,
                 revocable: true,
-                data: hex""
+                refUID: bytes32(0),
+                data: data,
+                value: 0
             })
-        );
+        });
+        vm.prank(who);
+        return eas.attest(req);
+    }
+
+    /// @dev Revoke an attestation as its attester (EAS enforces `msg.sender == attester`).
+    function _revoke(bytes32 uid) internal {
+        vm.prank(attester);
+        eas.revoke(RevocationRequest({ schema: SCHEMA, data: RevocationRequestData({ uid: uid, value: 0 }) }));
     }
 
     /// @dev EIP-712 helper to build a `LinkAccount` digest for linking a wallet to an
@@ -131,12 +169,12 @@ contract EASClaimIssuerTest is OnchainIDSetup {
 
     function test_constructor_revertsOnZeroEAS() public {
         vm.expectRevert(Errors.ZeroAddress.selector);
-        new EASClaimIssuer(address(onchainidSetup.accessManager), MockEAS(address(0)), onchainidSetup.idFactory);
+        new EASClaimIssuer(address(onchainidSetup.accessManager), IEAS(address(0)), onchainidSetup.idFactory);
     }
 
     function test_constructor_revertsOnZeroFactory() public {
         vm.expectRevert(Errors.ZeroAddress.selector);
-        new EASClaimIssuer(address(onchainidSetup.accessManager), eas, IdentityFactory(address(0)));
+        new EASClaimIssuer(address(onchainidSetup.accessManager), IEAS(EAS_ADDR), IdentityFactory(address(0)));
     }
 
     /* ----- admin setters ----- */
@@ -156,8 +194,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
     /* ----- isClaimValid happy paths ----- */
 
     function test_isClaimValid_recipientIsIdentity() public {
-        bytes32 uid = keccak256("id-recipient");
-        _publishValid(uid, address(aliceIdentity));
+        bytes32 uid = _attestValid(address(aliceIdentity));
 
         bool ok = adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData);
         assertTrue(ok, "attestation on the identity itself must verify");
@@ -169,8 +206,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
 
     function test_isClaimValid_recipientIsLinkedWallet() public {
         _linkWalletToAlice(david, davidPk);
-        bytes32 uid = keccak256("linked-wallet");
-        _publishValid(uid, david);
+        bytes32 uid = _attestValid(david);
 
         bool ok = adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData);
         assertTrue(ok, "attestation on a linked wallet must verify");
@@ -180,8 +216,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
     ///         The self-recipient branch is gated on `isFactoryIdentity`.
     function test_isClaimValid_selfAttestationByNonFactoryIdentityRejects() public {
         address rogue = makeAddr("rogueContract");
-        bytes32 uid = keccak256("rogue-self-attest");
-        _publishValid(uid, rogue);
+        bytes32 uid = _attestValid(rogue);
 
         assertFalse(
             adapter.isClaimValid(IIdentity(rogue), TOPIC, _encodeUid(uid), emptyData),
@@ -192,8 +227,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
     /* ----- isClaimValid rejection paths ----- */
 
     function test_isClaimValid_topicWithoutSchema() public {
-        bytes32 uid = keccak256("no-schema");
-        _publishValid(uid, address(aliceIdentity));
+        bytes32 uid = _attestValid(address(aliceIdentity));
 
         uint256 unknownTopic = 12345;
         bool ok = adapter.isClaimValid(IIdentity(address(aliceIdentity)), unknownTopic, _encodeUid(uid), emptyData);
@@ -201,47 +235,20 @@ contract EASClaimIssuerTest is OnchainIDSetup {
     }
 
     function test_isClaimValid_wrongSchema() public {
-        bytes32 uid = keccak256("wrong-schema");
-        eas.setAttestation(
-            Attestation({
-                uid: uid,
-                schema: bytes32(uint256(0x99)),
-                time: uint64(block.timestamp),
-                expirationTime: 0,
-                revocationTime: 0,
-                refUID: bytes32(0),
-                recipient: address(aliceIdentity),
-                attester: attester,
-                revocable: true,
-                data: hex""
-            })
-        );
+        // Attest under a different schema than the one the adapter maps to TOPIC.
+        bytes32 otherSchema = schemaRegistry.register("uint256 unrelated", address(0), true);
+        bytes32 uid = _attestAs(attester, otherSchema, address(aliceIdentity), 0, hex"");
         assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData));
     }
 
     function test_isClaimValid_unacceptedAttester() public {
-        bytes32 uid = keccak256("wrong-attester");
-        eas.setAttestation(
-            Attestation({
-                uid: uid,
-                schema: SCHEMA,
-                time: uint64(block.timestamp),
-                expirationTime: 0,
-                revocationTime: 0,
-                refUID: bytes32(0),
-                recipient: address(aliceIdentity),
-                attester: bob,
-                revocable: true,
-                data: hex""
-            })
-        );
+        bytes32 uid = _attestAs(bob, SCHEMA, address(aliceIdentity), 0, hex"");
         assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData));
     }
 
     function test_isClaimValid_attestationRevoked() public {
-        bytes32 uid = keccak256("revoked");
-        _publishValid(uid, address(aliceIdentity));
-        eas.revoke(uid, uint64(block.timestamp));
+        bytes32 uid = _attestValid(address(aliceIdentity));
+        _revoke(uid);
 
         assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData));
         assertEq(
@@ -252,21 +259,10 @@ contract EASClaimIssuerTest is OnchainIDSetup {
 
     function test_isClaimValid_attestationExpired() public {
         vm.warp(100);
-        bytes32 uid = keccak256("expired");
-        eas.setAttestation(
-            Attestation({
-                uid: uid,
-                schema: SCHEMA,
-                time: uint64(block.timestamp - 10),
-                expirationTime: uint64(block.timestamp - 1),
-                revocationTime: 0,
-                refUID: bytes32(0),
-                recipient: address(aliceIdentity),
-                attester: attester,
-                revocable: true,
-                data: hex""
-            })
-        );
+        // Publish with a short expiry, then warp past it.
+        bytes32 uid = _attestAs(attester, SCHEMA, address(aliceIdentity), uint64(block.timestamp + 10), hex"");
+        vm.warp(block.timestamp + 20);
+
         assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData));
         assertEq(
             uint256(adapter.getClaimStatus(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData)),
@@ -275,15 +271,14 @@ contract EASClaimIssuerTest is OnchainIDSetup {
     }
 
     function test_isClaimValid_attestationMissing() public view {
-        bytes32 uid = keccak256("missing");
-        // Never publish `uid`.
+        // A UID that was never issued by EAS.
+        bytes32 uid = keccak256("never-issued");
         assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData));
     }
 
     function test_isClaimValid_recipientBoundToDifferentIdentity() public {
         _linkWalletToAlice(david, davidPk);
-        bytes32 uid = keccak256("wrong-holder");
-        _publishValid(uid, david);
+        bytes32 uid = _attestValid(david);
 
         // Alice holds the linked wallet, so verifying against bob must reject.
         assertFalse(adapter.isClaimValid(IIdentity(address(bobIdentity)), TOPIC, _encodeUid(uid), emptyData));
@@ -291,8 +286,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
 
     function test_isClaimValid_linkedWalletThenRevoked_rejects() public {
         _linkWalletToAlice(david, davidPk);
-        bytes32 uid = keccak256("wallet-then-revoked");
-        _publishValid(uid, david);
+        bytes32 uid = _attestValid(david);
 
         // Verifies while active.
         assertTrue(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData));
@@ -324,22 +318,8 @@ contract EASClaimIssuerTest is OnchainIDSetup {
 
     /// @notice The raw attestation payload round-trips through the adapter.
     function test_getAttestationData_returnsPayload() public {
-        bytes32 uid = keccak256("payload");
         bytes memory payload = abi.encode(uint256(1), "US", uint64(19900101));
-        eas.setAttestation(
-            Attestation({
-                uid: uid,
-                schema: SCHEMA,
-                time: uint64(block.timestamp),
-                expirationTime: 0,
-                revocationTime: 0,
-                refUID: bytes32(0),
-                recipient: address(aliceIdentity),
-                attester: attester,
-                revocable: true,
-                data: payload
-            })
-        );
+        bytes32 uid = _attestAs(attester, SCHEMA, address(aliceIdentity), 0, payload);
 
         assertEq(adapter.getAttestationData(_encodeUid(uid)), payload);
     }
@@ -347,7 +327,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
     /// @notice Missing attestation returns empty bytes rather than reverting so callers can
     ///         branch on `bytes.length == 0` without try/catch.
     function test_getAttestationData_missingAttestationReturnsEmpty() public view {
-        bytes32 uid = keccak256("never-published");
+        bytes32 uid = keccak256("never-issued");
         assertEq(adapter.getAttestationData(_encodeUid(uid)).length, 0);
     }
 
@@ -360,22 +340,9 @@ contract EASClaimIssuerTest is OnchainIDSetup {
     ///         revocation. A revoked attestation still returns its payload; the caller should
     ///         pair with `getClaimStatus` when validity matters.
     function test_getAttestationData_returnsPayloadEvenWhenRevoked() public {
-        bytes32 uid = keccak256("revoked-but-readable");
         bytes memory payload = hex"1234";
-        eas.setAttestation(
-            Attestation({
-                uid: uid,
-                schema: SCHEMA,
-                time: uint64(block.timestamp),
-                expirationTime: 0,
-                revocationTime: uint64(block.timestamp),
-                refUID: bytes32(0),
-                recipient: address(aliceIdentity),
-                attester: attester,
-                revocable: true,
-                data: payload
-            })
-        );
+        bytes32 uid = _attestAs(attester, SCHEMA, address(aliceIdentity), 0, payload);
+        _revoke(uid);
 
         assertEq(adapter.getAttestationData(_encodeUid(uid)), payload);
     }
@@ -387,9 +354,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
     ///         reads EAS live and authorizes. The claim is persisted, retrievable via getClaim,
     ///         and the stored fields still verify on re-check.
     function test_fullLoop_addClaim_getClaim_reverifies() public {
-        bytes32 uid = keccak256("full-loop");
-        _publishValid(uid, address(aliceIdentity));
-
+        bytes32 uid = _attestValid(address(aliceIdentity));
         bytes memory sig = _encodeUid(uid);
 
         vm.prank(alice);
@@ -412,8 +377,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
     /// @notice After a successful addClaim, revoking on EAS flips the stored claim's
     ///         verification result to false without any on-chain claim mutation on the holder.
     function test_fullLoop_easRevocationFlipsStoredClaim() public {
-        bytes32 uid = keccak256("full-loop-revoke");
-        _publishValid(uid, address(aliceIdentity));
+        bytes32 uid = _attestValid(address(aliceIdentity));
         bytes memory sig = _encodeUid(uid);
 
         vm.prank(alice);
@@ -423,7 +387,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
             IIdentity(address(aliceIdentity)).getClaim(claimId);
         assertTrue(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, sigOut, dataOut));
 
-        eas.revoke(uid, uint64(block.timestamp));
+        _revoke(uid);
         assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, sigOut, dataOut));
     }
 
@@ -432,7 +396,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
     ///         `Errors.InvalidClaim`, so a holder cannot register a fabricated claim against
     ///         the adapter.
     function test_fullLoop_addClaim_revertsWhenAttestationMissing() public {
-        bytes32 uid = keccak256("never-published");
+        bytes32 uid = keccak256("never-issued");
         bytes memory sig = _encodeUid(uid);
 
         vm.prank(alice);
