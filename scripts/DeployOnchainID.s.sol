@@ -15,6 +15,7 @@ import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
 import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
 import { IdentityUtilitiesProxy } from "contracts/proxy/IdentityUtilitiesProxy.sol";
+import { ReputationRegistry } from "contracts/reputation/ReputationRegistry.sol";
 
 /**
  * @title DeployOnchainID
@@ -47,14 +48,13 @@ contract DeployOnchainID is Script {
         console.log("");
 
         // ===== Phase 1: Implementation contracts =====
+        //
+        // Note: the ERC734Validator singleton is deployed later (Phase 2), after the
+        // IdentityFactory and ReputationRegistry exist, because its constructor takes both —
+        // it holds the ERC-734 key registry AND the ERC-735 claim surface, including the
+        // trusted-issuer addClaim path that consults the factory and the registry.
 
-        // 1. Validator module singleton — one module, ERC-7913 signer shape, EOA/1271/7913
-        //    crypto dispatch via OZ `SignatureChecker`, ACTION purpose enforced against the
-        //    calling account's ERC-734 registry.
-        ERC734Validator signatureValidator = new ERC734Validator();
-        console.log("ERC734Validator:", address(signatureValidator));
-
-        // 2. Identity implementation (library mode — prevents direct initialization)
+        // 1. Identity implementation (library mode — prevents direct initialization)
         Identity identityImpl = new Identity(true);
         console.log("Identity implementation:", address(identityImpl));
 
@@ -74,17 +74,17 @@ contract DeployOnchainID is Script {
         UpgradeableBeacon beacon = new UpgradeableBeacon(address(identityImpl), deployer);
         console.log("Beacon:", address(beacon));
 
-        // 4b. Module singletons. Callers include these in their `_modules` array on
-        //     `createIdentity` to opt into the legacy ERC-734 execute/approve queue
-        //     (KeyApprovalModule). The ERC-735 claim surface lives in the ERC734Validator
-        //     deployed above, installed as claim fallbacks.
+        // 4b. KeyApprovalModule (the legacy ERC-734 execute/approve queue, no deps). Callers
+        //     include it in their `_modules` array on `createIdentity` to opt into the legacy
+        //     ERC-734 execute/approve queue. The ERC-735 claim surface lives in the
+        //     ERC734Validator deployed below, installed as claim fallbacks.
         KeyApprovalModule keyApprovalModule = new KeyApprovalModule();
         console.log("KeyApprovalModule:", address(keyApprovalModule));
 
-        // 5. AccessManager — single source of truth for IdentityFactory permissions.
-        //    The deployer starts as the AccessManager admin (`ADMIN_ROLE = 0`). Production
-        //    deployments should rotate this to a multisig immediately via
-        //    `am.grantRole(0, multisig, 0); am.revokeRole(0, deployer);`.
+        // 5. AccessManager. Single source of truth for IdentityFactory and
+        //    ReputationRegistry permissions. The deployer starts as the AccessManager admin
+        //    (`ADMIN_ROLE = 0`). Production deployments should rotate this to a multisig
+        //    immediately via `am.grantRole(0, multisig, 0); am.revokeRole(0, deployer);`.
         AccessManager am = new AccessManager(deployer);
         console.log("AccessManager:", address(am));
 
@@ -95,6 +95,18 @@ contract DeployOnchainID is Script {
         // 6. IdentityFactory
         IdentityFactory idFactory = new IdentityFactory(address(beacon), address(am));
         console.log("IdentityFactory:", address(idFactory));
+
+        // 6b. ReputationRegistry. Needs the factory address so its lazy default-tier
+        //     fallback can gate on factory membership. Writes are restricted via the AM.
+        ReputationRegistry reputationRegistry = new ReputationRegistry(address(am), address(idFactory));
+        console.log("ReputationRegistry:", address(reputationRegistry));
+
+        // 6c. Validator module singleton — one module, ERC-7913 signer shape, EOA/1271/7913
+        //     crypto dispatch via OZ `SignatureChecker`, ACTION purpose enforced against the
+        //     calling account's ERC-734 registry. It also holds the ERC-735 claim surface,
+        //     so it needs the factory and the registry for the trusted-issuer addClaim path.
+        ERC734Validator signatureValidator = new ERC734Validator(address(idFactory), address(reputationRegistry));
+        console.log("ERC734Validator:", address(signatureValidator));
 
         // Hand the beacon to the AccessManager so future implementation upgrades
         // (`beacon.upgradeTo(newImpl)`) go through the same role gating as everything else.

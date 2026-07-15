@@ -30,7 +30,7 @@ contract ERC734ValidatorTest is OnchainIDSetup {
     function setUp() public virtual override {
         super.setUp();
         (mgr, mgrPk) = makeAddrAndKey("erc734-mgr");
-        validator = new ERC734Validator();
+        validator = new ERC734Validator(address(onchainidSetup.idFactory), address(onchainidSetup.reputationRegistry));
 
         // Install on alice with `mgr` seeded as the module's MANAGEMENT key.
         vm.prank(alice);

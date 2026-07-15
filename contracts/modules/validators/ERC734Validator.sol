@@ -19,13 +19,16 @@ import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/Mes
 import { SignatureChecker } from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
+import { IIdentityFactory } from "../../factory/IIdentityFactory.sol";
 import { IClaimIssuer } from "../../interface/IClaimIssuer.sol";
 import { IERC734 } from "../../interface/IERC734.sol";
 import { IERC735 } from "../../interface/IERC735.sol";
 import { IIdentity } from "../../interface/IIdentity.sol";
 import { Errors } from "../../libraries/Errors.sol";
 import { hashAddress } from "../../libraries/Hashing.sol";
+import { IdentityTypes } from "../../libraries/IdentityTypes.sol";
 import { KeyPurposes } from "../../libraries/KeyPurposes.sol";
+import { IReputationRegistry } from "../../reputation/IReputationRegistry.sol";
 import { Structs } from "../../storage/Structs.sol";
 import { ERC7579Validator } from "./ERC7579Validator.sol";
 
@@ -116,6 +119,25 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
 
     /// @notice Emitted when `addClaimTo` successfully writes a claim to another identity.
     event ClaimAddedTo(address indexed identity, uint256 topic, bytes signature, Structs.ClaimData data);
+
+    /// @notice Factory used by {addClaimByTrustedIssuer} to resolve a caller wallet to
+    ///         its issuer identity and to confirm that identity came from the factory.
+    IIdentityFactory public immutable factory;
+
+    /// @notice Registry consulted by {addClaimByTrustedIssuer} to confirm the issuer
+    ///         identity meets the global claim-add threshold.
+    IReputationRegistry public immutable reputationRegistry;
+
+    /// @param identityFactory Factory used to resolve a caller wallet to its issuer
+    ///                        identity in {addClaimByTrustedIssuer}. Reverts on zero.
+    /// @param registry Reputation registry consulted by {addClaimByTrustedIssuer}.
+    ///                 Reverts on zero.
+    constructor(address identityFactory, address registry) {
+        require(identityFactory != address(0), Errors.ZeroAddress());
+        require(registry != address(0), Errors.ZeroAddress());
+        factory = IIdentityFactory(identityFactory);
+        reputationRegistry = IReputationRegistry(registry);
+    }
 
     // --- installation ----------------------------------------------------
 
@@ -480,29 +502,88 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         Structs.ClaimData memory _data,
         string memory _uri
     ) public override returns (bytes32 claimRequestId) {
-        address account = msg.sender;
         // CLAIM_SIGNER or CLAIM_ADDER can add a claim. Self-issued claims still need a real
-        // signature (checked by isClaimValid below), so CLAIM_ADDER cannot fake self-attestations.
-        _requireClaimKey(account, _msgSender(), false);
+        // signature (checked by isClaimValid in _addClaim), so CLAIM_ADDER cannot fake
+        // self-attestations.
+        _requireClaimKey(msg.sender, _msgSender(), false);
+        return _addClaim(msg.sender, _topic, _scheme, _issuer, _signature, _data, _uri);
+    }
 
-        require(
-            IClaimIssuer(_issuer).isClaimValid(IIdentity(account), _topic, _signature, _data), Errors.InvalidClaim()
-        );
+    /// @notice Add a claim without holding a CLAIM_ADDER / CLAIM_SIGNER key on the target
+    ///         identity, by proving the caller is a trusted issuer in the {ReputationRegistry}.
+    ///
+    ///         Trust check (see {_requireTrustedIssuer}):
+    ///           1. The caller's wallet resolves through the factory to a non-zero issuer
+    ///              identity (i.e. the wallet is a linked account on a factory-deployed
+    ///              identity).
+    ///           2. `_issuer` equals that resolved identity. A trusted issuer cannot ship a
+    ///              claim attributed to a different issuer.
+    ///           3. The identity self-declares type CLAIM_ISSUER.
+    ///           4. The issuer's score in the registry meets the global claim-add threshold.
+    ///
+    ///         When all four hold the rest of the flow is identical to {addClaim}: the issuer's
+    ///         `isClaimValid` confirms the signature, the storage write happens, and
+    ///         `ClaimAdded` / `ClaimChanged` fires. Removal is not exposed via this path.
+    function addClaimByTrustedIssuer(
+        uint256 _topic,
+        uint256 _scheme,
+        address _issuer,
+        bytes memory _signature,
+        Structs.ClaimData memory _data,
+        string memory _uri
+    ) public returns (bytes32 claimRequestId) {
+        _requireTrustedIssuer(_msgSender(), _issuer);
+        return _addClaim(msg.sender, _topic, _scheme, _issuer, _signature, _data, _uri);
+    }
 
-        // Claim id is (issuer, topic). Adding the same id again overwrites the record.
+    /// @dev Shared write path for `addClaim` and `addClaimByTrustedIssuer`. The issuer-side
+    ///      `isClaimValid` is called unconditionally; the storage write and event match the
+    ///      standard `addClaim` body. Claim id is (issuer, topic); re-adding overwrites.
+    function _addClaim(
+        address account,
+        uint256 topic,
+        uint256 scheme,
+        address issuer,
+        bytes memory signature,
+        Structs.ClaimData memory data,
+        string memory uri
+    ) internal returns (bytes32 claimId) {
+        require(IClaimIssuer(issuer).isClaimValid(IIdentity(account), topic, signature, data), Errors.InvalidClaim());
+
         AccountRegistry storage s = _store().registries[account];
-        bytes32 claimId = keccak256(abi.encode(_issuer, _topic));
-        s.claims[claimId] = Structs.Claim({
-            topic: _topic, scheme: _scheme, issuer: _issuer, signature: _signature, data: _data, uri: _uri
-        });
+        claimId = keccak256(abi.encode(issuer, topic));
+        s.claims[claimId] =
+            Structs.Claim({ topic: topic, scheme: scheme, issuer: issuer, signature: signature, data: data, uri: uri });
 
-        if (s.claimsByTopic[_topic].add(claimId)) {
-            emit ClaimAdded(claimId, _topic, _scheme, _issuer, _signature, _data, _uri);
+        if (s.claimsByTopic[topic].add(claimId)) {
+            emit ClaimAdded(claimId, topic, scheme, issuer, signature, data, uri);
         } else {
-            emit ClaimChanged(claimId, _topic, _scheme, _issuer, _signature, _data, _uri);
+            emit ClaimChanged(claimId, topic, scheme, issuer, signature, data, uri);
         }
+    }
 
-        return claimId;
+    /// @dev Trusted-issuer gate. Four conditions, all required:
+    ///        1. The caller wallet resolves through the factory to a non-zero issuer identity
+    ///           (i.e. it is a linked account on a factory-deployed identity).
+    ///        2. That identity equals the claim's declared issuer (issuer-bound rule).
+    ///        3. That identity self-declares type `CLAIM_ISSUER`. Without this, any identity
+    ///           that happens to be scored above the threshold (e.g. an INDIVIDUAL elevated by
+    ///           the manager) could write claims silently.
+    ///        4. Its reputation in the registry meets the global claim-add threshold.
+    ///      `reputationOf` already returns `0` for non-factory identities, so the score check
+    ///      implicitly re-confirms factory membership.
+    function _requireTrustedIssuer(address caller, address expectedIssuer) internal view {
+        address callerIdentity = factory.getIdentity(abi.encodePacked(caller));
+        require(callerIdentity != address(0), Errors.CallerNotLinkedToFactoryIdentity(caller));
+        require(expectedIssuer == callerIdentity, Errors.DeclaredIssuerMismatch(expectedIssuer, callerIdentity));
+        require(
+            IIdentity(callerIdentity).getIdentityType() == IdentityTypes.CLAIM_ISSUER,
+            Errors.IdentityNotClaimIssuerType(callerIdentity)
+        );
+        IReputationRegistry registry = reputationRegistry;
+        uint128 score = registry.reputationOf(callerIdentity);
+        uint128 threshold = registry.claimAddThreshold();
+        require(score >= threshold, Errors.ReputationBelowClaimAddThreshold(callerIdentity, score, threshold));
     }
 
     /// @inheritdoc IERC735

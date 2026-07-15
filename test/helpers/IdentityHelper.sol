@@ -20,6 +20,7 @@ import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
 import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
+import { ReputationRegistry } from "contracts/reputation/ReputationRegistry.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 
 /// @notice Helper library for deploying OnchainID Identity Factory infrastructure
@@ -35,6 +36,7 @@ library IdentityHelper {
         UpgradeableBeacon beacon;
         AccessManager accessManager;
         IdentityFactory idFactory;
+        ReputationRegistry reputationRegistry;
         KeyApprovalModule keyApprovalModule;
         ERC734Validator signatureValidator;
     }
@@ -49,15 +51,25 @@ library IdentityHelper {
     ///        AccessManager).
     /// @return setup Struct containing all deployed contracts
     function deployFactory(address managementKey) internal returns (OnchainIDSetup memory setup) {
-        // Deploy module singletons. The signature validator also holds the ERC-735 claim registry
-        // (keys and claims live in one module), installed as validator + claim fallbacks.
-        setup.signatureValidator = new ERC734Validator();
+        // KeyApprovalModule depends on nothing else, so it can go first. The signature
+        // validator also holds the ERC-735 claim registry (keys and claims live in one
+        // module) and its constructor now takes the factory + reputation registry for the
+        // trusted-issuer addClaim path, so it is deployed after those exist (below).
         setup.keyApprovalModule = new KeyApprovalModule();
 
+        // Identity implementation + beacon + AccessManager + factory. The factory needs
+        // the AccessManager; nothing later in this function reaches back into the factory
+        // for state, so this ordering is the minimum-coupling shape.
         setup.identityImplementation = new Identity(false);
         setup.beacon = new UpgradeableBeacon(address(setup.identityImplementation), managementKey);
         setup.accessManager = new AccessManager(managementKey);
         setup.idFactory = new IdentityFactory(address(setup.beacon), address(setup.accessManager));
+
+        // Reputation registry needs the factory (for the lazy default-tier fallback
+        // factory-membership check). The merged ERC734Validator (the claims module) needs
+        // both the factory and registry for the trusted-issuer addClaim path.
+        setup.reputationRegistry = new ReputationRegistry(address(setup.accessManager), address(setup.idFactory));
+        setup.signatureValidator = new ERC734Validator(address(setup.idFactory), address(setup.reputationRegistry));
 
         // Register every standard type with PUBLIC_ROLE and selfDeployable = true for
         // a permissive test default.
@@ -87,7 +99,7 @@ library IdentityHelper {
         pure
         returns (Structs.ModuleInstall[] memory installs)
     {
-        installs = new Structs.ModuleInstall[](19);
+        installs = new Structs.ModuleInstall[](20);
         // ----- merged ERC734Validator: validator (holds the key registry) -----
         // Empty initData -> onInstall does not seed a key; MANAGEMENT comes from `_keys`.
         installs[0] = Structs.ModuleInstall({
@@ -172,26 +184,33 @@ library IdentityHelper {
             initData: abi.encodePacked(IClaimIssuer.addClaimTo.selector),
             purpose: 0
         });
-        // ----- ERC-734 getters served by the merged module via fallback -----
+        // ----- trusted-issuer add path served by the merged module via fallback -----
         installs[15] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: claimsModule,
+            initData: abi.encodePacked(ERC734Validator.addClaimByTrustedIssuer.selector),
+            purpose: 0
+        });
+        // ----- ERC-734 getters served by the merged module via fallback -----
+        installs[16] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
             initData: abi.encodePacked(IERC734.keyHasPurpose.selector),
             purpose: 0
         });
-        installs[16] = Structs.ModuleInstall({
+        installs[17] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
             initData: abi.encodePacked(IERC734.getKey.selector),
             purpose: 0
         });
-        installs[17] = Structs.ModuleInstall({
+        installs[18] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
             initData: abi.encodePacked(IERC734.getKeyPurposes.selector),
             purpose: 0
         });
-        installs[18] = Structs.ModuleInstall({
+        installs[19] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
             initData: abi.encodePacked(IERC734.getKeysByPurpose.selector),
@@ -218,7 +237,15 @@ library IdentityHelper {
         Identity impl = new Identity(false);
         UpgradeableBeacon b = new UpgradeableBeacon(address(impl), initialManagementKey);
 
-        signatureValidator = new ERC734Validator();
+        // Minimal AccessManager + IdentityFactory + ReputationRegistry so the merged
+        // ERC734Validator constructor has real addresses to bind to. These identities
+        // do not exercise the trusted-issuer path, so the addresses can be local
+        // throwaways. They are real contracts so the constructor's zero-address checks pass.
+        AccessManager am = new AccessManager(initialManagementKey);
+        IdentityFactory localFactory = new IdentityFactory(address(b), address(am));
+        ReputationRegistry localRegistry = new ReputationRegistry(address(am), address(localFactory));
+
+        signatureValidator = new ERC734Validator(address(localFactory), address(localRegistry));
         // The validator also holds the claim registry, so the claim fallbacks point at it too.
         address claimsModule = address(signatureValidator);
 
@@ -235,7 +262,7 @@ library IdentityHelper {
             clientData: ""
         });
 
-        Structs.ModuleInstall[] memory modules = new Structs.ModuleInstall[](15);
+        Structs.ModuleInstall[] memory modules = new Structs.ModuleInstall[](16);
         // The validator install carries empty initData: the MANAGEMENT key is seeded from `keys`
         // above (the account seeds every `_keys` entry into the enshrined module during
         // `initialize`). The validator owns scoping now, so no account-level purpose is granted to
@@ -324,6 +351,12 @@ library IdentityHelper {
             moduleType: MODULE_TYPE_FALLBACK,
             module: address(claimsModule),
             initData: abi.encodePacked(IERC734.getKeysByPurpose.selector),
+            purpose: 0
+        });
+        modules[15] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: address(claimsModule),
+            initData: abi.encodePacked(ERC734Validator.addClaimByTrustedIssuer.selector),
             purpose: 0
         });
 
