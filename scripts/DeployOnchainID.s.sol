@@ -12,7 +12,6 @@ import { Identity } from "contracts/Identity.sol";
 import { IdentityUtilities } from "contracts/IdentityUtilities.sol";
 import { IdentityFactory } from "contracts/factory/IdentityFactory.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
-import { ClaimsModule } from "contracts/modules/claims/ClaimsModule.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
 import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
 import { IdentityUtilitiesProxy } from "contracts/proxy/IdentityUtilitiesProxy.sol";
@@ -25,7 +24,7 @@ import { IdentityUtilitiesProxy } from "contracts/proxy/IdentityUtilitiesProxy.s
  *   1. Identity implementation (library mode)
  *   2. IdentityUtilities implementation + proxy
  *   3. UpgradeableBeacon (points to Identity impl; owned by AccessManager)
- *   4. Module singletons (KeyApprovalModule, ClaimsModule)
+ *   4. Module singletons (KeyApprovalModule; claims live in the ERC734Validator)
  *   5. AccessManager (single source of truth for IdentityFactory permissions)
  *   6. IdentityFactory (BeaconProxy + UpgradeableBeacon for identity proxies)
  *   7. AccessManager role wiring (per-identity-type role mapping)
@@ -77,11 +76,10 @@ contract DeployOnchainID is Script {
 
         // 4b. Module singletons. Callers include these in their `_modules` array on
         //     `createIdentity` to opt into the legacy ERC-734 execute/approve queue
-        //     (KeyApprovalModule) and the full ERC-735 claim surface (ClaimsModule).
+        //     (KeyApprovalModule). The ERC-735 claim surface lives in the ERC734Validator
+        //     deployed above, installed as claim fallbacks.
         KeyApprovalModule keyApprovalModule = new KeyApprovalModule();
         console.log("KeyApprovalModule:", address(keyApprovalModule));
-        ClaimsModule claimsModule = new ClaimsModule();
-        console.log("ClaimsModule:", address(claimsModule));
 
         // 5. AccessManager — single source of truth for IdentityFactory permissions.
         //    The deployer starts as the AccessManager admin (`ADMIN_ROLE = 0`). Production
@@ -145,7 +143,6 @@ contract DeployOnchainID is Script {
         console.log("IdentityFactory:        ", address(idFactory));
         console.log("ERC734Validator:        ", address(signatureValidator));
         console.log("KeyApprovalModule:      ", address(keyApprovalModule));
-        console.log("ClaimsModule:           ", address(claimsModule));
         console.log("ERC7913WebAuthnVerifier:", address(webAuthnVerifier));
         console.log("=========================================");
     }

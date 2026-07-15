@@ -17,8 +17,9 @@ import { ERC165 } from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 /**
  * @title Identity
  * @dev Smart-account identity. ERC-734 key registry lives here (inherited from {KeyManager} via
- *      {SmartAccount}); ERC-735 claim functionality is provided by an installed {ClaimsModule}
- *      reached through this account's ERC-7579 fallback handler.
+ *      {SmartAccount}); ERC-735 claim functionality is provided by the installed {ERC734Validator}
+ *      module (which holds both the key and claim registries) reached through this account's
+ *      ERC-7579 fallback handler.
  *
  *      Storage layout uses ERC-7201 namespaced slots:
  *        - `onchainid.keymanager.storage`     — keys (from KeyManager)
@@ -34,7 +35,7 @@ import { ERC165 } from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
  *        - PROPOSER         — queue executions via {KeyApprovalModule.execute} (cannot auto-run or approve)
  *
  *      The {IIdentity} interface continues to declare the ERC-735 selectors; calls to those
- *      selectors land on the installed ClaimsModule via fallback dispatch.
+ *      selectors land on the installed {ERC734Validator} via fallback dispatch.
  *
  *      Initialization is single-shot. {initialize} takes the identity type plus the
  *      caller-supplied keys and modules and applies them inside the proxy constructor frame,

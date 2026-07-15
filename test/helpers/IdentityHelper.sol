@@ -17,7 +17,6 @@ import { IIdentity } from "contracts/interface/IIdentity.sol";
 import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
-import { ClaimsModule } from "contracts/modules/claims/ClaimsModule.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
 import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
 import { Structs } from "contracts/storage/Structs.sol";
@@ -37,7 +36,6 @@ library IdentityHelper {
         IdentityFactory idFactory;
         KeyApprovalModule keyApprovalModule;
         ERC734Validator signatureValidator;
-        ClaimsModule claimsModule;
     }
 
     /// @notice Deploys complete Identity Factory infrastructure with an AccessManager
@@ -50,10 +48,10 @@ library IdentityHelper {
     ///        AccessManager).
     /// @return setup Struct containing all deployed contracts
     function deployFactory(address managementKey) internal returns (OnchainIDSetup memory setup) {
-        // Deploy module singletons
+        // Deploy module singletons. The signature validator also holds the ERC-735 claim registry
+        // (keys and claims live in one module), installed as validator + claim fallbacks.
         setup.signatureValidator = new ERC734Validator();
         setup.keyApprovalModule = new KeyApprovalModule();
-        setup.claimsModule = new ClaimsModule();
 
         setup.identityImplementation = new Identity(false);
         setup.beacon = new UpgradeableBeacon(address(setup.identityImplementation), managementKey);
@@ -78,7 +76,8 @@ library IdentityHelper {
     }
 
     /// @notice Builds the full default-module install list: legacy queue (execute/approve) +
-    ///         ClaimsModule (ERC-735 surface + issuer extras). Caller passes the singletons.
+    ///         the ERC-734/735 claim surface. `claimsModule` is the merged ERC734Validator, which
+    ///         holds the claim registry. Caller passes the singletons.
     function legacyQueueModules(address keyApprovalModule, address claimsModule)
         internal
         pure
@@ -107,7 +106,7 @@ library IdentityHelper {
             initData: abi.encodePacked(IKeyExecutor.getCurrentNonce.selector),
             purpose: 0
         });
-        // ----- ClaimsModule: 1 executor + 9 fallbacks -----
+        // ----- claim module (merged validator): 1 executor + 9 fallbacks -----
         installs[4] =
             Structs.ModuleInstall({ moduleType: MODULE_TYPE_EXECUTOR, module: claimsModule, initData: "", purpose: 0 });
         installs[5] = Structs.ModuleInstall({
@@ -186,11 +185,12 @@ library IdentityHelper {
         UpgradeableBeacon b = new UpgradeableBeacon(address(impl), initialManagementKey);
 
         signatureValidator = new ERC734Validator();
-        ClaimsModule claimsModule = new ClaimsModule();
+        // The validator also holds the claim registry, so the claim fallbacks point at it too.
+        address claimsModule = address(signatureValidator);
 
-        // Bundle the management key + validator + ClaimsModule fallback surface into a
-        // single `initialize` call. Identity now bootstraps atomically inside the proxy
-        // constructor — no post-deploy external installModule calls.
+        // Bundle the management key + validator + claim fallback surface into a single
+        // `initialize` call. Identity now bootstraps atomically inside the proxy constructor —
+        // no post-deploy external installModule calls.
         Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
         bytes memory mgmtSigner = abi.encodePacked(initialManagementKey);
         keys[0] = Structs.KeyParam({
