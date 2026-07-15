@@ -120,26 +120,13 @@ contract OnchainIDSetup is Test {
             );
         aliceIdentity = Identity(payable(aliceIdentityAddr));
 
-        // Install the ERC734Validator on alice's account so the ERC-1271 / 4337 dispatch
-        // through the account works. (Claim verification on the issuer does NOT need this — it
-        // goes straight through SignatureChecker.) `initData` seeds the validator's registry
-        // with `alice` as its MANAGEMENT key.
-        vm.prank(alice);
-        aliceIdentity.installModule(
-            1,
-            /* MODULE_TYPE_VALIDATOR */
-            address(onchainidSetup.signatureValidator),
-            abi.encodePacked(alice)
-        );
+        // The merged ERC734Validator is already installed as a validator by `legacyQueueModules`
+        // during `initialize`, and `alice` is seeded as its MANAGEMENT key from the `_keys` array.
+        // The registry (keys) now lives entirely in that one module, reached by the account via
+        // fallback for external reads and via a staticcall for its own auth gates.
 
-        // Register `david` as an ACTION key inside the validator (existing SmartAccount tests
-        // sign userOps with `david` for external calls). `addKey` only requires
-        // `msg.sender == account`, so prank as the identity directly — this avoids routing
-        // through the execution queue and keeps the KeyApprovalModule nonce untouched.
-        vm.prank(address(aliceIdentity));
-        onchainidSetup.signatureValidator.addKey(abi.encodePacked(david), "", KeyPurposes.ACTION, KeyTypes.ECDSA);
-
-        // Add carol as CLAIM_SIGNER and david as ACTION key on alice's identity
+        // Add carol as CLAIM_SIGNER and david as ACTION key on alice's identity. These go through
+        // the account write path (`addKeyWithData`), which forwards into the enshrined module.
         vm.startPrank(alice);
         aliceIdentity.addKeyWithData(
             ClaimSignerHelper.addressToKey(carol), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA, abi.encodePacked(carol), ""

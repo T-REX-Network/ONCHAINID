@@ -15,6 +15,7 @@ import {
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { Identity } from "contracts/Identity.sol";
 import { SmartAccount } from "contracts/SmartAccount.sol";
+import { IERC734 } from "contracts/interface/IERC734.sol";
 import { IERC735 } from "contracts/interface/IERC735.sol";
 import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
@@ -53,7 +54,7 @@ contract SmartAccountTest is OnchainIDSetup {
         vm.prank(carol);
         IKeyExecutor(address(aliceIdentity)).execute(address(aliceIdentity), 0, addKeyData);
 
-        (,, bytes32 storedKey) = aliceIdentity.getKey(evilKey);
+        (,, bytes32 storedKey) = IERC734(address(aliceIdentity)).getKey(evilKey);
         assertEq(storedKey, bytes32(0), "CLAIM_SIGNER must not escalate to MANAGEMENT via execute/addKey");
     }
 
@@ -104,7 +105,13 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.ACTION, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.ACTION,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         Counter counter = new Counter();
@@ -121,7 +128,13 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.ACTION, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.ACTION,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         bytes32 evilKey = keccak256("evil-management-key");
@@ -139,17 +152,33 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.MANAGEMENT, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.MANAGEMENT,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
-        bytes32 newKey = keccak256("new-action-key");
-        bytes memory addKeyData =
-            abi.encodeWithSignature("addKey(bytes32,uint256,uint256)", newKey, KeyPurposes.ACTION, KeyTypes.ECDSA);
+        // Register a brand-new key. The keyHash must commit to its signer bytes, so derive it
+        // from a signer address and register via the data-carrying addKeyWithData entry point.
+        address newSigner = makeAddr("new-action-signer");
+        bytes memory newSignerData = abi.encodePacked(newSigner);
+        bytes32 newKey = keccak256(newSignerData);
+        bytes memory addKeyData = abi.encodeWithSignature(
+            "addKeyWithData(bytes32,uint256,uint256,bytes,bytes)",
+            newKey,
+            KeyPurposes.ACTION,
+            KeyTypes.ECDSA,
+            newSignerData,
+            bytes("")
+        );
         bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity), uint256(0), addKeyData);
 
         testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
 
-        (,, bytes32 storedKey) = aliceIdentity.getKey(newKey);
+        (,, bytes32 storedKey) = IERC734(address(aliceIdentity)).getKey(newKey);
         assertEq(storedKey, newKey, "MANAGEMENT executor should register a new key");
     }
 
@@ -167,7 +196,13 @@ contract SmartAccountTest is OnchainIDSetup {
         aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), abi.encodePacked(alice));
         // Validators don't need an ERC 734 purpose. We add one anyway so we can check
         // that uninstall cleans it up.
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(validator))), KeyPurposes.ACTION, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(validator))),
+            KeyPurposes.ACTION,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(validator)),
+            ""
+        );
         vm.stopPrank();
 
         assertTrue(
@@ -182,7 +217,7 @@ contract SmartAccountTest is OnchainIDSetup {
             aliceIdentity.isModuleInstalled(MODULE_TYPE_VALIDATOR, address(validator), ""),
             "validator should be uninstalled"
         );
-        (,, bytes32 storedKey) = aliceIdentity.getKey(keccak256(abi.encodePacked(address(validator))));
+        (,, bytes32 storedKey) = IERC734(address(aliceIdentity)).getKey(keccak256(abi.encodePacked(address(validator))));
         assertEq(storedKey, bytes32(0), "auto revoke should clear the module's key entry");
     }
 
@@ -216,7 +251,7 @@ contract SmartAccountTest is OnchainIDSetup {
         vm.stopPrank();
 
         // The MANAGEMENT entry that was registered against the module's address is gone.
-        (,, bytes32 moduleStoredKey) = aliceIdentity.getKey(keccak256(abi.encodePacked(kam)));
+        (,, bytes32 moduleStoredKey) = IERC734(address(aliceIdentity)).getKey(keccak256(abi.encodePacked(kam)));
         assertEq(moduleStoredKey, bytes32(0), "queue module's MANAGEMENT key should be revoked");
 
         // Calling the legacy ABI on the identity now reverts. No fallback handler is wired up.
@@ -275,7 +310,13 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.CLAIM_SIGNER,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         // Self-issued claims now require a valid signature from one of the identity's CLAIM_SIGNER keys.
@@ -300,7 +341,13 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.CLAIM_SIGNER,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         // aliceClaim666 already exists in the fixture. Use its claimId.
@@ -317,7 +364,13 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.CLAIM_SIGNER,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         bytes32 evilKey = keccak256("evil-mgmt-key");
@@ -337,7 +390,13 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_ADDER, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.CLAIM_ADDER,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         // Self-issued claims now require a valid signature from one of the identity's CLAIM_SIGNER keys.
@@ -360,7 +419,13 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_ADDER, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.CLAIM_ADDER,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         bytes32 claimId = keccak256(abi.encode(address(claimIssuer), aliceClaim666.topic));
@@ -378,7 +443,13 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_ADDER, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.CLAIM_ADDER,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         Counter counter = new Counter();
@@ -394,7 +465,13 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.CLAIM_SIGNER,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         Execution[] memory batch = new Execution[](2);
@@ -431,7 +508,13 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.CLAIM_SIGNER,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         // SINGLE layout: target(20) + value(32) — exactly 52 bytes, no inner data at all.
@@ -446,7 +529,13 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.MANAGEMENT, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.MANAGEMENT,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         // Truncated payload — only the 20-byte target, no value field.
@@ -509,7 +598,13 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.ACTION, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.ACTION,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         Counter counter = new Counter();
@@ -531,7 +626,13 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.ACTION, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.ACTION,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         Counter counter = new Counter();
@@ -552,7 +653,13 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.CLAIM_SIGNER,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         bytes memory addClaimData = abi.encodeCall(
@@ -588,7 +695,13 @@ contract SmartAccountTest is OnchainIDSetup {
 
         TestExecutor testExec = new TestExecutor();
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.CLAIM_SIGNER,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         bytes memory addClaimData = abi.encodeCall(
@@ -622,7 +735,13 @@ contract SmartAccountTest is OnchainIDSetup {
 
         TestExecutor testExec = new TestExecutor();
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.ACTION, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.ACTION,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         Counter counter = new Counter();

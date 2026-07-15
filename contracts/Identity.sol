@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
+import { IKeyRegistryModule } from "./KeyManager.sol";
 import { SmartAccount } from "./SmartAccount.sol";
 import { IERC734 } from "./interface/IERC734.sol";
 import { IERC735 } from "./interface/IERC735.sol";
 import { IIdentity } from "./interface/IIdentity.sol";
 import { Errors } from "./libraries/Errors.sol";
-import { hashAddress } from "./libraries/Hashing.sol";
 import { KeyTypes } from "./libraries/KeyTypes.sol";
 import { Structs } from "./storage/Structs.sol";
 import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
@@ -99,20 +99,34 @@ contract Identity is Initializable, SmartAccount, ERC165 {
         __AccountERC7579_init();
         __Identity_init();
 
-        // Register keys.
-        for (uint256 i = 0; i < _keys.length; i++) {
-            Structs.KeyParam calldata key = _keys[i];
-            _addKeyWithData(key.keyHash, key.purpose, key.keyType, key.signerData, key.clientData);
-        }
-
-        // Install modules. If an install entry requests a purpose, register the module
-        // address as a MODULE-type key with that purpose. This is how the KeyApprovalModule
-        // executor gets MANAGEMENT so it can dispatch self-targeted calls.
+        // Install modules FIRST. The validator that holds the key registry must be installed and
+        // enshrined before any key is seeded, because keys now live in that module (a self-call).
+        // The validator's `onInstall(initData)` seeds the first MANAGEMENT key, so the registry is
+        // usable the moment it is enshrined. Module install entries with a non-zero purpose grant
+        // the module address a MODULE-type key with that purpose (e.g. the KeyApprovalModule
+        // executor gets MANAGEMENT so it can dispatch self-targeted calls).
         for (uint256 i = 0; i < _modules.length; i++) {
             _installModule(_modules[i].moduleType, _modules[i].module, _modules[i].initData);
-            if (_modules[i].purpose != 0) {
-                _addKey(hashAddress(_modules[i].module), _modules[i].purpose, KeyTypes.MODULE);
+
+            if (_modules[i].moduleType == MODULE_TYPE_VALIDATOR) {
+                // Enshrine the first validator seen as the account's registry module (set-once).
+                _enshrineRegistryModule(_modules[i].module);
             }
+        }
+
+        // Grant module-purpose keys through the enshrined module, after it exists. Kept in a second
+        // pass so the registry module is already set when the first grant runs.
+        for (uint256 i = 0; i < _modules.length; i++) {
+            if (_modules[i].purpose != 0) {
+                IKeyRegistryModule(_registryModule())
+                    .addKey(abi.encodePacked(_modules[i].module), "", _modules[i].purpose, KeyTypes.MODULE);
+            }
+        }
+
+        // Seed the caller-supplied keys into the enshrined registry module.
+        for (uint256 i = 0; i < _keys.length; i++) {
+            Structs.KeyParam calldata key = _keys[i];
+            IKeyRegistryModule(_registryModule()).addKey(key.signerData, key.clientData, key.purpose, key.keyType);
         }
 
         emit IdentityInitialized(_identityType);

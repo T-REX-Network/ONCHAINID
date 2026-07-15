@@ -6,6 +6,7 @@ import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/draft-ERC433
 import { ERC7579Utils } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
 import { IAccount, PackedUserOperation } from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import { Execution, MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import { IERC734 } from "contracts/interface/IERC734.sol";
 import { IERC735 } from "contracts/interface/IERC735.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
@@ -85,12 +86,12 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         validator.addKey(abi.encodePacked(who), "", purpose, KeyTypes.ECDSA);
     }
 
-    /// @dev Register `who` on the account's KeyManager with an identity purpose.
+    /// @dev Register `who` with a claim purpose in the same validator that validates the userOp.
+    ///      Keys and claim purposes now live in one registry per module, so the claim-scoping read
+    ///      in `_targetAllowed` resolves against this validator's own registry.
     function _accountAddKey(address who, uint256 purpose) internal {
-        vm.prank(alice);
-        aliceIdentity.addKeyWithData(
-            keccak256(abi.encodePacked(who)), purpose, KeyTypes.ECDSA, abi.encodePacked(who), ""
-        );
+        vm.prank(address(aliceIdentity));
+        validator.addKey(abi.encodePacked(who), "", purpose, KeyTypes.ECDSA);
     }
 
     function _validate(PackedUserOperation memory userOp, bytes32 userOpHash) internal returns (uint256) {
@@ -98,16 +99,23 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         return IAccount(address(aliceIdentity)).validateUserOp(userOp, userOpHash, 0);
     }
 
-    // --- dual registry --------------------------------------------------
+    // --- purposes -------------------------------------------------------
 
-    /// @notice The validator only accepts authorization purposes. Registering an identity
-    ///         purpose (CLAIM_SIGNER) reverts, because it would be invisible to ERC-735.
-    function test_validatorRejectsIdentityPurpose() public {
-        vm.prank(address(aliceIdentity));
-        vm.expectRevert(
-            abi.encodeWithSelector(ERC734Validator.NotAnAuthorizationPurpose.selector, KeyPurposes.CLAIM_SIGNER)
+    /// @notice The module holds every ERC-734 purpose, so CLAIM_SIGNER is accepted and an
+    ///         out-of-range purpose reverts.
+    function test_moduleAcceptsAllPurposes_rejectsOutOfRange() public {
+        vm.startPrank(address(aliceIdentity));
+
+        address who = makeAddr("x");
+        validator.addKey(abi.encodePacked(who), "", KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+        assertTrue(
+            validator.keyHasPurpose(address(aliceIdentity), keccak256(abi.encodePacked(who)), KeyPurposes.CLAIM_SIGNER),
+            "CLAIM_SIGNER accepted"
         );
-        validator.addKey(abi.encodePacked(makeAddr("x")), "", KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+
+        vm.expectRevert(abi.encodeWithSelector(ERC734Validator.InvalidPurpose.selector, uint256(7)));
+        validator.addKey(abi.encodePacked(makeAddr("y")), "", 7, KeyTypes.ECDSA);
+        vm.stopPrank();
     }
 
     /// @notice A signer shorter than 20 bytes is rejected. The guard lives in `_addKey`, so it
@@ -132,13 +140,13 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         validator.removeKey(keyHash, KeyPurposes.PROPOSER);
     }
 
-    /// @notice A signer that is an ACTION member of the validator AND a CLAIM_SIGNER on the
-    ///         account: external transfer passes (ACTION, validator), self-addClaim passes
-    ///         (CLAIM_SIGNER read on the account), self-addKey fails (needs MANAGEMENT).
+    /// @notice A signer that holds both ACTION and CLAIM_SIGNER in the validator's registry:
+    ///         external transfer passes (ACTION), self-addClaim passes (CLAIM_SIGNER read from the
+    ///         same registry that scopes the op), self-addKey fails (needs MANAGEMENT).
     function test_multiPurpose_actionInValidator_claimOnAccount() public {
         (address who, uint256 whoPk) = makeAddrAndKey("multi");
         _validatorAddKey(who, KeyPurposes.ACTION); // authorization purpose -> validator
-        _accountAddKey(who, KeyPurposes.CLAIM_SIGNER); // identity purpose -> account
+        _accountAddKey(who, KeyPurposes.CLAIM_SIGNER); // claim purpose -> same validator registry
 
         // external -> ACTION
         {
@@ -379,17 +387,19 @@ contract ERC734ValidatorTest is OnchainIDSetup {
 
     // --- §3.4 claim read path pinned ------------------------------------
 
-    /// @notice Identity purposes live on the account, not the validator. A CLAIM_SIGNER on the
-    ///         account is visible to ERC-735; the validator never holds it (see
-    ///         test_validatorRejectsIdentityPurpose). This pins the dual-registry split.
+    /// @notice The account's ERC-734 registry is served by its enshrined module (reached via the
+    ///         fallback). carol is a CLAIM_SIGNER there, so ERC-735 sees it. This poc installs a
+    ///         SECOND, separate validator; it holds its own registry and never sees carol, pinning
+    ///         the per-module registry isolation.
     function test_claimSignerLivesOnAccount_notValidator() public view {
         bytes32 carolKey = keccak256(abi.encodePacked(carol));
         assertTrue(
-            aliceIdentity.keyHasPurpose(carolKey, KeyPurposes.CLAIM_SIGNER), "account holds CLAIM_SIGNER for ERC-735"
+            IERC734(address(aliceIdentity)).keyHasPurpose(carolKey, KeyPurposes.CLAIM_SIGNER),
+            "account's enshrined registry holds CLAIM_SIGNER for ERC-735"
         );
         assertFalse(
             validator.keyHasPurpose(address(aliceIdentity), carolKey, KeyPurposes.CLAIM_SIGNER),
-            "validator does not hold identity purposes"
+            "the separate poc validator does not hold the account's keys"
         );
     }
 

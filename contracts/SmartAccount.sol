@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.28;
 
-import { KeyManager } from "./KeyManager.sol";
+import { IKeyRegistryModule, KeyManager } from "./KeyManager.sol";
 import { IKeyExecutor } from "./interface/IKeyExecutor.sol";
 import { Errors } from "./libraries/Errors.sol";
 import { hashAddress } from "./libraries/Hashing.sol";
@@ -17,15 +17,12 @@ import { PackedUserOperation } from "@openzeppelin/contracts/interfaces/draft-IE
 import { Execution, MODULE_TYPE_EXECUTOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { Calldata } from "@openzeppelin/contracts/utils/Calldata.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
-import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 /// @title SmartAccount
 /// @notice ERC-7579 modular account that uses the ERC-734 key registry from {KeyManager}.
 ///         Signature checks happen in the installed validator; the per-target rule for
 ///         user ops runs here.
 abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 {
-
-    using EnumerableSet for EnumerableSet.UintSet;
 
     /// @notice Install a module. Gated on MANAGEMENT.
     /// @dev The OZ default gate (`onlyEntryPointOrSelf`) is replaced with the stricter
@@ -64,20 +61,22 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
     }
 
     /// @dev Runs the base uninstall, then strips every ERC-734 purpose held by the
-    ///      module's address so a reinstall doesn't keep old rights.
+    ///      module's address so a reinstall doesn't keep old rights. Purposes are read from,
+    ///      and removed on, the enshrined registry module (self-calls).
     function _uninstallModule(uint256 moduleTypeId, address module, bytes memory deInitData) internal virtual override {
         // Base uninstall (calls module's onUninstall).
         super._uninstallModule(moduleTypeId, module, deInitData);
 
-        // Look up the module's key entry.
+        // Look up the module's key entry on the registry module.
         bytes32 moduleKey = hashAddress(module);
-        KeyStorage storage ks = _getKeyStorage();
+        IKeyRegistryModule registry = IKeyRegistryModule(_registryModule());
 
-        // No purpose was ever granted → nothing to clean up.
-        if (ks.keys[moduleKey].key == bytes32(0)) return;
+        // No key record for this module address → nothing to clean up.
+        (bytes memory signerData,) = registry.getKeyData(address(this), moduleKey);
+        if (signerData.length == 0) return;
 
         // Snapshot purposes before iterating (the set mutates during removal).
-        uint256[] memory purposes = ks.keys[moduleKey].purposes.values();
+        uint256[] memory purposes = registry.getKeyPurposes(address(this), moduleKey);
         for (uint256 i = 0; i < purposes.length; i++) {
             _removeKeyPurpose(moduleKey, purposes[i]);
         }
@@ -187,7 +186,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
             isModuleInstalled(MODULE_TYPE_EXECUTOR, target, Calldata.emptyBytes())
                 || (data.length >= 4 && _fallbackHandler(bytes4(data[:4])) == target)
         ) {
-            return keyHasPurpose(keyHash, KeyPurposes.MANAGEMENT);
+            return _moduleKeyHasPurpose(keyHash, KeyPurposes.MANAGEMENT);
         }
 
         // The policy module is whichever contract is wired as the `execute` fallback handler.
@@ -207,7 +206,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         //   self-target  -> MANAGEMENT required
         //   anything else -> ACTION required
         uint256 requiredPurpose = target == address(this) ? KeyPurposes.MANAGEMENT : KeyPurposes.ACTION;
-        return keyHasPurpose(keyHash, requiredPurpose);
+        return _moduleKeyHasPurpose(keyHash, requiredPurpose);
     }
 
 }

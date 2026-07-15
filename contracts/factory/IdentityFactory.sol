@@ -11,7 +11,7 @@ import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableS
 import { BeaconProxy } from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
 
 import { Identity } from "../Identity.sol";
-import { KeyManager } from "../KeyManager.sol";
+import { IERC734 } from "../interface/IERC734.sol";
 import { IIdentity } from "../interface/IIdentity.sol";
 import { Errors } from "../libraries/Errors.sol";
 import { IdentityTypes } from "../libraries/IdentityTypes.sol";
@@ -280,9 +280,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
 
         // The identity must end up with at least one MANAGEMENT key. Without it nobody
         // can manage the identity, so deploy is treated as a programmer error and reverts.
-        require(
-            KeyManager(identity).getKeysByPurpose(KeyPurposes.MANAGEMENT).length >= 1, Errors.NoManagementKeyInKeys()
-        );
+        require(IERC734(identity).getKeysByPurpose(KeyPurposes.MANAGEMENT).length >= 1, Errors.NoManagementKeyInKeys());
 
         // Mark factory-deployed BEFORE linking so a re-entrant module can't pretend
         // to be a non-factory caller.

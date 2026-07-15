@@ -94,10 +94,8 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     error CannotRemoveLastManagementKey();
     /// @dev A registered key's `keyType` differs from the one supplied on re-purpose.
     error KeyTypeMismatch(bytes32 keyHash);
-    /// @dev This validator only holds authorization purposes (MANAGEMENT / ACTION / PROPOSER).
-    ///      Identity purposes (CLAIM_SIGNER / CLAIM_ADDER / ENCRYPTION) live on the account's
-    ///      KeyManager so ERC-735 can read them; registering them here would be silently invisible.
-    error NotAnAuthorizationPurpose(uint256 purpose);
+    /// @dev The purpose is outside the ERC-734 range 1..6.
+    error InvalidPurpose(uint256 purpose);
 
     event KeyAdded(address indexed account, bytes32 indexed keyHash, uint256 indexed purpose, uint256 keyType);
     event KeyRemoved(address indexed account, bytes32 indexed keyHash, uint256 indexed purpose);
@@ -179,9 +177,12 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
             delete key.signerData;
             delete key.clientData;
         }
-        // Only the authorization purposes are ever populated here (see _isAuthorizationPurpose).
+        // Clear every purpose index. The module now holds all six ERC-734 purposes.
         registry.byPurpose[KeyPurposes.MANAGEMENT].clear();
         registry.byPurpose[KeyPurposes.ACTION].clear();
+        registry.byPurpose[KeyPurposes.CLAIM_SIGNER].clear();
+        registry.byPurpose[KeyPurposes.ENCRYPTION].clear();
+        registry.byPurpose[KeyPurposes.CLAIM_ADDER].clear();
         registry.byPurpose[KeyPurposes.PROPOSER].clear();
         registry.allKeys.clear();
     }
@@ -384,11 +385,11 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
 
         bytes4 innerSelector = inner.length >= 4 ? bytes4(inner[:4]) : bytes4(0);
         if (innerSelector == IERC735.addClaim.selector) {
-            return IERC734(account).keyHasPurpose(keyHash, KeyPurposes.CLAIM_SIGNER)
-                || IERC734(account).keyHasPurpose(keyHash, KeyPurposes.CLAIM_ADDER);
+            return keyHasPurpose(account, keyHash, KeyPurposes.CLAIM_SIGNER)
+                || keyHasPurpose(account, keyHash, KeyPurposes.CLAIM_ADDER);
         }
         if (innerSelector == IERC735.removeClaim.selector) {
-            return IERC734(account).keyHasPurpose(keyHash, KeyPurposes.CLAIM_SIGNER);
+            return keyHasPurpose(account, keyHash, KeyPurposes.CLAIM_SIGNER);
         }
         return false;
     }
@@ -437,10 +438,8 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         // Checked here so every caller (onInstall, addKey) is covered by a single guard.
         require(signerData.length >= 20, InvalidSignerLength());
 
-        // This validator only holds authorization purposes. Identity purposes belong on the
-        // account's KeyManager, where ERC-735 reads them; accepting one here would let it be
-        // set somewhere claim verification never looks.
-        require(_isAuthorizationPurpose(purpose), NotAnAuthorizationPurpose(purpose));
+        // The module owns every ERC-734 purpose (1..6). Reject anything out of range.
+        require(_isValidPurpose(purpose), InvalidPurpose(purpose));
 
         // keyHash is derived from signerData, so the record always commits to its own bytes.
         bytes32 keyHash = keccak256(signerData);
@@ -462,9 +461,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         emit KeyAdded(account, keyHash, purpose, keyType);
     }
 
-    /// @dev MANAGEMENT / ACTION / PROPOSER are the authorization purposes this validator owns.
-    function _isAuthorizationPurpose(uint256 purpose) private pure returns (bool) {
-        return purpose == KeyPurposes.MANAGEMENT || purpose == KeyPurposes.ACTION || purpose == KeyPurposes.PROPOSER;
+    /// @dev The six ERC-734 purposes this module holds (1..6).
+    function _isValidPurpose(uint256 purpose) private pure returns (bool) {
+        return purpose >= KeyPurposes.MANAGEMENT && purpose <= KeyPurposes.PROPOSER;
     }
 
     // --- ERC-735 claims --------------------------------------------------
@@ -681,7 +680,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         (bytes memory signer, bytes memory rawSig) = abi.decode(sig, (bytes, bytes));
         if (signer.length < 20) return IClaimIssuer.ClaimStatus.BadSignature;
 
-        if (!IERC734(account).keyHasPurpose(keccak256(signer), KeyPurposes.CLAIM_SIGNER)) {
+        if (!keyHasPurpose(account, keccak256(signer), KeyPurposes.CLAIM_SIGNER)) {
             return IClaimIssuer.ClaimStatus.NotIssued;
         }
 
@@ -697,8 +696,8 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     function _requireClaimKey(address account, address caller, bool onlyClaimSigner) internal view {
         bytes32 keyHash = hashAddress(caller);
 
-        if (IERC734(account).keyHasPurpose(keyHash, KeyPurposes.CLAIM_SIGNER)) return;
-        if (!onlyClaimSigner && IERC734(account).keyHasPurpose(keyHash, KeyPurposes.CLAIM_ADDER)) return;
+        if (keyHasPurpose(account, keyHash, KeyPurposes.CLAIM_SIGNER)) return;
+        if (!onlyClaimSigner && keyHasPurpose(account, keyHash, KeyPurposes.CLAIM_ADDER)) return;
 
         revert Errors.SenderDoesNotHaveClaimSignerKey();
     }
@@ -706,8 +705,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     /// @dev Require the off-chain caller to hold MANAGEMENT on `account`.
     function _requireManagement(address account, address caller) internal view {
         require(
-            IERC734(account).keyHasPurpose(hashAddress(caller), KeyPurposes.MANAGEMENT),
-            Errors.SenderDoesNotHaveManagementKey()
+            keyHasPurpose(account, hashAddress(caller), KeyPurposes.MANAGEMENT), Errors.SenderDoesNotHaveManagementKey()
         );
     }
 

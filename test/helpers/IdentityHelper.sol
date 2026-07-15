@@ -12,6 +12,7 @@ import { UpgradeableBeacon } from "@openzeppelin/contracts/proxy/beacon/Upgradea
 import { Identity } from "contracts/Identity.sol";
 import { IdentityFactory } from "contracts/factory/IdentityFactory.sol";
 import { IClaimIssuer } from "contracts/interface/IClaimIssuer.sol";
+import { IERC734 } from "contracts/interface/IERC734.sol";
 import { IERC735 } from "contracts/interface/IERC735.sol";
 import { IIdentity } from "contracts/interface/IIdentity.sol";
 import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
@@ -75,92 +76,125 @@ library IdentityHelper {
         }
     }
 
-    /// @notice Builds the full default-module install list: legacy queue (execute/approve) +
-    ///         the ERC-734/735 claim surface. `claimsModule` is the merged ERC734Validator, which
-    ///         holds the claim registry. Caller passes the singletons.
+    /// @notice Builds the full default-module install list: the merged ERC734Validator installed as
+    ///         a validator (it holds the key registry, enshrined during `initialize`) + the legacy
+    ///         queue (execute/approve) + the ERC-734 getter and ERC-735 claim fallback surface.
+    ///         `claimsModule` is the merged ERC734Validator. The validator install carries empty
+    ///         initData: the MANAGEMENT key is seeded from the factory's `_keys` array (which the
+    ///         factory requires to be non-empty and to hold at least one MANAGEMENT key).
     function legacyQueueModules(address keyApprovalModule, address claimsModule)
         internal
         pure
         returns (Structs.ModuleInstall[] memory installs)
     {
-        installs = new Structs.ModuleInstall[](14);
-        // ----- KeyApprovalModule: 1 executor + 3 fallbacks -----
+        installs = new Structs.ModuleInstall[](19);
+        // ----- merged ERC734Validator: validator (holds the key registry) -----
+        // Empty initData -> onInstall does not seed a key; MANAGEMENT comes from `_keys`.
         installs[0] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_VALIDATOR, module: claimsModule, initData: "", purpose: 0
+        });
+        // ----- KeyApprovalModule: 1 executor + 3 fallbacks -----
+        installs[1] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_EXECUTOR, module: keyApprovalModule, initData: "", purpose: KeyPurposes.MANAGEMENT
         });
-        installs[1] = Structs.ModuleInstall({
+        installs[2] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: keyApprovalModule,
             initData: abi.encodePacked(IKeyExecutor.execute.selector),
             purpose: 0
         });
-        installs[2] = Structs.ModuleInstall({
+        installs[3] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: keyApprovalModule,
             initData: abi.encodePacked(IKeyExecutor.approve.selector),
             purpose: 0
         });
-        installs[3] = Structs.ModuleInstall({
+        installs[4] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: keyApprovalModule,
             initData: abi.encodePacked(IKeyExecutor.getCurrentNonce.selector),
             purpose: 0
         });
-        // ----- claim module (merged validator): 1 executor + 9 fallbacks -----
-        installs[4] =
+        // ----- claim module (merged validator): 1 executor + 9 claim fallbacks -----
+        installs[5] =
             Structs.ModuleInstall({ moduleType: MODULE_TYPE_EXECUTOR, module: claimsModule, initData: "", purpose: 0 });
-        installs[5] = Structs.ModuleInstall({
+        installs[6] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
             initData: abi.encodePacked(IERC735.addClaim.selector),
             purpose: 0
         });
-        installs[6] = Structs.ModuleInstall({
+        installs[7] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
             initData: abi.encodePacked(IERC735.removeClaim.selector),
             purpose: 0
         });
-        installs[7] = Structs.ModuleInstall({
+        installs[8] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
             initData: abi.encodePacked(IERC735.getClaim.selector),
             purpose: 0
         });
-        installs[8] = Structs.ModuleInstall({
+        installs[9] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
             initData: abi.encodePacked(IERC735.getClaimIdsByTopic.selector),
             purpose: 0
         });
-        installs[9] = Structs.ModuleInstall({
+        installs[10] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
             initData: abi.encodePacked(IIdentity.isClaimValid.selector),
             purpose: 0
         });
-        installs[10] = Structs.ModuleInstall({
+        installs[11] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
             initData: abi.encodePacked(IIdentity.getClaimHash.selector),
             purpose: 0
         });
-        installs[11] = Structs.ModuleInstall({
+        installs[12] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
             initData: abi.encodePacked(IClaimIssuer.revokeClaimByDigest.selector),
             purpose: 0
         });
-        installs[12] = Structs.ModuleInstall({
+        installs[13] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
             initData: abi.encodePacked(IClaimIssuer.isDigestRevoked.selector),
             purpose: 0
         });
-        installs[13] = Structs.ModuleInstall({
+        installs[14] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
             initData: abi.encodePacked(IClaimIssuer.addClaimTo.selector),
+            purpose: 0
+        });
+        // ----- ERC-734 getters served by the merged module via fallback -----
+        installs[15] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: claimsModule,
+            initData: abi.encodePacked(IERC734.keyHasPurpose.selector),
+            purpose: 0
+        });
+        installs[16] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: claimsModule,
+            initData: abi.encodePacked(IERC734.getKey.selector),
+            purpose: 0
+        });
+        installs[17] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: claimsModule,
+            initData: abi.encodePacked(IERC734.getKeyPurposes.selector),
+            purpose: 0
+        });
+        installs[18] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: claimsModule,
+            initData: abi.encodePacked(IERC734.getKeysByPurpose.selector),
             purpose: 0
         });
     }
@@ -201,14 +235,14 @@ library IdentityHelper {
             clientData: ""
         });
 
-        Structs.ModuleInstall[] memory modules = new Structs.ModuleInstall[](11);
-        // `initData` seeds the validator's own registry with the initial MANAGEMENT key, so
-        // signatures from that EOA pass the validator's membership check and it can manage the
-        // identity. The validator owns scoping now, so no account-level purpose is granted to
+        Structs.ModuleInstall[] memory modules = new Structs.ModuleInstall[](15);
+        // The validator install carries empty initData: the MANAGEMENT key is seeded from `keys`
+        // above (the account seeds every `_keys` entry into the enshrined module during
+        // `initialize`). The validator owns scoping now, so no account-level purpose is granted to
         // the validator address (purpose: 0). Additional keys (e.g. ACTION signers) are added
         // afterwards via a self-call to `validator.addKey`.
         modules[0] = Structs.ModuleInstall({
-            moduleType: MODULE_TYPE_VALIDATOR, module: address(signatureValidator), initData: mgmtSigner, purpose: 0
+            moduleType: MODULE_TYPE_VALIDATOR, module: address(signatureValidator), initData: "", purpose: 0
         });
         modules[1] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_EXECUTOR, module: address(claimsModule), initData: "", purpose: 0
@@ -265,6 +299,31 @@ library IdentityHelper {
             moduleType: MODULE_TYPE_FALLBACK,
             module: address(claimsModule),
             initData: abi.encodePacked(IClaimIssuer.addClaimTo.selector),
+            purpose: 0
+        });
+        // ----- ERC-734 getters served by the merged module via fallback -----
+        modules[11] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: address(claimsModule),
+            initData: abi.encodePacked(IERC734.keyHasPurpose.selector),
+            purpose: 0
+        });
+        modules[12] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: address(claimsModule),
+            initData: abi.encodePacked(IERC734.getKey.selector),
+            purpose: 0
+        });
+        modules[13] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: address(claimsModule),
+            initData: abi.encodePacked(IERC734.getKeyPurposes.selector),
+            purpose: 0
+        });
+        modules[14] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: address(claimsModule),
+            initData: abi.encodePacked(IERC734.getKeysByPurpose.selector),
             purpose: 0
         });
 

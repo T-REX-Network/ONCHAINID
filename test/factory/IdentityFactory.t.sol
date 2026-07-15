@@ -6,13 +6,14 @@ import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 import { MockERC1271Wallet } from "../mocks/MockERC1271Wallet.sol";
 import { Constants } from "../utils/Constants.sol";
 import { AccessManager } from "@openzeppelin/contracts/access/manager/AccessManager.sol";
-import { MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import { MODULE_TYPE_FALLBACK, MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { UpgradeableBeacon } from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import { Errors as OZErrors } from "@openzeppelin/contracts/utils/Errors.sol";
 import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IIdentityFactory } from "contracts/factory/IIdentityFactory.sol";
 import { IdentityFactory } from "contracts/factory/IdentityFactory.sol";
+import { IERC734 } from "contracts/interface/IERC734.sol";
 import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
@@ -45,16 +46,38 @@ contract IdentityFactoryTest is OnchainIDSetup {
     }
 
     /// @dev Minimal module bundle that satisfies Identity.initialize's "needs a validator
-    ///      or an executor" invariant. Returns a fresh single-validator array each call so
-    ///      tests don't share calldata-aliased state. `initData` seeds the validator's
-    ///      per-account signer registry; factory tests don't sign through the validator,
-    ///      so any 20-byte signer blob passes the length check (alice is a convenient EOA).
+    ///      or an executor" invariant, plus the four ERC-734 getter fallbacks so the factory's
+    ///      post-deploy `getKeysByPurpose(MANAGEMENT)` check can be answered. The validator install
+    ///      carries empty initData: the MANAGEMENT key is seeded from the caller-supplied `keys`, so
+    ///      seeding it again in the validator's onInstall would collide (KeyAlreadyRegistered).
     function _defaultModules() internal view returns (Structs.ModuleInstall[] memory mods) {
-        mods = new Structs.ModuleInstall[](1);
-        mods[0] = Structs.ModuleInstall({
-            moduleType: MODULE_TYPE_VALIDATOR,
-            module: address(onchainidSetup.signatureValidator),
-            initData: abi.encodePacked(alice),
+        address validator = address(onchainidSetup.signatureValidator);
+        mods = new Structs.ModuleInstall[](5);
+        mods[0] =
+            Structs.ModuleInstall({ moduleType: MODULE_TYPE_VALIDATOR, module: validator, initData: "", purpose: 0 });
+        // ERC-734 getter fallbacks served by the merged validator module.
+        mods[1] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: validator,
+            initData: abi.encodePacked(IERC734.keyHasPurpose.selector),
+            purpose: 0
+        });
+        mods[2] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: validator,
+            initData: abi.encodePacked(IERC734.getKey.selector),
+            purpose: 0
+        });
+        mods[3] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: validator,
+            initData: abi.encodePacked(IERC734.getKeyPurposes.selector),
+            purpose: 0
+        });
+        mods[4] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: validator,
+            initData: abi.encodePacked(IERC734.getKeysByPurpose.selector),
             purpose: 0
         });
     }
@@ -665,13 +688,10 @@ contract IdentityFactoryTest is OnchainIDSetup {
     // ============ createIdentityFor with module installation ============
 
     function test_createIdentity_withModules_shouldInstallValidator() public {
-        Structs.ModuleInstall[] memory modules = new Structs.ModuleInstall[](1);
-        modules[0] = Structs.ModuleInstall({
-            moduleType: 1, // MODULE_TYPE_VALIDATOR
-            module: address(onchainidSetup.signatureValidator),
-            initData: abi.encodePacked(david),
-            purpose: 0
-        });
+        // The MANAGEMENT key is seeded from `keys` (_makeSingleMgmtKeys(david)); the validator
+        // install carries empty initData to avoid re-seeding david (KeyAlreadyRegistered). The
+        // ERC-734 getter fallbacks are needed for the factory's post-deploy management-key check.
+        Structs.ModuleInstall[] memory modules = _defaultModules();
         vm.prank(deployer);
         address identityAddr = onchainidSetup.idFactory
             .createIdentityFor(david, IdentityTypes.INDIVIDUAL, "saltWithModules", _makeSingleMgmtKeys(david), modules);
@@ -690,9 +710,10 @@ contract IdentityFactoryTest is OnchainIDSetup {
             );
         Identity identity = Identity(payable(identityAddr));
         assertFalse(
-            identity.keyHasPurpose(
-                ClaimSignerHelper.addressToKey(address(onchainidSetup.idFactory)), KeyPurposes.MANAGEMENT
-            )
+            IERC734(address(identity))
+                .keyHasPurpose(
+                    ClaimSignerHelper.addressToKey(address(onchainidSetup.idFactory)), KeyPurposes.MANAGEMENT
+                )
         );
     }
 
