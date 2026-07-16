@@ -265,4 +265,11 @@ library Errors {
     /// @notice The call failed.
     error CallFailed();
 
+    /* ----- EASClaimIssuer ----- */
+
+    /// @notice Reverts when a caller invokes an `IClaimIssuer` or `IIdentity` method that has
+    ///         no meaning on a stateless adapter (key management, claim storage, execution).
+    ///         The adapter is a live view over EAS and holds no keys or claims.
+    error EASNotSupported();
+
 }
