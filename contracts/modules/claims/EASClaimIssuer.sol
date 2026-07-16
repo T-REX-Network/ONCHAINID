@@ -57,13 +57,18 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
     ///      `NotIssued` for it. Setting a topic to zero is the intended kill switch.
     ///      Used twice in `_resolve`: first to reject unmapped topics, then to require
     ///      the attestation's own `schema` field to equal the mapped value (this second
-    ///      check prevents cross-topic contamination).
-    mapping(uint256 topic => bytes32 schema) public schemaOf;
+    ///      check prevents cross-topic contamination). Read via {schemaOf}.
+    mapping(uint256 topic => bytes32 schema) private _schemaOf;
 
     /// @dev Attesters whose EAS attestations this adapter accepts. Any `address` can
     ///      write an attestation on EAS; only those in this set are treated as trusted
     ///      issuers here. Managed like `trustedIssuersRegistry` on the OnchainID side.
-    mapping(address attester => bool allowed) public isAttesterAllowed;
+    ///      Read via {isAttesterAllowed}.
+    mapping(address attester => bool allowed) private _isAttesterAllowed;
+
+    /// @dev Adapter initialized. Emits the immutable `EAS` and `FACTORY` addresses so
+    ///      indexers can catalog every deployed adapter with a single topic scan.
+    event AdapterInitialized(address indexed eas, address indexed factory);
 
     /// @dev Schema binding changed. `schema == 0` means the topic was unbound.
     event SchemaForTopicSet(uint256 indexed topic, bytes32 indexed schema);
@@ -82,20 +87,31 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         require(address(factory_) != address(0), Errors.ZeroAddress());
         EAS = eas_;
         FACTORY = factory_;
+        emit AdapterInitialized(address(eas_), address(factory_));
     }
 
     /// @notice Bind an ERC-3643 topic to an EAS schema UID. Pass `schema = 0` to unbind
     ///         (kill switch for a compromised schema, no redeploy needed).
     function setSchemaForTopic(uint256 topic, bytes32 schema) external restricted {
-        schemaOf[topic] = schema;
+        _schemaOf[topic] = schema;
         emit SchemaForTopicSet(topic, schema);
     }
 
     /// @notice Add or remove an attester from the accepted set. Adding widens the trust
     ///         surface: attestations from `attester` under a configured schema will pass.
     function setAttester(address attester, bool allowed) external restricted {
-        isAttesterAllowed[attester] = allowed;
+        _isAttesterAllowed[attester] = allowed;
         emit AttesterSet(attester, allowed);
+    }
+
+    /// @notice EAS schema UID bound to `topic`, or `bytes32(0)` if unbound.
+    function schemaOf(uint256 topic) public view returns (bytes32) {
+        return _schemaOf[topic];
+    }
+
+    /// @notice Whether `attester` is in the accepted set.
+    function isAttesterAllowed(address attester) public view returns (bool) {
+        return _isAttesterAllowed[attester];
     }
 
     /// @notice Raw `data` field of the attestation carried by `sig`. Useful when the
@@ -146,7 +162,7 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         view
         returns (ClaimStatus)
     {
-        bytes32 schema = schemaOf[topic];
+        bytes32 schema = _schemaOf[topic];
         if (schema == bytes32(0)) return ClaimStatus.NotIssued;
 
         if (sig.length != 32) return ClaimStatus.BadSignature;
@@ -154,7 +170,8 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         if (uid == bytes32(0)) return ClaimStatus.BadSignature;
 
         Attestation memory attestation = EAS.getAttestation(uid);
-        if (attestation.uid == bytes32(0) || attestation.schema != schema || !isAttesterAllowed[attestation.attester]) {
+        if (attestation.uid == bytes32(0) || attestation.schema != schema || !_isAttesterAllowed[attestation.attester])
+        {
             return ClaimStatus.NotIssued;
         }
 
