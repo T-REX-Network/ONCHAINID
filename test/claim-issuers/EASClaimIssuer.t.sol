@@ -119,8 +119,9 @@ contract EASClaimIssuerTest is OnchainIDSetup {
     }
 
     /// @dev EIP-712 helper to build a `LinkAccount` digest for linking a wallet to an
-    ///      identity. Reads the domain from the factory via EIP-5267 so this test does not
-    ///      hardcode the factory's name/version.
+    ///      identity. Reads the domain from the factory via EIP-5267 and hashes it via
+    ///      OZ `MessageHashUtils.toDomainSeparator`, so this test never hardcodes the
+    ///      factory's name, version, or field set.
     bytes32 internal constant _LINK_ACCOUNT_TYPEHASH =
         keccak256("LinkAccount(bytes account,address identity,uint256 nonce,uint256 expiry)");
 
@@ -129,18 +130,16 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         view
         returns (bytes32)
     {
-        (, string memory name, string memory version, uint256 chainId, address verifyingContract,,) =
-            IERC5267(address(onchainidSetup.idFactory)).eip712Domain();
+        (
+            bytes1 fields,
+            string memory name,
+            string memory version,
+            uint256 chainId,
+            address verifyingContract,
+            bytes32 salt,
+        ) = IERC5267(address(onchainidSetup.idFactory)).eip712Domain();
 
-        bytes32 domain = keccak256(
-            abi.encode(
-                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
-                keccak256(bytes(name)),
-                keccak256(bytes(version)),
-                chainId,
-                verifyingContract
-            )
-        );
+        bytes32 domain = MessageHashUtils.toDomainSeparator(fields, name, version, chainId, verifyingContract, salt);
         bytes32 structHash = keccak256(abi.encode(_LINK_ACCOUNT_TYPEHASH, keccak256(account), identity, nonce, expiry));
         return MessageHashUtils.toTypedDataHash(domain, structHash);
     }
