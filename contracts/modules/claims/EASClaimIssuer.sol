@@ -21,9 +21,9 @@ import { Attestation, IEAS } from "../../vendor/eas/IEAS.sol";
  *         adapter translates: a KYC provider already attesting on EAS does not have
  *         to re-issue the same fact as an OnchainID claim.
  *
- *         Trust: `EAS` for everything `getAttestation` returns; `FACTORY` for the
- *         identity/wallet lookups; the AM admin for the `schemaOf` map and
- *         `isAttesterAllowed` list. Both `EAS` and `FACTORY` are immutable so the
+ *         Trust: EAS for everything `getAttestation` returns; the factory for the
+ *         identity/wallet lookups; the AM admin for the topic-to-schema map and the
+ *         attester allowlist. Both EAS and factory addresses are immutable so the
  *         admin cannot silently repoint them.
  *
  *         An attestation may name the identity itself (identities are ERC-7579 smart
@@ -45,11 +45,13 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
 
     /// @dev EAS deployment on this chain. Immutable so the admin cannot silently repoint
     ///      at a fake EAS and bypass revocation. Redeploy the adapter to change.
-    IEAS public immutable EAS;
+    ///      Read via {getEAS}.
+    IEAS private immutable _EAS;
 
     /// @dev `IdentityFactory` used to resolve wallets to identities and to gate the
-    ///      self-recipient branch. Immutable for the same reason as `EAS`.
-    IIdentityFactory public immutable FACTORY;
+    ///      self-recipient branch. Immutable for the same reason as `_EAS`.
+    ///      Read via {getFactory}.
+    IIdentityFactory private immutable _FACTORY;
 
     /// @dev Topic to EAS schema UID map. The token side asks about a `uint256` topic,
     ///      EAS speaks in `bytes32` schema UIDs, this is the dictionary between them.
@@ -57,16 +59,16 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
     ///      `NotIssued` for it. Setting a topic to zero is the intended kill switch.
     ///      Used twice in `_resolve`: first to reject unmapped topics, then to require
     ///      the attestation's own `schema` field to equal the mapped value (this second
-    ///      check prevents cross-topic contamination). Read via {schemaOf}.
+    ///      check prevents cross-topic contamination). Read via {getSchemaForTopic}.
     mapping(uint256 topic => bytes32 schema) private _schemaOf;
 
     /// @dev Attesters whose EAS attestations this adapter accepts. Any `address` can
     ///      write an attestation on EAS; only those in this set are treated as trusted
     ///      issuers here. Managed like `trustedIssuersRegistry` on the OnchainID side.
-    ///      Read via {isAttesterAllowed}.
+    ///      Read via {getIsAttesterAllowed}.
     mapping(address attester => bool allowed) private _isAttesterAllowed;
 
-    /// @dev Adapter initialized. Emits the immutable `EAS` and `FACTORY` addresses so
+    /// @dev Adapter initialized. Emits the immutable EAS and factory addresses so
     ///      indexers can catalog every deployed adapter with a single topic scan.
     event AdapterInitialized(address indexed eas, address indexed factory);
 
@@ -85,8 +87,8 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
     constructor(address authority_, IEAS eas_, IIdentityFactory factory_) AccessManaged(authority_) {
         require(address(eas_) != address(0), Errors.ZeroAddress());
         require(address(factory_) != address(0), Errors.ZeroAddress());
-        EAS = eas_;
-        FACTORY = factory_;
+        _EAS = eas_;
+        _FACTORY = factory_;
         emit AdapterInitialized(address(eas_), address(factory_));
     }
 
@@ -104,13 +106,23 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         emit AttesterSet(attester, allowed);
     }
 
+    /// @notice EAS core contract this adapter reads from.
+    function getEAS() public view returns (IEAS) {
+        return _EAS;
+    }
+
+    /// @notice `IdentityFactory` this adapter delegates identity and wallet lookups to.
+    function getFactory() public view returns (IIdentityFactory) {
+        return _FACTORY;
+    }
+
     /// @notice EAS schema UID bound to `topic`, or `bytes32(0)` if unbound.
-    function schemaOf(uint256 topic) public view returns (bytes32) {
+    function getSchemaForTopic(uint256 topic) public view returns (bytes32) {
         return _schemaOf[topic];
     }
 
     /// @notice Whether `attester` is in the accepted set.
-    function isAttesterAllowed(address attester) public view returns (bool) {
+    function getIsAttesterAllowed(address attester) public view returns (bool) {
         return _isAttesterAllowed[attester];
     }
 
@@ -122,7 +134,7 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
     function getAttestationData(bytes calldata sig) external view returns (bytes memory) {
         if (sig.length != 32) return "";
         bytes32 uid = bytes32(sig);
-        return EAS.getAttestation(uid).data;
+        return getEAS().getAttestation(uid).data;
     }
 
     /// @inheritdoc IClaimIssuer
@@ -162,15 +174,17 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         view
         returns (ClaimStatus)
     {
-        bytes32 schema = schemaOf(topic);
+        bytes32 schema = getSchemaForTopic(topic);
         if (schema == bytes32(0)) return ClaimStatus.NotIssued;
 
         if (sig.length != 32) return ClaimStatus.BadSignature;
         bytes32 uid = bytes32(sig);
         if (uid == bytes32(0)) return ClaimStatus.BadSignature;
 
-        Attestation memory attestation = EAS.getAttestation(uid);
-        if (attestation.uid == bytes32(0) || attestation.schema != schema || !isAttesterAllowed(attestation.attester)) {
+        Attestation memory attestation = getEAS().getAttestation(uid);
+        if (
+            attestation.uid == bytes32(0) || attestation.schema != schema || !getIsAttesterAllowed(attestation.attester)
+        ) {
             return ClaimStatus.NotIssued;
         }
 
@@ -182,14 +196,14 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         // Recipient is the identity itself. `isFactoryIdentity` blocks arbitrary contracts
         // from posing as `_identity`.
         if (attestation.recipient == address(_identity)) {
-            return FACTORY.isFactoryIdentity(address(_identity)) ? ClaimStatus.Valid : ClaimStatus.NotIssued;
+            return getFactory().isFactoryIdentity(address(_identity)) ? ClaimStatus.Valid : ClaimStatus.NotIssued;
         }
 
         // Recipient is a wallet linked to `_identity`. `getIdentityIncludingRevoked`
         // returns the identity for both Active and Revoked links; only `None` returns
         // zero. Status is ignored on purpose (see header, recovery deadlock argument).
         bytes memory envelope = InteroperableAddress.formatEvmV1(block.chainid, attestation.recipient);
-        (address linked,) = FACTORY.getIdentityIncludingRevoked(envelope);
+        (address linked,) = getFactory().getIdentityIncludingRevoked(envelope);
         if (linked == address(_identity)) return ClaimStatus.Valid;
         return ClaimStatus.NotIssued;
     }
