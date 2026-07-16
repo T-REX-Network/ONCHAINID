@@ -284,16 +284,30 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         assertFalse(adapter.isClaimValid(IIdentity(address(bobIdentity)), TOPIC, _encodeUid(uid), emptyData));
     }
 
-    function test_isClaimValid_linkedWalletThenRevoked_rejects() public {
+    /// @notice The wallet-to-identity link is sticky: an attestation whose recipient is a
+    ///         wallet stays valid after that wallet is revoked from the identity. The
+    ///         attestation belongs to the identity, and the wallet-in-recipient is only a
+    ///         resolution mechanism, so revocation of the wallet does not withdraw the
+    ///         identity's eligibility. See the contract header for the recovery argument
+    ///         (compromised-wallet revocation must not deadlock `isVerified` on the
+    ///         identity).
+    function test_isClaimValid_linkedWalletStaysValidAfterRevocation() public {
         _linkWalletToAlice(david, davidPk);
         bytes32 uid = _attestValid(david);
 
-        // Verifies while active.
         assertTrue(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData));
 
-        // After factory-side revocation the adapter must return false. The EAS attestation is
-        // still live but the recipient wallet no longer authenticates.
+        // Revoking the wallet on the factory leaves the claim valid: only the wallet-as-actor
+        // is disabled at the token layer, the identity's claim resolution is unchanged.
         _revokeWalletFromAlice(david);
+        assertTrue(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData));
+    }
+
+    /// @notice A wallet that was never linked to any identity does not resolve, regardless of
+    ///         whether an attestation names it.
+    function test_isClaimValid_recipientWalletNeverLinkedRejects() public {
+        // `david` is a fresh EOA, never linked to alice or anyone.
+        bytes32 uid = _attestValid(david);
         assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData));
     }
 

@@ -19,14 +19,22 @@ import { Attestation, IEAS } from "../../vendor/eas/IEAS.sol";
  *
  * @dev    Two recipient layouts are supported. The attestation may name the identity contract
  *         itself as recipient (the identity is an ERC-7579 smart account so it can receive
- *         attestations directly), or it may name an EVM wallet that is Active-linked to the
- *         identity in the IdentityFactory global registry. A wallet whose factory status is
- *         Revoked fails validation: the on-chain link stays visible but no longer authenticates.
+ *         attestations directly), or it may name an EVM wallet linked to the identity in the
+ *         IdentityFactory global registry. The wallet's factory status (`Active` or `Revoked`)
+ *         does not affect the outcome: the attestation belongs to the identity, and the
+ *         wallet-in-recipient is a resolution mechanism, not an authentication one. The
+ *         registry binding is sticky and terminal, so a wallet can only ever resolve to the
+ *         identity it was originally bound to. Requiring `Active` here would also break
+ *         recovery: a compromised wallet must be revoked, but recovery routes through
+ *         `isVerified` on the destination identity and would deadlock if revocation
+ *         withdrew the identity's eligibility. If a claim itself needs to die, both the
+ *         attester (via EAS `revoke`) and the identity owner (via `removeClaim`) can kill
+ *         it directly.
  *
  *         The following surfaces cause `isClaimValid` to return false: EAS attestation revoked
  *         (`revocationTime != 0`), EAS attestation expired, attester not in the accepted set,
- *         schema does not match the topic, recipient wallet revoked or not linked, and topic
- *         with no configured schema.
+ *         schema does not match the topic, recipient wallet never linked to any identity, and
+ *         topic with no configured schema.
  *
  *         The IClaimIssuer `signature` bytes carry the EAS attestation UID (a bare 32-byte
  *         word, i.e. `abi.encodePacked(uid)`). This keeps the interface compatible with
@@ -133,8 +141,11 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
      *      off-chain consumers can surface EAS failures with existing UI. Missing schema,
      *      missing attestation, wrong schema, or unaccepted attester map to `NotIssued`.
      *      Malformed UID payload maps to `BadSignature`. EAS revocation and expiry map to
-     *      `Revoked` and `Expired`. Recipient binding to `_identity` (self or Active-linked
-     *      wallet) maps to `Valid`.
+     *      `Revoked` and `Expired`. Recipient binding to `_identity` (self, or any linked
+     *      wallet regardless of its `Active`/`Revoked` factory status) maps to `Valid`.
+     *      Wallet status is intentionally ignored: the attestation is owned by the identity
+     *      and the wallet is only a resolution hop. See the contract header for the recovery
+     *      argument.
      */
     function _resolve(
         IIdentity _identity,
@@ -170,12 +181,14 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
             return FACTORY.isFactoryIdentity(address(_identity)) ? ClaimStatus.Valid : ClaimStatus.NotIssued;
         }
 
-        // Recipient is an EVM wallet that must be Active-linked to `_identity`.
+        // Recipient is an EVM wallet linked to `_identity`. `getIdentityIncludingRevoked`
+        // resolves both `Active` and `Revoked` links (the factory keeps the record on-chain
+        // after revocation); only `None` returns zero. We deliberately ignore the returned
+        // status so revoking a compromised wallet does not deadlock recovery through this
+        // claim; see the contract header for the recovery argument.
         bytes memory envelope = InteroperableAddress.formatEvmV1(block.chainid, attestation.recipient);
-        (address linked, IIdentityFactory.AccountStatus status) = FACTORY.getIdentityIncludingRevoked(envelope);
-        if (linked == address(_identity) && status == IIdentityFactory.AccountStatus.Active) {
-            return ClaimStatus.Valid;
-        }
+        (address linked,) = FACTORY.getIdentityIncludingRevoked(envelope);
+        if (linked == address(_identity)) return ClaimStatus.Valid;
         return ClaimStatus.NotIssued;
     }
 
