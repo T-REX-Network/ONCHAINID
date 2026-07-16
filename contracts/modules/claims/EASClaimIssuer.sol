@@ -162,7 +162,7 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         view
         returns (ClaimStatus)
     {
-        bytes32 schema = _schemaOf[topic];
+        bytes32 schema = schemaOf(topic);
         if (schema == bytes32(0)) return ClaimStatus.NotIssued;
 
         if (sig.length != 32) return ClaimStatus.BadSignature;
@@ -170,8 +170,7 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         if (uid == bytes32(0)) return ClaimStatus.BadSignature;
 
         Attestation memory attestation = EAS.getAttestation(uid);
-        if (attestation.uid == bytes32(0) || attestation.schema != schema || !_isAttesterAllowed[attestation.attester])
-        {
+        if (attestation.uid == bytes32(0) || attestation.schema != schema || !isAttesterAllowed(attestation.attester)) {
             return ClaimStatus.NotIssued;
         }
 
