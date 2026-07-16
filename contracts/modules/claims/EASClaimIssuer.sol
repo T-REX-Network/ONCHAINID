@@ -13,58 +13,63 @@ import { Attestation, IEAS } from "../../vendor/eas/IEAS.sol";
 
 /**
  * @title EASClaimIssuer
- * @notice Stateless ClaimIssuer adapter that resolves ERC-3643 claims against EAS attestations
- *         live on every call. The adapter holds no claim state; EAS is the source of truth and
- *         `isClaimValid` re-reads it each time.
+ * @notice A `ClaimIssuer` that reads EAS attestations live. It stores no claim state.
+ *         Revocation, expiry, and wallet unlinking all take effect on the next call.
  *
- * @dev    Two recipient layouts are supported. The attestation may name the identity contract
- *         itself as recipient (the identity is an ERC-7579 smart account so it can receive
- *         attestations directly), or it may name an EVM wallet linked to the identity in the
- *         IdentityFactory global registry. The wallet's factory status (`Active` or `Revoked`)
- *         does not affect the outcome: the attestation belongs to the identity, and the
- *         wallet-in-recipient is a resolution mechanism, not an authentication one. The
- *         registry binding is sticky and terminal, so a wallet can only ever resolve to the
- *         identity it was originally bound to. Requiring `Active` here would also break
- *         recovery: a compromised wallet must be revoked, but recovery routes through
- *         `isVerified` on the destination identity and would deadlock if revocation
- *         withdrew the identity's eligibility. If a claim itself needs to die, both the
- *         attester (via EAS `revoke`) and the identity owner (via `removeClaim`) can kill
- *         it directly.
+ * @dev    ERC-3643 asks a `ClaimIssuer` if a claim is valid. EAS is a general
+ *         attestation layer that speaks a different vocabulary (schema UIDs). This
+ *         adapter translates: a KYC provider already attesting on EAS does not have
+ *         to re-issue the same fact as an OnchainID claim.
  *
- *         The following surfaces cause `isClaimValid` to return false: EAS attestation revoked
- *         (`revocationTime != 0`), EAS attestation expired, attester not in the accepted set,
- *         schema does not match the topic, recipient wallet never linked to any identity, and
- *         topic with no configured schema.
+ *         Trust: `EAS` for everything `getAttestation` returns; `FACTORY` for the
+ *         identity/wallet lookups; the AM admin for the `schemaOf` map and
+ *         `isAttesterAllowed` list. Both `EAS` and `FACTORY` are immutable so the
+ *         admin cannot silently repoint them.
  *
- *         The IClaimIssuer `signature` bytes carry the EAS attestation UID (a bare 32-byte
- *         word, i.e. `abi.encodePacked(uid)`). This keeps the interface compatible with
- *         ClaimsModule without changing it.
+ *         An attestation may name the identity itself (identities are ERC-7579 smart
+ *         accounts) or a wallet linked to the identity in `IdentityFactory`. The
+ *         wallet's factory status is intentionally ignored: the attestation belongs
+ *         to the identity, and requiring `Active` would deadlock recovery on a
+ *         compromised wallet. Kills happen elsewhere: attester revokes on EAS, holder
+ *         removes the local record via `removeClaim`.
  *
- *         Not supported in v1: off-chain EAS attestations, non-EVM linked wallets, and
- *         cross-chain EAS reads. Every method that would mutate identity or claim state
- *         reverts with `Errors.EASNotSupported` because the adapter is not itself an Identity.
+ *         The `IClaimIssuer` `signature` field carries the EAS attestation UID as a
+ *         bare 32-byte word (`abi.encodePacked(uid)`). Length-32 check rejects any
+ *         other shape.
+ *
+ *         Not supported: off-chain EAS attestations, non-EVM wallets, cross-chain
+ *         reads. Any `IIdentity` / ERC-734 / ERC-735 method that has no meaning on a
+ *         stateless reader reverts with `Errors.EASNotSupported`.
  */
 contract EASClaimIssuer is IClaimIssuer, AccessManaged {
 
-    /// @dev EAS deployment this adapter reads from. Same-chain only. Immutable: EAS core
-    ///      contracts are deployed once per chain by the EAS team and never change. To
-    ///      point at a different attestation source, redeploy the adapter.
+    /// @dev EAS deployment on this chain. Immutable so the admin cannot silently repoint
+    ///      at a fake EAS and bypass revocation. Redeploy the adapter to change.
     IEAS public immutable EAS;
 
-    /// @dev Global identity registry consulted to resolve linked wallets.
+    /// @dev `IdentityFactory` used to resolve wallets to identities and to gate the
+    ///      self-recipient branch. Immutable for the same reason as `EAS`.
     IIdentityFactory public immutable FACTORY;
 
-    /// @dev Topic to EAS schema UID mapping. Unset topics reject.
+    /// @dev Topic to EAS schema UID map. The token side asks about a `uint256` topic,
+    ///      EAS speaks in `bytes32` schema UIDs, this is the dictionary between them.
+    ///      Unset (`bytes32(0)`) means the topic is not configured; `_resolve` returns
+    ///      `NotIssued` for it. Setting a topic to zero is the intended kill switch.
+    ///      Used twice in `_resolve`: first to reject unmapped topics, then to require
+    ///      the attestation's own `schema` field to equal the mapped value (this second
+    ///      check prevents cross-topic contamination).
     mapping(uint256 topic => bytes32 schema) public schemaOf;
 
-    /// @dev Accepted attester allowlist. An attestation from an address outside this set is
-    ///      rejected regardless of schema and revocation state.
+    /// @dev Attesters whose EAS attestations this adapter accepts. Any `address` can
+    ///      write an attestation on EAS; only those in this set are treated as trusted
+    ///      issuers here. Managed like `trustedIssuersRegistry` on the OnchainID side.
     mapping(address attester => bool allowed) public isAttesterAllowed;
 
-    /// @dev Emitted when the schema binding for a topic changes.
+    /// @dev Schema binding changed. `schema == 0` means the topic was unbound.
     event SchemaForTopicSet(uint256 indexed topic, bytes32 indexed schema);
 
-    /// @dev Emitted when the accepted attester allowlist changes.
+    /// @dev Attester allowlist changed. Monitor `allowed == true` events: they widen
+    ///      the trust surface.
     event AttesterSet(address indexed attester, bool allowed);
 
     /**
@@ -79,45 +84,34 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         FACTORY = factory_;
     }
 
-    /**
-     * @notice Bind an ERC-3643 claim topic to an EAS schema UID. Pass `schema = 0` to unbind
-     *         and disable the topic on this adapter.
-     */
+    /// @notice Bind an ERC-3643 topic to an EAS schema UID. Pass `schema = 0` to unbind
+    ///         (kill switch for a compromised schema, no redeploy needed).
     function setSchemaForTopic(uint256 topic, bytes32 schema) external restricted {
         schemaOf[topic] = schema;
         emit SchemaForTopicSet(topic, schema);
     }
 
-    /**
-     * @notice Add or remove an attester from the accepted set.
-     */
+    /// @notice Add or remove an attester from the accepted set. Adding widens the trust
+    ///         surface: attestations from `attester` under a configured schema will pass.
     function setAttester(address attester, bool allowed) external restricted {
         isAttesterAllowed[attester] = allowed;
         emit AttesterSet(attester, allowed);
     }
 
-    /**
-     * @notice Return the raw `data` field of the attestation carried by `sig`. Useful for
-     *         schemas that encode attribute values (e.g. `citizenship`, `dateOfBirth`) so
-     *         consumers can decode the payload without re-implementing the UID unpack and
-     *         EAS read.
-     *
-     * @dev    Returns empty bytes when `sig` is not a 32-byte UID or the attestation does
-     *         not exist. Does not validate schema, attester, revocation, or expiry; pair
-     *         with `getClaimStatus` if the caller needs "valid claim's data".
-     */
+    /// @notice Raw `data` field of the attestation carried by `sig`. Useful when the
+    ///         schema encodes attribute values the caller wants to decode.
+    /// @dev    Returns empty bytes if `sig` is not a 32-byte UID or the attestation does
+    ///         not exist. Does not check schema, attester, revocation, or expiry. Pair
+    ///         with `getClaimStatus` when validity matters.
     function getAttestationData(bytes calldata sig) external view returns (bytes memory) {
         if (sig.length != 32) return "";
         bytes32 uid = bytes32(sig);
         return EAS.getAttestation(uid).data;
     }
 
-    /**
-     * @inheritdoc IClaimIssuer
-     * @dev  `sig` must be a 32-byte EAS attestation UID (`abi.encodePacked(uid)`). `data`
-     *       is ignored: EAS carries its own `time` and `expirationTime`, which are the
-     *       authoritative time bounds.
-     */
+    /// @inheritdoc IClaimIssuer
+    /// @dev `sig` must be a 32-byte EAS attestation UID (`abi.encodePacked(uid)`).
+    ///      `data` is ignored: EAS carries its own time bounds.
     function isClaimValid(IIdentity _identity, uint256 claimTopic, bytes calldata sig, Structs.ClaimData calldata data)
         external
         view
@@ -136,17 +130,12 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         return _resolve(_identity, claimTopic, sig, data);
     }
 
-    /**
-     * @dev Live status resolution. Order of checks mirrors `IClaimIssuer.ClaimStatus` so
-     *      off-chain consumers can surface EAS failures with existing UI. Missing schema,
-     *      missing attestation, wrong schema, or unaccepted attester map to `NotIssued`.
-     *      Malformed UID payload maps to `BadSignature`. EAS revocation and expiry map to
-     *      `Revoked` and `Expired`. Recipient binding to `_identity` (self, or any linked
-     *      wallet regardless of its `Active`/`Revoked` factory status) maps to `Valid`.
-     *      Wallet status is intentionally ignored: the attestation is owned by the identity
-     *      and the wallet is only a resolution hop. See the contract header for the recovery
-     *      argument.
-     */
+    /// @dev Live status resolution. Missing config, missing attestation, wrong schema,
+    ///      or unaccepted attester map to `NotIssued`. Bad UID payload maps to
+    ///      `BadSignature`. EAS revocation and expiry map to `Revoked` and `Expired`.
+    ///      Recipient binding to `_identity` (self or any linked wallet, regardless of
+    ///      factory status) maps to `Valid`. Wallet status is ignored on purpose; see
+    ///      the contract header.
     function _resolve(
         IIdentity _identity,
         uint256 topic,
@@ -175,25 +164,21 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         }
 
         // Recipient is the identity itself. `isFactoryIdentity` blocks arbitrary contracts
-        // from passing themselves as `_identity`. The linked-wallet branch below does not
-        // need this check; the factory only knows about identities it deployed.
+        // from posing as `_identity`.
         if (attestation.recipient == address(_identity)) {
             return FACTORY.isFactoryIdentity(address(_identity)) ? ClaimStatus.Valid : ClaimStatus.NotIssued;
         }
 
-        // Recipient is an EVM wallet linked to `_identity`. `getIdentityIncludingRevoked`
-        // resolves both `Active` and `Revoked` links (the factory keeps the record on-chain
-        // after revocation); only `None` returns zero. We deliberately ignore the returned
-        // status so revoking a compromised wallet does not deadlock recovery through this
-        // claim; see the contract header for the recovery argument.
+        // Recipient is a wallet linked to `_identity`. `getIdentityIncludingRevoked`
+        // returns the identity for both Active and Revoked links; only `None` returns
+        // zero. Status is ignored on purpose (see header, recovery deadlock argument).
         bytes memory envelope = InteroperableAddress.formatEvmV1(block.chainid, attestation.recipient);
         (address linked,) = FACTORY.getIdentityIncludingRevoked(envelope);
         if (linked == address(_identity)) return ClaimStatus.Valid;
         return ClaimStatus.NotIssued;
     }
 
-    // Unsupported IClaimIssuer surface. Revocation is driven by EAS, not by a spent-digest set
-    // on this contract.
+    // Unsupported surface. Revocation lives on EAS, not on this contract.
 
     /// @inheritdoc IClaimIssuer
     function revokeClaimByDigest(bytes32) external pure {
