@@ -82,7 +82,8 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712,
         (bytes memory signerData,) = registry.getKeyData(address(this), moduleKey);
         if (signerData.length == 0) return;
 
-        // Snapshot purposes before iterating (the set mutates during removal).
+        // Bounded to the 6 ERC-734 purposes, so this loop is cheap. Snapshot before iterating,
+        // since the set mutates during removal.
         uint256[] memory purposes = registry.getKeyPurposes(address(this), moduleKey);
         for (uint256 i = 0; i < purposes.length; i++) {
             _removeKeyPurpose(moduleKey, purposes[i]);
