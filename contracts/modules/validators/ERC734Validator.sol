@@ -485,11 +485,10 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         AccountRegistry storage registry = _store().registries[account];
         Key storage key = registry.keys[keyHash];
 
-        if (!registry.allKeys.contains(keyHash)) {
+        if (registry.allKeys.add(keyHash)) {
             key.signerData = signerData;
             key.clientData = clientData;
             key.keyType = keyType;
-            registry.allKeys.add(keyHash);
         } else {
             // Re-purposing an existing key: keep the stored type, reject a mismatch.
             require(key.keyType == keyType, KeyTypeMismatch(keyHash));
