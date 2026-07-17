@@ -360,7 +360,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         returns (uint256)
     {
         // Super does the crypto + membership check; we add the per-target scoping on top.
-        if (super._validateUserOp(userOp, userOpHash) == ERC4337Utils.SIG_VALIDATION_FAILED) {
+        // Keep super's return value: it may pack an aggregator or time bounds, not just success.
+        uint256 validationData = super._validateUserOp(userOp, userOpHash);
+        if (validationData == ERC4337Utils.SIG_VALIDATION_FAILED) {
             return ERC4337Utils.SIG_VALIDATION_FAILED;
         }
 
@@ -369,7 +371,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
             return ERC4337Utils.SIG_VALIDATION_FAILED;
         }
 
-        return ERC4337Utils.SIG_VALIDATION_SUCCESS;
+        return validationData;
     }
 
     // --- internal --------------------------------------------------------
