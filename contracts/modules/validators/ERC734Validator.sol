@@ -784,7 +784,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         bytes32 digest = _getClaimDigest(account, address(_identity), topic, data);
         if (_store().registries[account].revokedDigests[digest]) return IClaimIssuer.ClaimStatus.Revoked;
 
-        if (sig.length < 64) return IClaimIssuer.ClaimStatus.BadSignature;
+        // A `(bytes signer, bytes rawSig)` blob needs 2 offset words + 2 length words = 128 bytes
+        // minimum before any data, so a shorter blob can't decode.
+        if (sig.length < 128) return IClaimIssuer.ClaimStatus.BadSignature;
         (bytes memory signer, bytes memory rawSig) = abi.decode(sig, (bytes, bytes));
         if (signer.length < 20) return IClaimIssuer.ClaimStatus.BadSignature;
         if (!keyHasPurpose(account, keccak256(signer), KeyPurposes.CLAIM_SIGNER)) {
