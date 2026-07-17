@@ -3,7 +3,6 @@ pragma solidity ^0.8.28;
 
 import { IKeyRegistryModule, KeyManager } from "./KeyManager.sol";
 import { IKeyExecutor } from "./interface/IKeyExecutor.sol";
-import { IOwnModule } from "./interface/IOwnModule.sol";
 import { Errors } from "./libraries/Errors.sol";
 import { hashAddress } from "./libraries/Hashing.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
@@ -23,7 +22,7 @@ import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 /// @notice ERC-7579 modular account that uses the ERC-734 key registry from {KeyManager}.
 ///         Signature checks happen in the installed validator; the per-target rule for
 ///         user ops runs here.
-abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712, IOwnModule {
+abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 {
 
     /// @notice Install a module. Gated on MANAGEMENT.
     /// @dev The OZ default gate (`onlyEntryPointOrSelf`) is replaced with the stricter
@@ -122,15 +121,6 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712,
         return super._execute(mode, executionCalldata);
     }
 
-    /// @inheritdoc IOwnModule
-    /// @dev Kept in one place so the account and its modules agree on the answer. The account uses
-    ///      it in its guard, and modules like {KeyApprovalModule} ask it instead of checking again.
-    function isOwnModule(address target, bytes4 selector) public view virtual returns (bool) {
-        return
-            isModuleInstalled(MODULE_TYPE_EXECUTOR, target, Calldata.emptyBytes())
-                || _fallbackHandler(selector) == target;
-    }
-
     /// @dev Authorizes one call: block re-entry into the account's own modules, then, for an
     ///      executor caller, require its key to have a purpose for the target.
     function _authorizeCall(
@@ -143,9 +133,12 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712,
         // OZ rewrites target 0 to the account before dispatch; do the same so the checks agree.
         if (target == address(0)) target = address(this);
 
-        // Only a privileged caller may re-enter one of the account's own modules.
-        // `bytes4(inner)` zero-pads short/empty calldata, which matches no handler.
-        if (isOwnModule(target, bytes4(inner)) && !privilegedCaller) {
+        // Only a privileged caller may re-enter one of the account's own modules: an installed
+        // executor, or the fallback handler for this call's selector. `bytes4(inner)` zero-pads
+        // short/empty calldata, which matches no handler.
+        bool targetIsOwnModule = isModuleInstalled(MODULE_TYPE_EXECUTOR, target, Calldata.emptyBytes())
+            || _fallbackHandler(bytes4(inner)) == target;
+        if (targetIsOwnModule && !privilegedCaller) {
             revert Errors.PrivilegedTargetRequiresManagement(target);
         }
 

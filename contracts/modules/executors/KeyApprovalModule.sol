@@ -4,13 +4,13 @@ pragma solidity ^0.8.28;
 import {
     IERC7579Execution,
     IERC7579Module,
+    IERC7579ModuleConfig,
     MODULE_TYPE_EXECUTOR,
     MODULE_TYPE_FALLBACK
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 
 import { IERC734 } from "../../interface/IERC734.sol";
 import { IERC735 } from "../../interface/IERC735.sol";
-import { IOwnModule } from "../../interface/IOwnModule.sol";
 import { Errors } from "../../libraries/Errors.sol";
 import { hashAddress } from "../../libraries/Hashing.sol";
 import { KeyPurposes } from "../../libraries/KeyPurposes.sol";
@@ -194,9 +194,12 @@ contract KeyApprovalModule is IERC7579Module {
         }
 
         // Never auto-approve a call into one of the account's own modules (the account blocks it
-        // too). Ask the account so this stays in step with its guard. bytes4(data) zero-pads short
-        // calldata, which matches no handler.
-        if (to != account && IOwnModule(account).isOwnModule(to, bytes4(data))) {
+        // too): an installed executor, or the fallback handler for this selector. Ask the account's
+        // standard module config so this stays in step. bytes4(data) zero-pads short calldata.
+        IERC7579ModuleConfig cfg = IERC7579ModuleConfig(account);
+        bool toIsOwnModule = cfg.isModuleInstalled(MODULE_TYPE_EXECUTOR, to, "")
+            || cfg.isModuleInstalled(MODULE_TYPE_FALLBACK, to, abi.encodePacked(bytes4(data)));
+        if (to != account && toIsOwnModule) {
             return false;
         }
 
