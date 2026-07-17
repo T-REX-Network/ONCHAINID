@@ -11,8 +11,7 @@ import {
     Execution,
     IERC7579Execution,
     MODULE_TYPE_EXECUTOR,
-    MODULE_TYPE_FALLBACK,
-    MODULE_TYPE_VALIDATOR
+    MODULE_TYPE_FALLBACK
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { Bytes } from "@openzeppelin/contracts/utils/Bytes.sol";
 import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
@@ -167,7 +166,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     /// @dev Works as a validator (userOp signatures), an executor (issuer claim flows), and a
     ///      fallback handler (the ERC-734 getters and ERC-735 claim selectors).
     function isModuleType(uint256 moduleTypeId) public pure virtual override returns (bool) {
-        return moduleTypeId == MODULE_TYPE_VALIDATOR || moduleTypeId == MODULE_TYPE_EXECUTOR
+        return super.isModuleType(moduleTypeId) || moduleTypeId == MODULE_TYPE_EXECUTOR
             || moduleTypeId == MODULE_TYPE_FALLBACK;
     }
 
