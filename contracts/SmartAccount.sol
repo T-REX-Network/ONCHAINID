@@ -89,17 +89,6 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712,
         }
     }
 
-    /// @notice Executor entry point. Authorization runs in {_execute}, so this just defers to super.
-    function executeFromExecutor(bytes32 mode, bytes calldata executionCalldata)
-        public
-        payable
-        virtual
-        override
-        returns (bytes[] memory)
-    {
-        return super.executeFromExecutor(mode, executionCalldata);
-    }
-
     /// @notice The one place every dispatched call is authorized. Both `execute` (user ops and
     ///         MANAGEMENT self-calls) and {executeFromExecutor} go through here, so there is only one
     ///         authorization path to keep right. DELEGATECALL and unknown call types are rejected.
