@@ -104,12 +104,11 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712,
         (CallType callType,,,) = ERC7579Utils.decodeMode(mode);
 
         if (callType == ERC7579Utils.CALLTYPE_SINGLE) {
-            // SINGLE layout: target (20) | value (32) | data. Anything shorter is malformed; let the
-            // base dispatcher revert on it.
-            if (executionCalldata.length >= 52) {
-                address target = address(bytes20(executionCalldata[:20]));
-                _authorizeCall(target, executionCalldata[52:], callerKeyHash, privilegedCaller, callerIsExecutor);
-            }
+            // SINGLE layout: target (20) | value (32) | data. A shorter payload is malformed;
+            // reject it here so a call can never skip the guard below and reach super unauthorized.
+            require(executionCalldata.length >= 52, Errors.UnsupportedExecutionMode(Mode.unwrap(mode)));
+            address target = address(bytes20(executionCalldata[:20]));
+            _authorizeCall(target, executionCalldata[52:], callerKeyHash, privilegedCaller, callerIsExecutor);
         } else if (callType == ERC7579Utils.CALLTYPE_BATCH) {
             // Every call in the batch must pass.
             Execution[] calldata batch = ERC7579Utils.decodeBatch(executionCalldata);

@@ -173,6 +173,16 @@ contract PrivilegedReentryGuardTest is OnchainIDSetup {
         _dispatchAsEntryPoint(callData);
     }
 
+    /// @notice A SINGLE payload shorter than 52 bytes (no room for target + value) is rejected, so
+    ///         a malformed call can never skip the guard and reach the dispatcher unauthorized.
+    function test_shortSingleExecution_rejected() public {
+        bytes memory tooShort = new bytes(40); // < 52
+        bytes memory callData = abi.encodeWithSelector(IERC7579Execution.execute.selector, bytes32(0), tooShort);
+
+        vm.expectRevert(abi.encodeWithSelector(Errors.UnsupportedExecutionMode.selector, bytes32(0)));
+        _dispatchAsEntryPoint(callData);
+    }
+
     // --- legitimate flows still work ------------------------------------
 
     /// @notice Regression: a plain ACTION call to an ordinary external target still dispatches.
