@@ -517,7 +517,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         bytes memory _signature,
         Structs.ClaimData memory _data,
         string memory _uri
-    ) public override returns (bytes32 claimRequestId) {
+    ) public returns (bytes32 claimRequestId) {
         // CLAIM_SIGNER or CLAIM_ADDER can add a claim. Self-issued claims still need a real
         // signature (checked by isClaimValid in _addClaim), so CLAIM_ADDER cannot fake
         // self-attestations.
