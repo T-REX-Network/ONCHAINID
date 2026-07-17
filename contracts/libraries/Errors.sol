@@ -132,9 +132,9 @@ library Errors {
     /// @notice The claim already exists.
     error ClaimAlreadyRevoked();
 
-    /* ----- ClaimsModule trusted-issuer path ----- */
+    /* ----- ERC734Validator trusted-issuer path ----- */
 
-    /// @notice Reverts when {ClaimsModule.addClaimByTrustedIssuer} is called by a wallet
+    /// @notice Reverts when {ERC734Validator.addClaimByTrustedIssuer} is called by a wallet
     ///         that the factory does not resolve to any identity. The trusted-issuer path
     ///         requires the caller wallet to be a linked account on a factory-deployed
     ///         identity.

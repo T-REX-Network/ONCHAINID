@@ -4,6 +4,7 @@ pragma solidity ^0.8.27;
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/draft-ERC4337Utils.sol";
 import { ERC7579Utils } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
+import { IERC1271 } from "@openzeppelin/contracts/interfaces/IERC1271.sol";
 import { IAccount, PackedUserOperation } from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import { Execution, MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { IERC734 } from "contracts/interface/IERC734.sol";
@@ -118,6 +119,52 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         vm.stopPrank();
     }
 
+    /// @notice ERC-1271: only a key that can act for the account (ACTION, or MANAGEMENT) may sign
+    ///         as the account. A CLAIM_SIGNER / ENCRYPTION / PROPOSER key is registered but cannot.
+    function test_isValidSignature_onlyActionOrManagementKeysAccepted() public {
+        bytes32 digest = keccak256("some order to sign");
+
+        // A CLAIM_SIGNER key is registered but must be rejected over ERC-1271.
+        (address claimer, uint256 claimerPk) = makeAddrAndKey("claimer-1271");
+        _validatorAddKey(claimer, KeyPurposes.CLAIM_SIGNER);
+        assertEq(
+            IERC1271(address(aliceIdentity)).isValidSignature(digest, _sign1271(claimerPk, claimer, digest)),
+            bytes4(0xffffffff),
+            "CLAIM_SIGNER must not sign as the account"
+        );
+
+        // An ACTION key is accepted.
+        (address actor, uint256 actorPk) = makeAddrAndKey("actor-1271");
+        _validatorAddKey(actor, KeyPurposes.ACTION);
+        assertEq(
+            IERC1271(address(aliceIdentity)).isValidSignature(digest, _sign1271(actorPk, actor, digest)),
+            IERC1271.isValidSignature.selector,
+            "ACTION key signs as the account"
+        );
+    }
+
+    /// @dev Account 1271 signature: module address prefix, then the validator's `(signer, sig)` blob.
+    function _sign1271(uint256 pk, address who, bytes32 digest) internal view returns (bytes memory) {
+        return abi.encodePacked(address(validator), _sign(pk, who, digest));
+    }
+
+    /// @notice A malformed 1271 signature must return the failure magic, not revert. Checked both
+    ///         through the account and directly on the validator.
+    function test_isValidSignature_malformed_returnsFailureNotRevert() public view {
+        bytes32 digest = keccak256("z");
+        bytes memory garbage = abi.encodePacked(address(validator), hex"deadbeef");
+        assertEq(
+            IERC1271(address(aliceIdentity)).isValidSignature(digest, garbage),
+            bytes4(0xffffffff),
+            "malformed sig via account must return failure magic"
+        );
+        assertEq(
+            validator.isValidSignatureWithSender(address(0), digest, hex"deadbeef"),
+            bytes4(0xffffffff),
+            "malformed sig directly on validator must not revert"
+        );
+    }
+
     /// @notice A signer shorter than 20 bytes is rejected. The guard lives in `_addKey`, so it
     ///         applies to every caller (here via the public `addKey`).
     function test_addKey_shortSigner_reverts() public {
@@ -141,8 +188,10 @@ contract ERC734ValidatorTest is OnchainIDSetup {
     }
 
     /// @notice A signer that holds both ACTION and CLAIM_SIGNER in the validator's registry:
-    ///         external transfer passes (ACTION), self-addClaim passes (CLAIM_SIGNER read from the
-    ///         same registry that scopes the op), self-addKey fails (needs MANAGEMENT).
+    ///         external transfer passes (ACTION), but any self-targeted call fails validation.
+    ///         Claims are not addable through a user op (the account calls itself, so addClaim sees
+    ///         the account as the caller and the account holds no claim key), so self-addClaim is
+    ///         rejected at validation to match that execution behaviour; self-addKey needs MANAGEMENT.
     function test_multiPurpose_actionInValidator_claimOnAccount() public {
         (address who, uint256 whoPk) = makeAddrAndKey("multi");
         _validatorAddKey(who, KeyPurposes.ACTION); // authorization purpose -> validator
@@ -157,7 +206,7 @@ contract ERC734ValidatorTest is OnchainIDSetup {
             assertEq(_validate(userOp, userOpHash), ERC4337Utils.SIG_VALIDATION_SUCCESS, "ACTION external must pass");
         }
 
-        // self + addClaim -> CLAIM_SIGNER (read on account)
+        // self + addClaim -> rejected: claims cannot be added through a user op
         {
             bytes memory addClaim = abi.encodeCall(
                 IERC735.addClaim,
@@ -172,7 +221,9 @@ contract ERC734ValidatorTest is OnchainIDSetup {
             );
             (PackedUserOperation memory userOp, bytes32 userOpHash) = _userOpTo(address(aliceIdentity), addClaim);
             userOp.signature = _sign(whoPk, who, userOpHash);
-            assertEq(_validate(userOp, userOpHash), ERC4337Utils.SIG_VALIDATION_SUCCESS, "self-addClaim must pass");
+            assertEq(
+                _validate(userOp, userOpHash), ERC4337Utils.SIG_VALIDATION_FAILED, "self-addClaim via userOp must fail"
+            );
         }
 
         // self + addKey -> needs MANAGEMENT

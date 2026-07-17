@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/draft-ERC4337Utils.sol";
 import { CallType, ERC7579Utils, Mode } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
+import { IERC1271 } from "@openzeppelin/contracts/interfaces/IERC1271.sol";
 import { IERC5267 } from "@openzeppelin/contracts/interfaces/IERC5267.sol";
 import { IERC7913SignatureVerifier } from "@openzeppelin/contracts/interfaces/IERC7913.sol";
 import { PackedUserOperation } from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
@@ -156,14 +157,11 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         // no key to seed, so it is a no-op; the registry is seeded by the validator install below.
         if (data.length == 0) return;
 
+        // keyType is stored metadata only; _verify dispatches on the signer length, not on this.
+        // A 20-byte signer is an EOA (ECDSA=1). A longer one is a generic ERC-7913 verifier+key
+        // blob; we can't tell WebAuthn from RSA by length, so we label the common case, WEBAUTHN=3.
         _clearRegistry(msg.sender);
-        _addKey(
-            msg.sender,
-            data,
-            "",
-            KeyPurposes.MANAGEMENT,
-            data.length == 20 ? 1 /* ECDSA */  : 3 /* WEBAUTHN */
-        );
+        _addKey(msg.sender, data, "", KeyPurposes.MANAGEMENT, data.length == 20 ? 1 : 3);
     }
 
     /// @dev Works as a validator (userOp signatures), an executor (issuer claim flows), and a
@@ -322,6 +320,26 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         return _store().registries[account].allKeys.contains(keccak256(signer)) && _verify(signer, hash, signature);
     }
 
+    /// @dev ERC-1271. Only a key that can act for the account may sign as the account. We require
+    ///      ACTION, which MANAGEMENT also satisfies. Claim, encryption and proposer keys are
+    ///      registered but hold no signing authority, so they are rejected here.
+    function isValidSignatureWithSender(address, bytes32 hash, bytes calldata signature)
+        public
+        view
+        virtual
+        override
+        returns (bytes4)
+    {
+        // Decode through try/catch so a malformed signature returns the failure magic rather than
+        // reverting, even if this is ever called directly instead of through the account.
+        try this.decodeSignatureBlob(signature) returns (bytes memory signer, bytes memory rawSig) {
+            if (!keyHasPurpose(msg.sender, keccak256(signer), KeyPurposes.ACTION)) return bytes4(0xffffffff);
+            return _verify(signer, hash, rawSig) ? IERC1271.isValidSignature.selector : bytes4(0xffffffff);
+        } catch {
+            return bytes4(0xffffffff);
+        }
+    }
+
     /// @dev Adds per-target scoping on top of crypto + membership. The account routes
     ///      `validateUserOp` here through the base contract.
     function _validateUserOp(PackedUserOperation calldata userOp, bytes32 userOpHash)
@@ -361,15 +379,15 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         if (callType == ERC7579Utils.CALLTYPE_SINGLE) {
             // A single execution is at least 52 bytes (20 target + 32 value).
             if (executionCalldata.length < 52) return false;
-            (address target,, bytes calldata inner) = ERC7579Utils.decodeSingle(executionCalldata);
-            return _targetAllowed(account, keyHash, target, inner);
+            (address target,,) = ERC7579Utils.decodeSingle(executionCalldata);
+            return _targetAllowed(account, keyHash, target);
         }
 
         if (callType == ERC7579Utils.CALLTYPE_BATCH) {
             // Every call in the batch must pass. The weakest-authorized call gates the batch.
             Execution[] calldata batch = ERC7579Utils.decodeBatch(executionCalldata);
             for (uint256 i = 0; i < batch.length; i++) {
-                if (!_targetAllowed(account, keyHash, batch[i].target, batch[i].callData)) return false;
+                if (!_targetAllowed(account, keyHash, batch[i].target)) return false;
             }
             return true;
         }
@@ -387,32 +405,22 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     ///      Claim purposes are read from this module's per-account registry (the same storage that
     ///      holds the keys), so the check works the same for any identity, including cross-identity
     ///      claim issuers.
-    function _targetAllowed(address account, bytes32 keyHash, address target, bytes calldata inner)
-        private
-        view
-        returns (bool)
-    {
+    function _targetAllowed(address account, bytes32 keyHash, address target) private view returns (bool) {
         if (target == address(0)) target = account; // OZ aliases target 0 to self.
 
         // Self-guard: a call to this validator can rotate its own registry (addKey, etc.).
         // Only MANAGEMENT may do that, and MANAGEMENT already passed in _scopeAllows, so any
         // non-MANAGEMENT signer reaching here must be rejected. Without this, an ACTION signer
-        // could execute(validator, addKey(attacker, MANAGEMENT)) — external target, ACTION
-        // suffices — and escalate itself.
+        // could execute(validator, addKey(attacker, MANAGEMENT)), an external target where ACTION
+        // suffices, and escalate itself.
         if (target == address(this)) return false;
 
-        if (target != account) {
-            return keyHasPurpose(account, keyHash, KeyPurposes.ACTION);
-        }
-
-        bytes4 innerSelector = inner.length >= 4 ? bytes4(inner[:4]) : bytes4(0);
-        if (innerSelector == IERC735.addClaim.selector) {
-            return keyHasPurpose(account, keyHash, KeyPurposes.CLAIM_SIGNER)
-                || keyHasPurpose(account, keyHash, KeyPurposes.CLAIM_ADDER);
-        }
-        if (innerSelector == IERC735.removeClaim.selector) {
-            return keyHasPurpose(account, keyHash, KeyPurposes.CLAIM_SIGNER);
-        }
+        // An external target needs ACTION. A self-targeted call (addKey, addClaim, etc.) needs
+        // MANAGEMENT, which already passed in _scopeAllows, so a non-MANAGEMENT signer is rejected.
+        // Claims are not addable through a user op: the account calls itself, so the ERC-2771 caller
+        // seen by addClaim is the account, which holds no claim key. Claim keys add claims by
+        // calling the identity directly, not through execute().
+        if (target != account) return keyHasPurpose(account, keyHash, KeyPurposes.ACTION);
         return false;
     }
 
@@ -423,6 +431,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         pure
         returns (bytes32 modeWord, bytes calldata executionCalldata)
     {
+        // Hand-rolled so `executionCalldata` stays a calldata slice (decodeSingle/decodeBatch below
+        // need calldata); `abi.decode` would return memory. Reads the ABI head the same way the
+        // decoder does: mode, then the offset/length of the bytes arg. Callers guard the length.
         modeWord = bytes32(callData[4:36]);
         uint256 dataOffset = uint256(bytes32(callData[36:68]));
         uint256 lenPos = 4 + dataOffset;
@@ -437,9 +448,12 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     function _verify(bytes memory signer, bytes32 hash, bytes memory signature) internal view returns (bool) {
         if (signer.length == 20) {
             address signerAddr = address(bytes20(signer));
-            if (SignatureChecker.isValidERC1271SignatureNow(signerAddr, hash, signature)) return true;
+            // Try ECDSA first: the common EOA case needs no external call, and this keeps the
+            // 4337 validation path free of an external call to an arbitrary signer (ERC-7562).
+            // Only a contract signer, whose sig isn't a valid ECDSA sig, falls through to 1271.
             (address recovered, ECDSA.RecoverError err,) = ECDSA.tryRecover(hash, signature);
-            return err == ECDSA.RecoverError.NoError && recovered == signerAddr;
+            if (err == ECDSA.RecoverError.NoError && recovered == signerAddr) return true;
+            return SignatureChecker.isValidERC1271SignatureNow(signerAddr, hash, signature);
         }
         address verifier = address(bytes20(Bytes.slice(signer, 0, 20)));
         bytes memory key = Bytes.slice(signer, 20);
@@ -759,19 +773,28 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         bytes32 digest = _getClaimDigest(account, address(_identity), topic, data);
         if (_store().registries[account].revokedDigests[digest]) return IClaimIssuer.ClaimStatus.Revoked;
 
+        // Decode via an external try/catch so a malformed sig returns BadSignature instead of
+        // reverting this view (isClaimValid / getClaimStatus are called with caller-supplied bytes).
         if (sig.length < 64) return IClaimIssuer.ClaimStatus.BadSignature;
-        (bytes memory signer, bytes memory rawSig) = abi.decode(sig, (bytes, bytes));
-        if (signer.length < 20) return IClaimIssuer.ClaimStatus.BadSignature;
-
-        if (!keyHasPurpose(account, keccak256(signer), KeyPurposes.CLAIM_SIGNER)) {
-            return IClaimIssuer.ClaimStatus.NotIssued;
-        }
-
-        if (!SignatureChecker.isValidSignatureNow(signer, digest, rawSig)) {
+        try this.decodeSignatureBlob(sig) returns (bytes memory signerOut, bytes memory rawSigOut) {
+            if (signerOut.length < 20) return IClaimIssuer.ClaimStatus.BadSignature;
+            if (!keyHasPurpose(account, keccak256(signerOut), KeyPurposes.CLAIM_SIGNER)) {
+                return IClaimIssuer.ClaimStatus.NotIssued;
+            }
+            if (!SignatureChecker.isValidSignatureNow(signerOut, digest, rawSigOut)) {
+                return IClaimIssuer.ClaimStatus.BadSignature;
+            }
+            return IClaimIssuer.ClaimStatus.Valid;
+        } catch {
             return IClaimIssuer.ClaimStatus.BadSignature;
         }
+    }
 
-        return IClaimIssuer.ClaimStatus.Valid;
+    /// @notice Decodes a signature blob `(bytes signer, bytes rawSig)`. External so the 1271 and
+    ///         claim views can call it through try/catch and treat malformed input as an invalid
+    ///         signature rather than reverting.
+    function decodeSignatureBlob(bytes calldata sig) external pure returns (bytes memory signer, bytes memory rawSig) {
+        return abi.decode(sig, (bytes, bytes));
     }
 
     /// @dev Require the off-chain caller to hold a claim key on `account`. CLAIM_SIGNER covers add
