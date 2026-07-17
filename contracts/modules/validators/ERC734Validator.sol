@@ -243,6 +243,11 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
 
     /// @notice `IERC734.keyHasPurpose`, scoped to `account`. MANAGEMENT satisfies any purpose.
     function keyHasPurpose(address account, bytes32 keyHash, uint256 purpose) public view returns (bool) {
+        return _keyHasPurpose(account, keyHash, purpose);
+    }
+
+    /// @dev Shared implementation for both `keyHasPurpose` overloads. MANAGEMENT satisfies any purpose.
+    function _keyHasPurpose(address account, bytes32 keyHash, uint256 purpose) internal view returns (bool) {
         AccountRegistry storage registry = _store().registries[account];
         return registry.allKeys.contains(keyHash)
             && (registry.keys[keyHash].purposes.contains(purpose)
@@ -285,7 +290,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
 
     /// @notice ERC-734 keyHasPurpose for the calling account.
     function keyHasPurpose(bytes32 _key, uint256 _purpose) external view returns (bool) {
-        return keyHasPurpose(msg.sender, _key, _purpose);
+        return _keyHasPurpose(msg.sender, _key, _purpose);
     }
 
     /// @notice ERC-734 getKeyPurposes for the calling account.
