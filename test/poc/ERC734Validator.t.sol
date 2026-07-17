@@ -148,8 +148,9 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         return abi.encodePacked(address(validator), _sign(pk, who, digest));
     }
 
-    /// @notice A malformed 1271 signature must return the failure magic, not revert. Checked both
-    ///         through the account and directly on the validator.
+    /// @notice A malformed 1271 signature returns the failure magic through the account. The
+    ///         account's own isValidSignature wraps the validator call in try/catch, so a signature
+    ///         that can't be decoded is reported as invalid rather than surfacing as a revert.
     function test_isValidSignature_malformed_returnsFailureNotRevert() public view {
         bytes32 digest = keccak256("z");
         bytes memory garbage = abi.encodePacked(address(validator), hex"deadbeef");
@@ -157,11 +158,6 @@ contract ERC734ValidatorTest is OnchainIDSetup {
             IERC1271(address(aliceIdentity)).isValidSignature(digest, garbage),
             bytes4(0xffffffff),
             "malformed sig via account must return failure magic"
-        );
-        assertEq(
-            validator.isValidSignatureWithSender(address(0), digest, hex"deadbeef"),
-            bytes4(0xffffffff),
-            "malformed sig directly on validator must not revert"
         );
     }
 

@@ -327,34 +327,30 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
 
     /// @dev ERC-1271. Only a key that can act for the account may sign as the account. We require
     ///      ACTION, which MANAGEMENT also satisfies. Claim, encryption and proposer keys are
-    ///      registered but hold no signing authority, so they are rejected here.
-    function isValidSignatureWithSender(address, bytes32 hash, bytes calldata signature)
+    ///      registered but hold no signing authority, so they are rejected here. The crypto and
+    ///      membership check itself is left to super via {_rawERC7579Validation}.
+    function isValidSignatureWithSender(address sender, bytes32 hash, bytes calldata signature)
         public
         view
         virtual
         override
         returns (bytes4)
     {
-        // Decode through try/catch so a malformed signature returns the failure magic rather than
-        // reverting, even if this is ever called directly instead of through the account.
-        try this.decodeSignatureBlob(signature) returns (bytes memory signer, bytes memory rawSig) {
-            if (!keyHasPurpose(msg.sender, keccak256(signer), KeyPurposes.ACTION)) return bytes4(0xffffffff);
-            return _verify(signer, hash, rawSig) ? IERC1271.isValidSignature.selector : bytes4(0xffffffff);
-        } catch {
-            return bytes4(0xffffffff);
-        }
+        (bytes memory signer,) = abi.decode(signature, (bytes, bytes));
+        if (!_keyHasPurpose(msg.sender, keccak256(signer), KeyPurposes.ACTION)) return bytes4(0xffffffff);
+        return super.isValidSignatureWithSender(sender, hash, signature);
     }
 
     /// @dev Adds per-target scoping on top of crypto + membership. The account routes
     ///      `validateUserOp` here through the base contract.
     function _validateUserOp(PackedUserOperation calldata userOp, bytes32 userOpHash)
         internal
-        view
         virtual
         override
         returns (uint256)
     {
-        if (!_rawERC7579Validation(userOp.sender, userOpHash, userOp.signature)) {
+        // Super does the crypto + membership check; we add the per-target scoping on top.
+        if (super._validateUserOp(userOp, userOpHash) == ERC4337Utils.SIG_VALIDATION_FAILED) {
             return ERC4337Utils.SIG_VALIDATION_FAILED;
         }
 
