@@ -783,28 +783,16 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         bytes32 digest = _getClaimDigest(account, address(_identity), topic, data);
         if (_store().registries[account].revokedDigests[digest]) return IClaimIssuer.ClaimStatus.Revoked;
 
-        // Decode via an external try/catch so a malformed sig returns BadSignature instead of
-        // reverting this view (isClaimValid / getClaimStatus are called with caller-supplied bytes).
         if (sig.length < 64) return IClaimIssuer.ClaimStatus.BadSignature;
-        try this.decodeSignatureBlob(sig) returns (bytes memory signerOut, bytes memory rawSigOut) {
-            if (signerOut.length < 20) return IClaimIssuer.ClaimStatus.BadSignature;
-            if (!keyHasPurpose(account, keccak256(signerOut), KeyPurposes.CLAIM_SIGNER)) {
-                return IClaimIssuer.ClaimStatus.NotIssued;
-            }
-            if (!SignatureChecker.isValidSignatureNow(signerOut, digest, rawSigOut)) {
-                return IClaimIssuer.ClaimStatus.BadSignature;
-            }
-            return IClaimIssuer.ClaimStatus.Valid;
-        } catch {
+        (bytes memory signer, bytes memory rawSig) = abi.decode(sig, (bytes, bytes));
+        if (signer.length < 20) return IClaimIssuer.ClaimStatus.BadSignature;
+        if (!keyHasPurpose(account, keccak256(signer), KeyPurposes.CLAIM_SIGNER)) {
+            return IClaimIssuer.ClaimStatus.NotIssued;
+        }
+        if (!SignatureChecker.isValidSignatureNow(signer, digest, rawSig)) {
             return IClaimIssuer.ClaimStatus.BadSignature;
         }
-    }
-
-    /// @notice Decodes a signature blob `(bytes signer, bytes rawSig)`. External so the 1271 and
-    ///         claim views can call it through try/catch and treat malformed input as an invalid
-    ///         signature rather than reverting.
-    function decodeSignatureBlob(bytes calldata sig) external pure returns (bytes memory signer, bytes memory rawSig) {
-        return abi.decode(sig, (bytes, bytes));
+        return IClaimIssuer.ClaimStatus.Valid;
     }
 
     /// @dev Require the off-chain caller to hold a claim key on `account`. CLAIM_SIGNER covers add
