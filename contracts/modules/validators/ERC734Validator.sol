@@ -256,11 +256,21 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
 
     /// @notice Purposes held by `keyHash` on `account`.
     function getKeyPurposes(address account, bytes32 keyHash) public view returns (uint256[] memory) {
+        return _getKeyPurposes(account, keyHash);
+    }
+
+    /// @dev Shared implementation for both `getKeyPurposes` overloads.
+    function _getKeyPurposes(address account, bytes32 keyHash) internal view returns (uint256[] memory) {
         return _store().registries[account].keys[keyHash].purposes.values();
     }
 
     /// @notice Key hashes with `purpose` on `account`.
     function getKeysByPurpose(address account, uint256 purpose) public view returns (bytes32[] memory) {
+        return _getKeysByPurpose(account, purpose);
+    }
+
+    /// @dev Shared implementation for both `getKeysByPurpose` overloads.
+    function _getKeysByPurpose(address account, uint256 purpose) internal view returns (bytes32[] memory) {
         return _store().registries[account].byPurpose[purpose].values();
     }
 
@@ -295,12 +305,12 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
 
     /// @notice ERC-734 getKeyPurposes for the calling account.
     function getKeyPurposes(bytes32 _key) external view returns (uint256[] memory) {
-        return getKeyPurposes(msg.sender, _key);
+        return _getKeyPurposes(msg.sender, _key);
     }
 
     /// @notice ERC-734 getKeysByPurpose for the calling account.
     function getKeysByPurpose(uint256 _purpose) external view returns (bytes32[] memory) {
-        return getKeysByPurpose(msg.sender, _purpose);
+        return _getKeysByPurpose(msg.sender, _purpose);
     }
 
     /// @notice ERC-734 getKey for the calling account.
