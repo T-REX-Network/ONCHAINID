@@ -10,6 +10,7 @@ import {
 
 import { IERC734 } from "../../interface/IERC734.sol";
 import { IERC735 } from "../../interface/IERC735.sol";
+import { IOwnModule } from "../../interface/IOwnModule.sol";
 import { Errors } from "../../libraries/Errors.sol";
 import { hashAddress } from "../../libraries/Hashing.sol";
 import { KeyPurposes } from "../../libraries/KeyPurposes.sol";
@@ -184,8 +185,7 @@ contract KeyApprovalModule is IERC7579Module {
         view
         returns (bool)
     {
-        // OZ `ERC7579Utils._call` rewrites `to == address(0)` to the account before dispatch,
-        // so `to=0` will land as a self-call. Fold it in so the branches below agree.
+        // OZ rewrites to 0 to the account before dispatch, so treat it as a self-call.
         if (to == address(0)) to = account;
 
         // MANAGEMENT keys pass any check.
@@ -193,9 +193,16 @@ contract KeyApprovalModule is IERC7579Module {
             return true;
         }
 
+        // Never auto-approve a call into one of the account's own modules (the account blocks it
+        // too). Ask the account so this stays in step with its guard. bytes4(data) zero-pads short
+        // calldata, which matches no handler.
+        if (to != account && IOwnModule(account).isOwnModule(to, bytes4(data))) {
+            return false;
+        }
+
         // Self-targeted calls: only claim-related selectors auto-approve for claim keys.
         if (to == account && data.length >= 4) {
-            bytes4 selector = bytes4(data[:4]);
+            bytes4 selector = bytes4(data);
             bool isAddClaim = selector == IERC735.addClaim.selector;
             bool isRemoveClaim = selector == IERC735.removeClaim.selector;
 
@@ -237,7 +244,7 @@ contract KeyApprovalModule is IERC7579Module {
         uint256 value = execution.value;
         bytes memory data = execution.data;
 
-        // CALLTYPE_SINGLE + EXECTYPE_DEFAULT — all-zero mode word.
+        // CALLTYPE_SINGLE + EXECTYPE_DEFAULT: all-zero mode word.
         bytes32 mode = bytes32(0);
         bytes memory executionCalldata = abi.encodePacked(to, value, data);
 
@@ -250,9 +257,10 @@ contract KeyApprovalModule is IERC7579Module {
         }
     }
 
-    /// @dev When the account reaches us through its ERC-7579 fallback, `msg.sender` is the
-    ///      account itself — not the user who called it. ERC-7579 mandates the account append
-    ///      the original caller (ERC-2771 style); we read it from the trailing 20 bytes.
+    /// @dev Reached via the account's fallback, `msg.sender` is the account, so the real caller is
+    ///      appended (ERC-2771 style) as the trailing 20 bytes; we read it from there.
+    /// @dev We can trust that tail because {SmartAccount} blocks the only path that could forge it
+    ///      (a direct call to this module, which arrives with no appended tail).
     function _msgSender() internal view returns (address sender) {
         if (msg.data.length >= 20) {
             // solhint-disable-next-line no-inline-assembly

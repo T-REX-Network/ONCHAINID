@@ -524,7 +524,9 @@ contract SmartAccountTest is OnchainIDSetup {
         testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
     }
 
-    /// @notice Malformed SINGLE payload (length < 52) is rejected at the layout guard.
+    /// @notice A malformed SINGLE payload (length < 52) is rejected. The account's per-call guard
+    ///         skips a payload too short to carry a target+value and lets the base ERC-7579
+    ///         dispatcher reject the malformed layout, so the call still reverts.
     function test_executeFromExecutor_singleCalldata_lengthBelow52_reverts() public {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
@@ -541,7 +543,7 @@ contract SmartAccountTest is OnchainIDSetup {
         // Truncated payload — only the 20-byte target, no value field.
         bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity));
 
-        vm.expectRevert(Errors.ExecutorPurposeNotAuthorized.selector);
+        vm.expectRevert();
         testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
     }
 

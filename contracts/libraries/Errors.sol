@@ -200,6 +200,10 @@ library Errors {
     /// @notice The execution mode requested is not supported by the account's purpose check.
     error UnsupportedExecutionMode(bytes32 mode);
 
+    /// @notice A dispatched call targeted one of the account's own modules, but the caller is not
+    ///         the account itself or a MANAGEMENT module. Re-entering an own module needs MANAGEMENT.
+    error PrivilegedTargetRequiresManagement(address target);
+
     /// @notice An installed executor or fallback handler tried to dispatch a call whose target
     ///         is not authorized by the purpose registered for that module at install time.
     ///         Also raised at install time if the module's initData does not begin with a

@@ -383,8 +383,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     ///        self + removeClaim                 -> CLAIM_SIGNER (read on the account)
     ///        self, anything else                -> MANAGEMENT only
     ///        external target                    -> ACTION
-    ///      Claim purposes are read from the account's own ERC-734 registry so the check works the
-    ///      same for any identity, including cross-identity claim issuers.
+    ///      Claim purposes are read from this module's per-account registry (the same storage that
+    ///      holds the keys), so the check works the same for any identity, including cross-identity
+    ///      claim issuers.
     function _targetAllowed(address account, bytes32 keyHash, address target, bytes calldata inner)
         private
         view
