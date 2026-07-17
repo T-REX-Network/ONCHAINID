@@ -3,12 +3,15 @@ pragma solidity ^0.8.27;
 
 import { AccessManaged } from "@openzeppelin/contracts/access/manager/AccessManaged.sol";
 import { IAccessManager } from "@openzeppelin/contracts/access/manager/IAccessManager.sol";
+import { ERC7786Recipient } from "@openzeppelin/contracts/crosschain/ERC7786Recipient.sol";
 import { Nonces } from "@openzeppelin/contracts/utils/Nonces.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import { SignatureChecker } from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 import { BeaconProxy } from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
+
+import { InteroperableAddress } from "@openzeppelin/contracts/utils/draft-InteroperableAddress.sol";
 
 import { Identity } from "../Identity.sol";
 import { IERC734 } from "../interface/IERC734.sol";
@@ -37,7 +40,7 @@ import { IIdentityFactory } from "./IIdentityFactory.sol";
 ///
 ///         Wallets and signers share the same bytes shape. Bindings are sticky and
 ///         revocation is terminal.
-contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
+contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC7786Recipient {
 
     using EnumerableSet for EnumerableSet.Bytes32Set;
 
@@ -66,6 +69,16 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         bool selfDeployable;
     }
 
+    /// @dev Pending cross-chain link proposed via ERC-7786. `identity` is the
+    ///      ONCHAINID on this chain that the wallet has named. The wallet half of
+    ///      proof-of-control comes from the authenticated inbound message; the
+    ///      identity half comes later when the identity itself calls
+    ///      {confirmCrossChainLink}. Until then the link is not active.
+    struct PendingLink {
+        address identity;
+        uint256 expiry;
+    }
+
     /// @dev EIP-7201 namespaced storage. All mutable state lives here so a future
     ///      upgrade won't collide with inherited slots.
     /// @custom:storage-location erc7201:onchainid.IdentityFactory
@@ -75,6 +88,15 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         mapping(address identity => bool deployedByFactory) isFactoryIdentity;
         /// @dev Per-type deploy policy. Unregistered types (`roleId == 0`) revert.
         mapping(uint256 identityType => TypePolicy policy) typePolicies;
+        /// @dev Authorized ERC-7786 destination gateways. Inbound messages from
+        ///      anyone else are rejected. Manage via {setTrustedGateway}.
+        mapping(address gateway => bool trusted) trustedGateways;
+        /// @dev Cross-chain link proposals awaiting identity-side confirmation.
+        ///      Keyed by the wallet envelope bytes rather than `_walletKey` because
+        ///      this map never participates in `accounts[identity]` enumeration
+        ///      (which requires `EnumerableSet.Bytes32Set`). Cleared on
+        ///      {confirmCrossChainLink}.
+        mapping(bytes wallet => PendingLink proposal) pendingLinks;
     }
 
     // keccak256(abi.encode(uint256(keccak256("onchainid.IdentityFactory")) - 1)) & ~bytes32(uint256(0xff))
@@ -118,7 +140,12 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         TypePolicy storage policy = _storage().typePolicies[_identityType];
         require(policy.roleId != 0, Errors.UnknownIdentityType(_identityType));
         require(policy.selfDeployable, Errors.IdentityTypeNotSelfDeployable(_identityType));
-        return _doCreateIdentity(abi.encodePacked(msg.sender), _identityType, _salt, _keys, _modules);
+
+        // Always store the wallet as an ERC-7930 envelope. If we stored raw 20-byte
+        // addresses here and envelopes in linkAccount, the same wallet would hash to
+        // two different keys and sticky binding would not catch the collision.
+        bytes memory account = InteroperableAddress.formatEvmV1(block.chainid, msg.sender);
+        return _doCreateIdentity(account, _identityType, _salt, _keys, _modules);
     }
 
     /// @inheritdoc IIdentityFactory
@@ -131,11 +158,17 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
     ) external returns (address) {
         _checkTypeRole(_identityType, msg.sender);
         require(_account != address(0), Errors.ZeroAddress());
-        return _doCreateIdentity(abi.encodePacked(_account), _identityType, _salt, _keys, _modules);
+        bytes memory account = InteroperableAddress.formatEvmV1(block.chainid, _account);
+        return _doCreateIdentity(account, _identityType, _salt, _keys, _modules);
     }
 
     /// @inheritdoc IIdentityFactory
     function linkAccount(bytes calldata account, bytes calldata signature, uint256 nonce, uint256 expiry) external {
+        // `account` is an ERC-7930 envelope wrapping the wallet. Its layout is:
+        //     [ chainType | chainReference | signer ]
+        // bytes feed the signature check. parseV1Calldata reverts on malformed input.
+        (,, bytes calldata signer) = InteroperableAddress.parseV1Calldata(account);
+
         // expiry == 0 reverts (block.timestamp <= 0 is false). Forces callers to pick a window.
         require(block.timestamp <= expiry, Errors.ExpiredSignature(expiry));
 
@@ -156,12 +189,14 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
             keccak256(abi.encode(_LINK_ACCOUNT_TYPEHASH, keccak256(account), msg.sender, nonce, expiry))
         );
 
-        // SignatureChecker dispatch covers EOA (ECDSA), ERC-1271 (smart wallet), and
-        // ERC-7913 (passkey, custom verifier) in one call.
-        require(SignatureChecker.isValidSignatureNow(account, digest, signature), Errors.InvalidSignature());
+        // One dispatch covers every supported signer shape:
+        //   20 bytes      -> EOA (ECDSA recover) or ERC-1271 smart wallet
+        //   20 + N bytes  -> ERC-7913: first 20 bytes = verifier contract,
+        //                              rest = signer key (passkey pubkey, RSA key, ...)
+        require(SignatureChecker.isValidSignatureNow(signer, digest, signature), Errors.InvalidSignature());
 
-        // Nonce keyed by keccak256(account) cast to address so EVM and non-EVM signers
-        // share the OZ Nonces store.
+        // Nonce keyed by keccak256(account) cast to address so every envelope shape
+        // (EVM, ERC-7913, future non-EVM) shares the OZ Nonces store.
         _useCheckedNonce(_addressKeyForAccount(account), nonce);
 
         _linkAccount(account, msg.sender);
@@ -182,6 +217,101 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         bytes32 key = _walletKey(account);
         require(_storage().wallets[key].identity == msg.sender, Errors.WalletNotLinkedToIdentity(account));
         _revokeAccount(account, msg.sender);
+    }
+
+    // ============ ERC-7786 — cross-chain wallet linking ============
+
+    /// @inheritdoc IIdentityFactory
+    function setTrustedGateway(address gateway, bool trusted) external restricted {
+        require(gateway != address(0), Errors.ZeroAddress());
+        _storage().trustedGateways[gateway] = trusted;
+        emit TrustedGatewaySet(gateway, trusted);
+    }
+
+    /// @inheritdoc IIdentityFactory
+    function isTrustedGateway(address gateway) external view returns (bool) {
+        return _storage().trustedGateways[gateway];
+    }
+
+    /// @inheritdoc IIdentityFactory
+    function getPendingCrossChainLink(bytes calldata account) external view returns (address identity, uint256 expiry) {
+        PendingLink storage pending = _storage().pendingLinks[account];
+        return (pending.identity, pending.expiry);
+    }
+
+    /// @inheritdoc IIdentityFactory
+    function confirmCrossChainLink(bytes calldata account) external {
+        // The wallet named an identity when it sent the cross-chain message. Only
+        // that identity gets to finalize the link. Anyone else calling here is
+        // rejected. The identity reaches us via its own execution path, so a
+        // MANAGEMENT key on the identity is what actually signs this off.
+        PendingLink memory pending = _storage().pendingLinks[account];
+        // Missing proposal: `pending.identity == address(0)` never equals
+        // `msg.sender`, so one equality check covers both cases.
+        require(
+            pending.identity == msg.sender,
+            Errors.PendingCrossChainLinkIdentityMismatch(account, msg.sender, pending.identity)
+        );
+        require(block.timestamp <= pending.expiry, Errors.PendingCrossChainLinkExpired(pending.expiry));
+
+        delete _storage().pendingLinks[account];
+        _linkAccount(account, msg.sender);
+        emit CrossChainLinkConfirmed(account, msg.sender);
+    }
+
+    /// @dev ERC-7786 gateway authorization. The factory delegates trust to its
+    ///      AccessManager: only addresses the AM admin has whitelisted via
+    ///      {setTrustedGateway} can deliver inbound messages.
+    function _isAuthorizedGateway(
+        address gateway,
+        bytes calldata /* sender */
+    )
+        internal
+        view
+        override
+        returns (bool)
+    {
+        return _storage().trustedGateways[gateway];
+    }
+
+    /// @dev Decode an inbound cross-chain link proposal and stage it as pending.
+    ///      Replay across receiveIds is prevented by the gateway per ERC-7786; we
+    ///      add wallet-level replay protection via sticky binding (an active or
+    ///      revoked entry blocks fresh proposals from taking effect on confirm).
+    function _processMessage(
+        address, /* gateway */
+        bytes32, /* receiveId */
+        bytes calldata sender,
+        bytes calldata payload
+    )
+        internal
+        override
+    {
+        (bytes memory walletEnvelope, address identity, uint256 expiry) = abi.decode(payload, (bytes, address, uint256));
+
+        // The wallet must originate the bridge call itself. `sender` is the
+        // source-chain caller authenticated by ERC-7786, so requiring it to
+        // equal the wallet envelope is the proof-of-control for the wallet half.
+        require(
+            keccak256(sender) == keccak256(walletEnvelope),
+            Errors.CrossChainSenderWalletMismatch(sender, walletEnvelope)
+        );
+        require(block.timestamp <= expiry, Errors.PendingCrossChainLinkExpired(expiry));
+        require(_storage().isFactoryIdentity[identity], Errors.NotFactoryIdentity(identity));
+
+        // Sticky binding still applies: a wallet that is already linked or
+        // revoked cannot be re-proposed. The confirm step would reject anyway,
+        // but failing fast here saves the identity owner a wasted transaction.
+        require(
+            _storage().wallets[_walletKey(walletEnvelope)].status == AccountStatus.None,
+            Errors.WalletAlreadyHasEntry(walletEnvelope)
+        );
+
+        // `pendingLinks[walletEnvelope]` is a single slot per wallet; the freshest
+        // proposal is the one that can be confirmed. Safe to overwrite because the
+        // status check above rejects any wallet that is already linked or revoked.
+        _storage().pendingLinks[walletEnvelope] = PendingLink({ identity: identity, expiry: expiry });
+        emit PendingCrossChainLinkProposed(walletEnvelope, identity, expiry);
     }
 
     /// @inheritdoc IIdentityFactory
@@ -267,8 +397,11 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         // The token is auto-linked as the identity's sole wallet like any other signer;
         // the difference is the identity's `type`. Off-chain readers can recover the
         // token by reading `getAccounts(identity)[0]` and checking `getIdentityType()`.
+        // The envelope is built by the factory itself, so the EVM shape is guaranteed;
+        // the meaningful check here is just that the address inside is non-zero.
         if (_identityType == IdentityTypes.ASSET) {
-            require(_account.length == 20 && address(bytes20(_account)) != address(0), Errors.ZeroAddress());
+            (, address evmAddr) = InteroperableAddress.parseEvmV1(_account);
+            require(evmAddr != address(0), Errors.ZeroAddress());
         }
 
         // Salt covers every deploy input, so different keys give different addresses.
@@ -288,7 +421,8 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces {
         _linkAccount(_account, identity);
 
         if (_identityType == IdentityTypes.ASSET) {
-            emit TokenLinked(address(bytes20(_account)), identity);
+            (, address evmAddr) = InteroperableAddress.parseEvmV1(_account);
+            emit TokenLinked(evmAddr, identity);
         }
 
         return identity;

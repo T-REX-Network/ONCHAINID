@@ -87,6 +87,26 @@ library Errors {
     ///         is not currently part of the calling identity's active set.
     error WalletNotLinkedToIdentity(bytes wallet);
 
+    /// @notice Reverts when the caller of {confirmCrossChainLink} does not match the
+    ///         identity recorded in the pending proposal. `recorded` is `address(0)`
+    ///         if no proposal exists for the wallet.
+    error PendingCrossChainLinkIdentityMismatch(bytes wallet, address caller, address recorded);
+
+    /// @notice Reverts when an inbound cross-chain proposal targets a wallet that
+    ///         already has a registry entry (active or revoked). Sticky binding
+    ///         applies to the cross-chain path the same way it does to the EVM path.
+    error WalletAlreadyHasEntry(bytes wallet);
+
+    /// @notice Reverts when the ERC-7786 source-chain sender does not match the
+    ///         wallet envelope carried in the payload. The wallet must originate
+    ///         the bridge call itself, so `sender` and `wallet` must be the same
+    ///         interoperable address.
+    error CrossChainSenderWalletMismatch(bytes sender, bytes wallet);
+
+    /// @notice Reverts when a cross-chain link proposal is delivered or confirmed
+    ///         past its `expiry`.
+    error PendingCrossChainLinkExpired(uint256 expiry);
+
     /* ----- Verifier ----- */
 
     /// @notice The claim topic already exists.
@@ -248,5 +268,12 @@ library Errors {
 
     /// @notice The call failed.
     error CallFailed();
+
+    /* ----- EASClaimIssuer ----- */
+
+    /// @notice Reverts when a caller invokes an `IClaimIssuer` or `IIdentity` method that has
+    ///         no meaning on a stateless adapter (key management, claim storage, execution).
+    ///         The adapter is a live view over EAS and holds no keys or claims.
+    error EASNotSupported();
 
 }

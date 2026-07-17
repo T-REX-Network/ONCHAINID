@@ -5,6 +5,7 @@ import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { IdentityHelper } from "../helpers/IdentityHelper.sol";
 import { MODULE_TYPE_FALLBACK, MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { Errors as OZErrors } from "@openzeppelin/contracts/utils/Errors.sol";
+import { InteroperableAddress } from "@openzeppelin/contracts/utils/draft-InteroperableAddress.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IERC734 } from "contracts/interface/IERC734.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
@@ -138,10 +139,15 @@ contract TokenOidTest is Test {
             .createIdentityFor(token, IdentityTypes.ASSET, "factorySalt", _makeMgmtKey(bob), _defaultModules);
 
         assertTrue(identity != address(0), "Identity should be deployed");
-        assertEq(setup.idFactory.getIdentity(abi.encodePacked(token)), identity, "Token should map to identity");
+        assertEq(
+            setup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, token)),
+            identity,
+            "Token should map to identity"
+        );
         bytes[] memory accs = setup.idFactory.getAccounts(identity);
         assertEq(accs.length, 1, "Asset identity has exactly one wallet");
-        assertEq(address(bytes20(accs[0])), token, "Identity's sole wallet is the token");
+        (, address tokenFromAcc) = InteroperableAddress.parseEvmV1(accs[0]);
+        assertEq(tokenFromAcc, token, "Identity's sole wallet is the token");
     }
 
     /// @notice AccessManager admins are NOT auto-members of arbitrary roles. After the
@@ -168,7 +174,7 @@ contract TokenOidTest is Test {
             .createIdentityFor(token, IdentityTypes.ASSET, "adminSalt", _makeMgmtKey(bob), _defaultModules);
 
         assertTrue(identity != address(0));
-        assertEq(setup.idFactory.getIdentity(abi.encodePacked(token)), identity);
+        assertEq(setup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, token)), identity);
     }
 
     // ============ createIdentity (ASSET) — basic validation ============
@@ -206,18 +212,21 @@ contract TokenOidTest is Test {
         vm.prank(deployer);
         setup.idFactory.createIdentityFor(alice, IdentityTypes.ASSET, "salt1", _makeMgmtKey(bob), _defaultModules);
 
-        address tokenIdentityAddr = setup.idFactory.getIdentity(abi.encodePacked(alice));
+        address tokenIdentityAddr = setup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, alice));
         assertTrue(tokenIdentityAddr != address(0));
         bytes[] memory accs = setup.idFactory.getAccounts(tokenIdentityAddr);
         assertEq(accs.length, 1);
-        assertEq(address(bytes20(accs[0])), alice);
+        (, address aliceFromAcc) = InteroperableAddress.parseEvmV1(accs[0]);
+        assertEq(aliceFromAcc, alice);
 
         // Re-using the same token address now reverts via the wallet sticky-binding
         // rule (tokens and wallets share one keyspace), not the old token-collision error.
         vm.prank(deployer);
         vm.expectRevert(
             abi.encodeWithSelector(
-                Errors.WalletBoundToAnotherIdentity.selector, abi.encodePacked(alice), tokenIdentityAddr
+                Errors.WalletBoundToAnotherIdentity.selector,
+                InteroperableAddress.formatEvmV1(block.chainid, alice),
+                tokenIdentityAddr
             )
         );
         setup.idFactory.createIdentityFor(alice, IdentityTypes.ASSET, "salt2", _makeMgmtKey(alice), _defaultModules);
@@ -242,7 +251,7 @@ contract TokenOidTest is Test {
 
         vm.prank(assetIdentity);
         vm.expectRevert(abi.encodeWithSelector(Errors.CannotRevokeFromNonSigningIdentity.selector, assetIdentity));
-        setup.idFactory.revokeAccount(abi.encodePacked(token));
+        setup.idFactory.revokeAccount(InteroperableAddress.formatEvmV1(block.chainid, token));
     }
 
     /// @notice Same guard applies to SMART_CONTRACT identities (also non-signing entities).
@@ -254,7 +263,7 @@ contract TokenOidTest is Test {
 
         vm.prank(scIdentity);
         vm.expectRevert(abi.encodeWithSelector(Errors.CannotRevokeFromNonSigningIdentity.selector, scIdentity));
-        setup.idFactory.revokeAccount(abi.encodePacked(contractAddr));
+        setup.idFactory.revokeAccount(InteroperableAddress.formatEvmV1(block.chainid, contractAddr));
     }
 
     /// @notice Asset identity with multiple key types should set all keys.
