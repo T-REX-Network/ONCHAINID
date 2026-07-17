@@ -374,8 +374,8 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         // Short calldata zero-pads and can't match the execute selector.
         if (bytes4(callData) != IERC7579Execution.execute.selector) return false;
 
-        (bytes32 modeWord, bytes calldata executionCalldata) = _decodeExecute(callData);
-        (CallType callType,,,) = ERC7579Utils.decodeMode(Mode.wrap(modeWord));
+        (Mode mode, bytes calldata executionCalldata) = _decodeExecute(callData);
+        (CallType callType,,,) = ERC7579Utils.decodeMode(mode);
 
         if (callType == ERC7579Utils.CALLTYPE_SINGLE) {
             // A single execution is at least 52 bytes (20 target + 32 value).
@@ -430,12 +430,12 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     function _decodeExecute(bytes calldata callData)
         private
         pure
-        returns (bytes32 modeWord, bytes calldata executionCalldata)
+        returns (Mode mode, bytes calldata executionCalldata)
     {
         // Hand-rolled so `executionCalldata` stays a calldata slice (decodeSingle/decodeBatch below
         // need calldata); `abi.decode` would return memory. Reads the ABI head the same way the
         // decoder does: mode, then the offset/length of the bytes arg. Callers guard the length.
-        modeWord = bytes32(callData[4:36]);
+        mode = Mode.wrap(bytes32(callData[4:36]));
         uint256 dataOffset = uint256(bytes32(callData[36:68]));
         uint256 lenPos = 4 + dataOffset;
         uint256 dataLen = uint256(bytes32(callData[lenPos:lenPos + 32]));
