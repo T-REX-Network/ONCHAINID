@@ -57,11 +57,14 @@ library IdentityHelper {
         // trusted-issuer addClaim path, so it is deployed after those exist (below).
         setup.keyApprovalModule = new KeyApprovalModule();
 
-        // Identity implementation + beacon + AccessManager + factory. The factory needs
-        // the AccessManager; nothing later in this function reaches back into the factory
-        // for state, so this ordering is the minimum-coupling shape.
-        setup.identityImplementation = new Identity(false);
-        setup.beacon = new UpgradeableBeacon(address(setup.identityImplementation), managementKey);
+        // The Identity implementation now takes the registry module (the ERC734Validator) in its
+        // constructor, and the validator needs the factory + reputation registry, which need the
+        // beacon, which needs an implementation. To break that cycle we point the beacon at a
+        // throwaway implementation first (the KeyApprovalModule just needs to be a contract), deploy
+        // the rest, then upgrade the beacon to the real Identity implementation.
+        // `managementKey` owns the beacon (this function runs under its context), so it can run the
+        // `upgradeTo` below that points the beacon at the real implementation.
+        setup.beacon = new UpgradeableBeacon(address(setup.keyApprovalModule), managementKey);
         setup.accessManager = new AccessManager(managementKey);
         setup.idFactory = new IdentityFactory(address(setup.beacon), address(setup.accessManager));
 
@@ -70,6 +73,10 @@ library IdentityHelper {
         // both the factory and registry for the trusted-issuer addClaim path.
         setup.reputationRegistry = new ReputationRegistry(address(setup.accessManager), address(setup.idFactory));
         setup.signatureValidator = new ERC734Validator(address(setup.idFactory), address(setup.reputationRegistry));
+
+        // Now the real implementation, wired to the registry module, and point the beacon at it.
+        setup.identityImplementation = new Identity(address(setup.signatureValidator));
+        setup.beacon.upgradeTo(address(setup.identityImplementation));
 
         // Register every standard type with PUBLIC_ROLE and selfDeployable = true for
         // a permissive test default.
@@ -234,18 +241,19 @@ library IdentityHelper {
         internal
         returns (Identity identity, ERC734Validator signatureValidator)
     {
-        Identity impl = new Identity(false);
-        UpgradeableBeacon b = new UpgradeableBeacon(address(impl), initialManagementKey);
-
-        // Minimal AccessManager + IdentityFactory + ReputationRegistry so the merged
-        // ERC734Validator constructor has real addresses to bind to. These identities
-        // do not exercise the trusted-issuer path, so the addresses can be local
-        // throwaways. They are real contracts so the constructor's zero-address checks pass.
+        // Break the impl <- validator <- factory <- beacon <- impl cycle with a throwaway beacon
+        // implementation (any contract with code), then upgrade to the real impl once the validator
+        // exists. Minimal AccessManager + IdentityFactory + ReputationRegistry give the merged
+        // ERC734Validator constructor real addresses to bind to (these identities do not exercise
+        // the trusted-issuer path, so they can be local throwaways).
+        UpgradeableBeacon b = new UpgradeableBeacon(address(new KeyApprovalModule()), address(this));
         AccessManager am = new AccessManager(initialManagementKey);
         IdentityFactory localFactory = new IdentityFactory(address(b), address(am));
         ReputationRegistry localRegistry = new ReputationRegistry(address(am), address(localFactory));
 
         signatureValidator = new ERC734Validator(address(localFactory), address(localRegistry));
+        b.upgradeTo(address(new Identity(address(signatureValidator))));
+        b.transferOwnership(initialManagementKey);
         // The validator also holds the claim registry, so the claim fallbacks point at it too.
         address claimsModule = address(signatureValidator);
 

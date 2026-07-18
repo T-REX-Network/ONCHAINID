@@ -19,7 +19,7 @@ contract InitTest is OnchainIDSetup {
     function test_revert_whenInitializingLibraryDirectly() public {
         // The library implementation is constructed with `_disableInitializers()`, so any
         // call to `initialize` on it reverts via OZ's `Initializable` slot.
-        Identity libraryImpl = new Identity(true);
+        Identity libraryImpl = new Identity(address(onchainidSetup.signatureValidator));
         vm.expectRevert(Initializable.InvalidInitialization.selector);
         libraryImpl.initialize(IdentityTypes.INDIVIDUAL, new Structs.KeyParam[](0), new Structs.ModuleInstall[](0));
     }
@@ -30,7 +30,7 @@ contract InitTest is OnchainIDSetup {
     }
 
     function test_revert_whenCallingLibraryImplementationDirectly() public {
-        Identity libraryImpl = new Identity(true);
+        Identity libraryImpl = new Identity(address(onchainidSetup.signatureValidator));
 
         vm.prank(deployer);
         vm.expectRevert(Errors.InteractingWithLibraryContractForbidden.selector);

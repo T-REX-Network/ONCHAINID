@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
-import { IKeyRegistryModule } from "./KeyManager.sol";
+import { KeyManager } from "./KeyManager.sol";
 import { SmartAccount } from "./SmartAccount.sol";
 import { IERC734 } from "./interface/IERC734.sol";
 import { IERC735 } from "./interface/IERC735.sol";
 import { IIdentity } from "./interface/IIdentity.sol";
 import { Errors } from "./libraries/Errors.sol";
 import { KeyTypes } from "./libraries/KeyTypes.sol";
+import { ERC734Validator } from "./modules/validators/ERC734Validator.sol";
 import { Structs } from "./storage/Structs.sol";
 import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import { MODULE_TYPE_EXECUTOR, MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
@@ -64,18 +65,14 @@ contract Identity is Initializable, SmartAccount, ERC165 {
         keccak256(abi.encode(uint256(keccak256(bytes("onchainid.identity.metadata"))) - 1)) & ~bytes32(uint256(0xff));
 
     /**
-     * @notice Constructor of the Identity contract.
-     * @param _isLibrary True when deploying the implementation contract behind a proxy. In that
-     *        case we lock the OZ `Initializable` slot via `_disableInitializers()` so the
-     *        implementation can never be initialized directly; only proxies (which run the
-     *        constructor in their own context with `_isLibrary == false`) can initialize.
+     * @notice Constructor of the Identity implementation.
+     * @param registryModule The {ERC734Validator} that holds the key registry, baked into this
+     *        implementation's bytecode and shared by every proxy (see {KeyManager}).
+     * @dev Locks the OZ `Initializable` slot so the implementation itself can never be initialized;
+     *      only proxies (which run the constructor in their own context) can call {initialize}.
      */
-    constructor(bool _isLibrary) EIP712("OnchainID", "1") {
-        if (_isLibrary) {
-            _disableInitializers();
-        } else {
-            __Identity_init();
-        }
+    constructor(address registryModule) KeyManager(registryModule) EIP712("OnchainID", "1") {
+        _disableInitializers();
     }
 
     /**
@@ -97,36 +94,29 @@ contract Identity is Initializable, SmartAccount, ERC165 {
 
         _getIdentityMetadata().identityType = _identityType;
         __AccountERC7579_init();
-        __Identity_init();
+        // Flip the delegated-only guard on so direct calls to the implementation are rejected.
+        _getKeyStorage().canInteract = true;
 
-        // Install modules FIRST. The validator that holds the key registry must be installed and
-        // enshrined before any key is seeded, because keys now live in that module (a self-call).
-        // The validator's `onInstall(initData)` seeds the first MANAGEMENT key, so the registry is
-        // usable the moment it is enshrined. Module install entries with a non-zero purpose grant
-        // the module address a MODULE-type key with that purpose (e.g. the KeyApprovalModule
-        // executor gets MANAGEMENT so it can dispatch self-targeted calls).
+        // Install the modules. The registry module (an {ERC734Validator}) is fixed at construction,
+        // so keys can be seeded as soon as it is installed here; its `onInstall(initData)` seeds the
+        // first MANAGEMENT key. A non-zero purpose grants the module address a MODULE-type key with
+        // that purpose (e.g. the KeyApprovalModule executor gets MANAGEMENT to dispatch self-calls).
         for (uint256 i = 0; i < _modules.length; i++) {
             _installModule(_modules[i].moduleType, _modules[i].module, _modules[i].initData);
-
-            if (_modules[i].moduleType == MODULE_TYPE_VALIDATOR) {
-                // Enshrine the first validator seen as the account's registry module (set-once).
-                _enshrineRegistryModule(_modules[i].module);
-            }
         }
 
-        // Grant module-purpose keys through the enshrined module, after it exists. Kept in a second
-        // pass so the registry module is already set when the first grant runs.
+        // Grant module-purpose keys.
         for (uint256 i = 0; i < _modules.length; i++) {
             if (_modules[i].purpose != 0) {
-                IKeyRegistryModule(_registryModule())
+                ERC734Validator(_registryModule())
                     .addKey(abi.encodePacked(_modules[i].module), "", _modules[i].purpose, KeyTypes.MODULE);
             }
         }
 
-        // Seed the caller-supplied keys into the enshrined registry module.
+        // Seed the caller-supplied keys into the registry module.
         for (uint256 i = 0; i < _keys.length; i++) {
             Structs.KeyParam calldata key = _keys[i];
-            IKeyRegistryModule(_registryModule()).addKey(key.signerData, key.clientData, key.purpose, key.keyType);
+            ERC734Validator(_registryModule()).addKey(key.signerData, key.clientData, key.purpose, key.keyType);
         }
 
         emit IdentityInitialized(_identityType);
@@ -164,20 +154,6 @@ contract Identity is Initializable, SmartAccount, ERC165 {
     function supportsInterface(bytes4 interfaceId) public view override returns (bool) {
         return (interfaceId == type(IERC734).interfaceId || interfaceId == type(IERC735).interfaceId
                 || interfaceId == type(IIdentity).interfaceId || super.supportsInterface(interfaceId));
-    }
-
-    /**
-     * @notice Internal initializer. Marks the KeyManager storage as initialized and flips
-     *         the delegated-only guard on so direct calls to the implementation contract
-     *         are rejected. No MANAGEMENT key is written here; the initial keys come from
-     *         the caller-supplied array in {initialize}.
-     */
-    // solhint-disable-next-line func-name-mixedcase
-    function __Identity_init() internal {
-        KeyStorage storage ks = _getKeyStorage();
-        require(!ks.initialized, Errors.InitialKeyAlreadySetup());
-        ks.initialized = true;
-        ks.canInteract = true;
     }
 
     /// @dev Returns the identity metadata storage at its ERC-7201 slot.

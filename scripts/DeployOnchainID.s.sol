@@ -54,9 +54,10 @@ contract DeployOnchainID is Script {
         // it holds the ERC-734 key registry AND the ERC-735 claim surface, including the
         // trusted-issuer addClaim path that consults the factory and the registry.
 
-        // 1. Identity implementation (library mode — prevents direct initialization)
-        Identity identityImpl = new Identity(true);
-        console.log("Identity implementation:", address(identityImpl));
+        // 1. The Identity implementation now takes the registry module (the ERC734Validator) in its
+        //    constructor, and the validator needs the factory, which needs the beacon. It is
+        //    therefore deployed in Phase 2, after the validator exists, and the beacon is pointed at
+        //    it via `upgradeTo`.
 
         // 3. IdentityUtilities implementation + proxy
         IdentityUtilities utilitiesImpl = new IdentityUtilities();
@@ -68,18 +69,19 @@ contract DeployOnchainID is Script {
 
         // ===== Phase 2: Infrastructure =====
 
-        // 4. UpgradeableBeacon (beacon for identity proxies). Owned by the deployer
-        //    initially; transferred to the AccessManager below so upgrades go through
-        //    role gating.
-        UpgradeableBeacon beacon = new UpgradeableBeacon(address(identityImpl), deployer);
-        console.log("Beacon:", address(beacon));
-
         // 4b. KeyApprovalModule (the legacy ERC-734 execute/approve queue, no deps). Callers
         //     include it in their `_modules` array on `createIdentity` to opt into the legacy
         //     ERC-734 execute/approve queue. The ERC-735 claim surface lives in the
         //     ERC734Validator deployed below, installed as claim fallbacks.
         KeyApprovalModule keyApprovalModule = new KeyApprovalModule();
         console.log("KeyApprovalModule:", address(keyApprovalModule));
+
+        // 4. UpgradeableBeacon (beacon for identity proxies). Owned by the deployer initially;
+        //    transferred to the AccessManager below. It starts pointing at a throwaway
+        //    implementation (any contract) and is upgraded to the real Identity implementation once
+        //    the validator exists, breaking the impl <- validator <- factory <- beacon <- impl cycle.
+        UpgradeableBeacon beacon = new UpgradeableBeacon(address(keyApprovalModule), deployer);
+        console.log("Beacon:", address(beacon));
 
         // 5. AccessManager. Single source of truth for IdentityFactory and
         //    ReputationRegistry permissions. The deployer starts as the AccessManager admin
@@ -107,6 +109,13 @@ contract DeployOnchainID is Script {
         //     so it needs the factory and the registry for the trusted-issuer addClaim path.
         ERC734Validator signatureValidator = new ERC734Validator(address(idFactory), address(reputationRegistry));
         console.log("ERC734Validator:", address(signatureValidator));
+
+        // Now the real Identity implementation, wired to the registry module, and point the beacon
+        // at it. The constructor calls `_disableInitializers()`, so the implementation itself can
+        // never be initialized directly.
+        Identity identityImpl = new Identity(address(signatureValidator));
+        console.log("Identity implementation:", address(identityImpl));
+        beacon.upgradeTo(address(identityImpl));
 
         // Hand the beacon to the AccessManager so future implementation upgrades
         // (`beacon.upgradeTo(newImpl)`) go through the same role gating as everything else.
