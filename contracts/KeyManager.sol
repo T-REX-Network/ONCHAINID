@@ -26,16 +26,14 @@ interface IKeyRegistryModule {
 
 /**
  * @title KeyManager
- * @notice Thin ERC-734 bootstrap facade for an identity. It keeps the `onlyManagerOrSelf` /
- *         `delegatedOnly` gates and the ERC-734 write entry points, but no longer owns any
- *         local key storage.
+ * @notice Thin ERC-734 bootstrap facade for an identity. It keeps the `onlyManagerOrSelf` gate and
+ *         the ERC-734 write entry points, but no longer owns any local key storage.
  *
  * @dev The canonical key registry lives in the enshrined {ERC734Validator} module. This contract:
  *      - reads MANAGEMENT membership for {onlyManagerOrSelf} via a staticcall to the enshrined module;
  *      - forwards ERC-734 key writes (`addKey`, `addKeyWithData`, `removeKey`) to the module as
  *        self-calls;
- *      - keeps its ERC-7201 storage slot only for the `initialized` / `canInteract` flags and the
- *        enshrined `registryModule` address.
+ *      - keeps its ERC-7201 storage slot only for the enshrined `registryModule` address.
  *
  *      The ERC-734 *getter* selectors (`getKey`, `getKeyPurposes`, `getKeysByPurpose`,
  *      `keyHasPurpose`) are served by the account's ERC-7579 fallback, which routes them to the
@@ -51,13 +49,9 @@ contract KeyManager {
      * @custom:storage-location erc7201:onchainid.keymanager.storage
      */
     struct KeyStorage {
-        /// @dev Flag indicating if the contract has been initialized
-        bool initialized;
-        /// @dev Flag preventing direct calls to the library implementation
-        bool canInteract;
         /// @dev The enshrined ERC-734 registry module (the merged {ERC734Validator}). Set once,
         ///      during {Identity.initialize}, and read by every `onlyManagerOrSelf`-gated call and by
-        ///      the ERC-734 write forwarders.
+        ///      the ERC-734 write forwarders. Zero until the identity is initialized.
         address registryModule;
     }
 
@@ -66,13 +60,6 @@ contract KeyManager {
     bytes32 internal constant _KEY_STORAGE_SLOT = keccak256(
         abi.encode(uint256(keccak256(bytes("onchainid.keymanager.storage"))) - 1)
     ) & ~bytes32(uint256(0xff));
-
-    /// @notice Prevents any direct call to the implementation contract (marked
-    ///         by `canInteract == false`).
-    modifier delegatedOnly() {
-        _checkDelegated();
-        _;
-    }
 
     /// @notice Requires a MANAGEMENT key, or an internal self-call (`msg.sender == address(this)`).
     modifier onlyManagerOrSelf() {
@@ -96,7 +83,6 @@ contract KeyManager {
     function addKey(bytes32 _key, uint256 _purpose, uint256 _type)
         public
         virtual
-        delegatedOnly
         onlyManagerOrSelf
         returns (bool success)
     {
@@ -116,13 +102,7 @@ contract KeyManager {
 
     /// @notice Remove a purpose from a key. Caller must hold MANAGEMENT, or be the identity itself.
     /// @dev The module enforces the "can't remove the last MANAGEMENT key" guard.
-    function removeKey(bytes32 _key, uint256 _purpose)
-        public
-        virtual
-        delegatedOnly
-        onlyManagerOrSelf
-        returns (bool success)
-    {
+    function removeKey(bytes32 _key, uint256 _purpose) public virtual onlyManagerOrSelf returns (bool success) {
         _removeKeyPurpose(_key, _purpose);
         return true;
     }
@@ -145,7 +125,7 @@ contract KeyManager {
         uint256 _type,
         bytes memory _signerData,
         bytes memory _clientData
-    ) external virtual delegatedOnly onlyManagerOrSelf {
+    ) external virtual onlyManagerOrSelf {
         _addKeyWithData(_key, _purpose, _type, _signerData, _clientData);
     }
 
@@ -165,9 +145,11 @@ contract KeyManager {
         IKeyRegistryModule(_registryModule()).addKey(_signerData, _clientData, _purpose, _type);
     }
 
-    /// @dev The enshrined registry module. Reverts through the caller if never set.
-    function _registryModule() internal view returns (address) {
-        return _getKeyStorage().registryModule;
+    /// @dev The enshrined registry module. Reverts if the identity has not been initialized yet
+    ///      (e.g. a direct call to the implementation), which also guards the write entry points.
+    function _registryModule() internal view returns (address module) {
+        module = _getKeyStorage().registryModule;
+        require(module != address(0), Errors.IdentityNotInitialized());
     }
 
     /// @dev Set-once enshrine of the registry module. Called from {Identity.initialize} once the
@@ -183,10 +165,6 @@ contract KeyManager {
     /// @dev MANAGEMENT / purpose read for the account itself, backed by the enshrined module.
     function _moduleKeyHasPurpose(bytes32 keyHash, uint256 purpose) internal view returns (bool) {
         return IKeyRegistryModule(_registryModule()).keyHasPurpose(address(this), keyHash, purpose);
-    }
-
-    function _checkDelegated() internal view {
-        require(_getKeyStorage().canInteract, Errors.InteractingWithLibraryContractForbidden());
     }
 
     function _getKeyStorage() internal pure returns (KeyStorage storage s) {

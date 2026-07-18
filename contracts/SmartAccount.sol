@@ -46,7 +46,6 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         public
         virtual
         override
-        delegatedOnly
         onlyManagerOrSelf
     {
         _installModule(moduleTypeId, module, initData);
@@ -59,7 +58,6 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         public
         virtual
         override
-        delegatedOnly
         onlyManagerOrSelf
     {
         _uninstallModule(moduleTypeId, module, deInitData);

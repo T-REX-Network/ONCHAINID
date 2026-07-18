@@ -32,8 +32,10 @@ contract InitTest is OnchainIDSetup {
     function test_revert_whenCallingLibraryImplementationDirectly() public {
         Identity libraryImpl = new Identity(true);
 
+        // The implementation is never initialized, so its registry module is unset and the write
+        // entry points revert as not-initialized.
         vm.prank(deployer);
-        vm.expectRevert(Errors.InteractingWithLibraryContractForbidden.selector);
+        vm.expectRevert(Errors.IdentityNotInitialized.selector);
         libraryImpl.addKey(keccak256(abi.encodePacked(alice)), 1, 1);
     }
 

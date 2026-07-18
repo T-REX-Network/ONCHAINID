@@ -157,8 +157,9 @@ library Errors {
 
     /* ----- Identity ----- */
 
-    /// @notice Interacting with the library contract is forbidden.
-    error InteractingWithLibraryContractForbidden();
+    /// @notice A key/registry entry point was called before the identity was initialized (for
+    ///         example, a direct call to the implementation contract).
+    error IdentityNotInitialized();
 
     /// @notice The sender does not have the management key.
     error SenderDoesNotHaveManagementKey();
@@ -172,9 +173,6 @@ library Errors {
     /// @notice The caller holds no key on the target identity that authorizes proposing an
     ///         execution. PROPOSER, ACTION, CLAIM_SIGNER, CLAIM_ADDER, or MANAGEMENT works.
     error SenderCannotPropose(address sender);
-
-    /// @notice The initial key was already setup.
-    error InitialKeyAlreadySetup();
 
     /// @notice The key is not registered.
     error KeyNotRegistered(bytes32 key);

@@ -73,8 +73,6 @@ contract Identity is Initializable, SmartAccount, ERC165 {
     constructor(bool _isLibrary) EIP712("OnchainID", "1") {
         if (_isLibrary) {
             _disableInitializers();
-        } else {
-            __Identity_init();
         }
     }
 
@@ -97,7 +95,6 @@ contract Identity is Initializable, SmartAccount, ERC165 {
 
         _getIdentityMetadata().identityType = _identityType;
         __AccountERC7579_init();
-        __Identity_init();
 
         // Install modules FIRST. The validator that holds the key registry must be installed and
         // enshrined before any key is seeded, because keys now live in that module (a self-call).
@@ -164,20 +161,6 @@ contract Identity is Initializable, SmartAccount, ERC165 {
     function supportsInterface(bytes4 interfaceId) public view override returns (bool) {
         return (interfaceId == type(IERC734).interfaceId || interfaceId == type(IERC735).interfaceId
                 || interfaceId == type(IIdentity).interfaceId || super.supportsInterface(interfaceId));
-    }
-
-    /**
-     * @notice Internal initializer. Marks the KeyManager storage as initialized and flips
-     *         the delegated-only guard on so direct calls to the implementation contract
-     *         are rejected. No MANAGEMENT key is written here; the initial keys come from
-     *         the caller-supplied array in {initialize}.
-     */
-    // solhint-disable-next-line func-name-mixedcase
-    function __Identity_init() internal {
-        KeyStorage storage ks = _getKeyStorage();
-        require(!ks.initialized, Errors.InitialKeyAlreadySetup());
-        ks.initialized = true;
-        ks.canInteract = true;
     }
 
     /// @dev Returns the identity metadata storage at its ERC-7201 slot.
