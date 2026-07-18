@@ -101,7 +101,10 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
 
     /// @notice Add or remove an attester from the accepted set. Adding widens the trust
     ///         surface: attestations from `attester` under a configured schema will pass.
+    /// @dev    Rejects `address(0)`: a deployment-script bug passing an unset address
+    ///         would otherwise succeed silently, leaving the real attester unlisted.
     function setAttester(address attester, bool allowed) external restricted {
+        require(attester != address(0), Errors.ZeroAddress());
         _isAttesterAllowed[attester] = allowed;
         emit AttesterSet(attester, allowed);
     }
@@ -126,11 +129,13 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         return _isAttesterAllowed[attester];
     }
 
-    /// @notice Raw `data` field of the attestation carried by `sig`. Useful when the
-    ///         schema encodes attribute values the caller wants to decode.
+    /// @notice Raw read only — returns the payload even for revoked, expired, or
+    ///         untrusted attestations. Always pair with `isClaimValid` (or
+    ///         `getClaimStatus`) before making eligibility or display decisions.
     /// @dev    Returns empty bytes if `sig` is not a 32-byte UID or the attestation does
-    ///         not exist. Does not check schema, attester, revocation, or expiry. Pair
-    ///         with `getClaimStatus` when validity matters.
+    ///         not exist. Does not check schema, attester, revocation, or expiry. A
+    ///         front-end that renders this payload without calling `isClaimValid` will
+    ///         show stale data for attestations revoked on EAS.
     function getAttestationData(bytes calldata sig) external view returns (bytes memory) {
         if (sig.length != 32) return "";
         bytes32 uid = bytes32(sig);
@@ -156,6 +161,16 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         Structs.ClaimData calldata data
     ) external view returns (ClaimStatus status) {
         return _resolve(_identity, claimTopic, sig, data);
+    }
+
+    /// @inheritdoc IClaimIssuer
+    /// @dev Always `false`: this issuer keeps no digest registry, so it has never
+    ///      revoked a digest. Reverting here would abort compliance call chains
+    ///      (`isVerified` -> `isDigestRevoked` -> `isClaimValid`) on perfectly valid
+    ///      claims. Revocation lives on EAS and surfaces as `Revoked` through
+    ///      `isClaimValid` / `getClaimStatus` — those are the source of truth.
+    function isDigestRevoked(bytes32) external pure returns (bool) {
+        return false;
     }
 
     /// @dev Live status resolution. Missing config, missing attestation, wrong schema,
@@ -212,11 +227,6 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
 
     /// @inheritdoc IClaimIssuer
     function revokeClaimByDigest(bytes32) external pure {
-        revert Errors.EASNotSupported();
-    }
-
-    /// @inheritdoc IClaimIssuer
-    function isDigestRevoked(bytes32) external pure returns (bool) {
         revert Errors.EASNotSupported();
     }
 
