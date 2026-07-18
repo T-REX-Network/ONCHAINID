@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.28;
 
-import { KeyManager } from "./KeyManager.sol";
+import { IKeyRegistryModule, KeyManager } from "./KeyManager.sol";
 import { IKeyExecutor } from "./interface/IKeyExecutor.sol";
 import { Errors } from "./libraries/Errors.sol";
 import { hashAddress } from "./libraries/Hashing.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
 import { KeyApprovalModule } from "./modules/executors/KeyApprovalModule.sol";
-import { ERC734Validator } from "./modules/validators/ERC734Validator.sol";
 import { LowLevelCall } from "./vendor/utils/LowLevelCall.sol";
 import {
     AccountERC7579Upgradeable
@@ -68,14 +67,14 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
 
     /// @dev Runs the base uninstall, then strips every ERC-734 purpose held by the
     ///      module's address so a reinstall doesn't keep old rights. Purposes are read from,
-    ///      and removed on, the registry module (self-calls).
+    ///      and removed on, the enshrined registry module (self-calls).
     function _uninstallModule(uint256 moduleTypeId, address module, bytes memory deInitData) internal virtual override {
         // Base uninstall (calls module's onUninstall).
         super._uninstallModule(moduleTypeId, module, deInitData);
 
         // Look up the module's key entry on the registry module.
         bytes32 moduleKey = hashAddress(module);
-        ERC734Validator registry = ERC734Validator(_registryModule());
+        IKeyRegistryModule registry = IKeyRegistryModule(_registryModule());
 
         // No key record for this module address → nothing to clean up.
         (bytes memory signerData,) = registry.getKeyData(address(this), moduleKey);

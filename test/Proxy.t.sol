@@ -99,7 +99,7 @@ contract ProxyTest is OnchainIDSetup {
     }
 
     function test_beacon_shouldReturnCorrectAddress() public {
-        Identity impl = new Identity(address(onchainidSetup.signatureValidator));
+        Identity impl = new Identity(false);
         UpgradeableBeacon b = new UpgradeableBeacon(address(impl), address(this));
         BeaconProxy proxy = new BeaconProxy(address(b), _initData(IdentityTypes.INDIVIDUAL));
 
@@ -110,7 +110,7 @@ contract ProxyTest is OnchainIDSetup {
     }
 
     function test_updateImplementationAddress() public {
-        Identity impl = new Identity(address(onchainidSetup.signatureValidator));
+        Identity impl = new Identity(false);
         UpgradeableBeacon b = new UpgradeableBeacon(address(impl), address(this));
         new BeaconProxy(address(b), _initData(IdentityTypes.INDIVIDUAL));
 
