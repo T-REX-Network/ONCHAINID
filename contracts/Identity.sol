@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
-import { IKeyRegistryModule } from "./KeyManager.sol";
 import { SmartAccount } from "./SmartAccount.sol";
 import { IERC734 } from "./interface/IERC734.sol";
 import { IERC735 } from "./interface/IERC735.sol";
 import { IIdentity } from "./interface/IIdentity.sol";
 import { Errors } from "./libraries/Errors.sol";
 import { KeyTypes } from "./libraries/KeyTypes.sol";
+import { ERC734Validator } from "./modules/validators/ERC734Validator.sol";
 import { Structs } from "./storage/Structs.sol";
 import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import { MODULE_TYPE_EXECUTOR, MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
@@ -115,7 +115,7 @@ contract Identity is Initializable, SmartAccount, ERC165 {
         // pass so the registry module is already set when the first grant runs.
         for (uint256 i = 0; i < _modules.length; i++) {
             if (_modules[i].purpose != 0) {
-                IKeyRegistryModule(_registryModule())
+                ERC734Validator(_registryModule())
                     .addKey(abi.encodePacked(_modules[i].module), "", _modules[i].purpose, KeyTypes.MODULE);
             }
         }
@@ -123,7 +123,7 @@ contract Identity is Initializable, SmartAccount, ERC165 {
         // Seed the caller-supplied keys into the enshrined registry module.
         for (uint256 i = 0; i < _keys.length; i++) {
             Structs.KeyParam calldata key = _keys[i];
-            IKeyRegistryModule(_registryModule()).addKey(key.signerData, key.clientData, key.purpose, key.keyType);
+            ERC734Validator(_registryModule()).addKey(key.signerData, key.clientData, key.purpose, key.keyType);
         }
 
         emit IdentityInitialized(_identityType);

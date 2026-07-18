@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.28;
 
-import { IKeyRegistryModule, KeyManager } from "./KeyManager.sol";
+import { KeyManager } from "./KeyManager.sol";
 import { IKeyExecutor } from "./interface/IKeyExecutor.sol";
 import { Errors } from "./libraries/Errors.sol";
 import { hashAddress } from "./libraries/Hashing.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
 import { KeyApprovalModule } from "./modules/executors/KeyApprovalModule.sol";
+import { ERC734Validator } from "./modules/validators/ERC734Validator.sol";
 import { LowLevelCall } from "./vendor/utils/LowLevelCall.sol";
 import {
     AccountERC7579Upgradeable
@@ -72,7 +73,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
 
         // Look up the module's key entry on the registry module.
         bytes32 moduleKey = hashAddress(module);
-        IKeyRegistryModule registry = IKeyRegistryModule(_registryModule());
+        ERC734Validator registry = ERC734Validator(_registryModule());
 
         // No key record for this module address → nothing to clean up.
         (bytes memory signerData,) = registry.getKeyData(address(this), moduleKey);

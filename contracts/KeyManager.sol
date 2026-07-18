@@ -4,25 +4,7 @@ pragma solidity ^0.8.28;
 import { Errors } from "./libraries/Errors.sol";
 import { hashAddress } from "./libraries/Hashing.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
-
-/// @notice Minimal view of the enshrined ERC-734 registry module (the merged {ERC734Validator}).
-///         The account no longer stores keys locally; it delegates the key registry to this
-///         module. Reads used by the account's own auth gates go through {keyHasPurpose}; writes
-///         forward to {addKey} / {removeKey}; {getKeyData} / {getKeyPurposes} back the account's
-///         write forwarders and module-purpose cleanup.
-interface IKeyRegistryModule {
-
-    function keyHasPurpose(address account, bytes32 keyHash, uint256 purpose) external view returns (bool);
-
-    function getKeyData(address account, bytes32 keyHash) external view returns (bytes memory, bytes memory);
-
-    function getKeyPurposes(address account, bytes32 keyHash) external view returns (uint256[] memory);
-
-    function addKey(bytes calldata signerData, bytes calldata clientData, uint256 purpose, uint256 keyType) external;
-
-    function removeKey(bytes32 keyHash, uint256 purpose) external;
-
-}
+import { ERC734Validator } from "./modules/validators/ERC734Validator.sol";
 
 /**
  * @title KeyManager
@@ -95,9 +77,9 @@ contract KeyManager {
     ///      derives the keyHash from the signer bytes), then forwards the write.
     function _addKey(bytes32 _key, uint256 _purpose, uint256 _type) internal {
         (bytes memory signerData, bytes memory clientData) =
-            IKeyRegistryModule(_registryModule()).getKeyData(address(this), _key);
+            ERC734Validator(_registryModule()).getKeyData(address(this), _key);
         require(signerData.length != 0, Errors.InvalidSignerData());
-        IKeyRegistryModule(_registryModule()).addKey(signerData, clientData, _purpose, _type);
+        ERC734Validator(_registryModule()).addKey(signerData, clientData, _purpose, _type);
     }
 
     /// @notice Remove a purpose from a key. Caller must hold MANAGEMENT, or be the identity itself.
@@ -111,7 +93,7 @@ contract KeyManager {
     ///      {SmartAccount._uninstallModule} when it strips purposes off an uninstalled module.
     ///      Forwards to the module, which keeps the "can't remove the last MANAGEMENT key" check.
     function _removeKeyPurpose(bytes32 _key, uint256 _purpose) internal {
-        IKeyRegistryModule(_registryModule()).removeKey(_key, _purpose);
+        ERC734Validator(_registryModule()).removeKey(_key, _purpose);
     }
 
     /**
@@ -142,7 +124,7 @@ contract KeyManager {
         // The keyHash MUST commit to the signer bytes forwarded with it. Without this guard a caller
         // could register one keyHash while attaching a different signer's bytes.
         require(_key == keccak256(_signerData), Errors.InvalidSignerData());
-        IKeyRegistryModule(_registryModule()).addKey(_signerData, _clientData, _purpose, _type);
+        ERC734Validator(_registryModule()).addKey(_signerData, _clientData, _purpose, _type);
     }
 
     /// @dev The enshrined registry module. Reverts if the identity has not been initialized yet
@@ -164,7 +146,7 @@ contract KeyManager {
 
     /// @dev MANAGEMENT / purpose read for the account itself, backed by the enshrined module.
     function _moduleKeyHasPurpose(bytes32 keyHash, uint256 purpose) internal view returns (bool) {
-        return IKeyRegistryModule(_registryModule()).keyHasPurpose(address(this), keyHash, purpose);
+        return ERC734Validator(_registryModule()).keyHasPurpose(address(this), keyHash, purpose);
     }
 
     function _getKeyStorage() internal pure returns (KeyStorage storage s) {
