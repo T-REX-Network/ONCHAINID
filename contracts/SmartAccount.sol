@@ -13,7 +13,6 @@ import {
 } from "@openzeppelin/contracts-upgradeable/account/extensions/draft-AccountERC7579Upgradeable.sol";
 import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/draft-ERC4337Utils.sol";
 import { CallType, ERC7579Utils, Mode } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
-import { PackedUserOperation } from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
 import { Execution, MODULE_TYPE_EXECUTOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { Calldata } from "@openzeppelin/contracts/utils/Calldata.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
@@ -146,19 +145,6 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         if (callerIsExecutor && !_isKeyAuthorizedToCallTarget(callerKeyHash, target, inner)) {
             revert Errors.ExecutorPurposeNotAuthorized();
         }
-    }
-
-    /// @notice ERC-4337 user op validation.
-    /// @dev A pure pass-through. The installed validator verifies the signature and scopes the call;
-    ///      the account stays agnostic to the signature format so any stock validator can be used.
-    ///      Per-call authorization for the dispatch itself happens later, in {_execute}.
-    function _validateUserOp(PackedUserOperation calldata userOp, bytes32 userOpHash, bytes calldata signature)
-        internal
-        virtual
-        override
-        returns (uint256)
-    {
-        return super._validateUserOp(userOp, userOpHash, signature);
     }
 
     /// @dev Decides the purpose an executor's key needs for a target. Asks the installed policy
