@@ -151,7 +151,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     ///      that subcall and skip it while the outer uninstall still succeeds. Doing the wipe on
     ///      (re)install means a stale registry can never leak into a fresh install regardless of
     ///      whether `onUninstall` ran.
-    function onInstall(bytes calldata data) public virtual override {
+    function onInstall(bytes calldata data) public virtual {
         // Empty data is an executor or fallback install (claims and the ERC-734 getters). There is
         // no key to seed, so it is a no-op; the registry is seeded by the validator install below.
         if (data.length == 0) return;
@@ -179,9 +179,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         bytes calldata /* data */
     )
         public
-        virtual
-        override
-    { }
+        virtual { }
 
     /// @dev Wipes every `Key` record, every byPurpose entry, and the key index for `account`.
     ///      Each `Key.purposes` is an EnumerableSet, so it is `.clear()`ed explicitly: a plain
@@ -380,7 +378,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     ///      the standard `execute(bytes32,bytes)` selector is accepted; unknown call types fail.
     function _scopeAllows(address account, bytes32 keyHash, bytes calldata callData) internal view returns (bool) {
         // MANAGEMENT passes everything.
-        if (keyHasPurpose(account, keyHash, KeyPurposes.MANAGEMENT)) return true;
+        if (_keyHasPurpose(account, keyHash, KeyPurposes.MANAGEMENT)) return true;
 
         // Short calldata zero-pads and can't match the execute selector.
         if (bytes4(callData) != IERC7579Execution.execute.selector) return false;
@@ -616,7 +614,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     /// @inheritdoc IERC735
     /// @dev Marks the removed claim's digest revoked, so the same (issuer, topic, ClaimData) can't
     ///      be re-added; the issuer must sign a fresh claim to re-attest.
-    function removeClaim(bytes32 _claimId) public override returns (bool success) {
+    function removeClaim(bytes32 _claimId) public returns (bool success) {
         address account = msg.sender;
         // CLAIM_ADDER cannot remove; only CLAIM_SIGNER (or self-call) is accepted here.
         _requireClaimKey(account, _msgSender(), true);
@@ -644,7 +642,6 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     function getClaim(bytes32 _claimId)
         public
         view
-        override
         returns (
             uint256 topic,
             uint256 scheme,
@@ -659,7 +656,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     }
 
     /// @inheritdoc IERC735
-    function getClaimIdsByTopic(uint256 _topic) external view override returns (bytes32[] memory claimIds) {
+    function getClaimIdsByTopic(uint256 _topic) external view returns (bytes32[] memory claimIds) {
         return _store().registries[msg.sender].claimsByTopic[_topic].values();
     }
 
