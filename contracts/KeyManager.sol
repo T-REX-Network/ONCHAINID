@@ -26,12 +26,12 @@ interface IKeyRegistryModule {
 
 /**
  * @title KeyManager
- * @notice Thin ERC-734 bootstrap facade for an identity. It keeps the `onlyManager` /
+ * @notice Thin ERC-734 bootstrap facade for an identity. It keeps the `onlyManagerOrSelf` /
  *         `delegatedOnly` gates and the ERC-734 write entry points, but no longer owns any
  *         local key storage.
  *
  * @dev The canonical key registry lives in the enshrined {ERC734Validator} module. This contract:
- *      - reads MANAGEMENT membership for {onlyManager} via a staticcall to the enshrined module;
+ *      - reads MANAGEMENT membership for {onlyManagerOrSelf} via a staticcall to the enshrined module;
  *      - forwards ERC-734 key writes (`addKey`, `addKeyWithData`, `removeKey`) to the module as
  *        self-calls;
  *      - keeps its ERC-7201 storage slot only for the `initialized` / `canInteract` flags and the
@@ -56,7 +56,7 @@ contract KeyManager {
         /// @dev Flag preventing direct calls to the library implementation
         bool canInteract;
         /// @dev The enshrined ERC-734 registry module (the merged {ERC734Validator}). Set once,
-        ///      during {Identity.initialize}, and read by every `onlyManager`-gated call and by
+        ///      during {Identity.initialize}, and read by every `onlyManagerOrSelf`-gated call and by
         ///      the ERC-734 write forwarders.
         address registryModule;
     }
@@ -75,15 +75,19 @@ contract KeyManager {
     }
 
     /// @notice Requires a MANAGEMENT key, or an internal self-call (`msg.sender == address(this)`).
-    /// @dev MANAGEMENT membership is read from the enshrined registry module rather than from local
-    ///      storage. The self-call branch (`msg.sender == address(this)`) covers post-execution
-    ///      dispatch from the queue module or the EntryPoint, and the init path before any key exists.
-    modifier onlyManager() {
+    modifier onlyManagerOrSelf() {
+        _checkManagerOrSelf();
+        _;
+    }
+
+    /// @dev MANAGEMENT membership is read from the registry module rather than from local storage.
+    ///      The self-call branch (`msg.sender == address(this)`) covers post-execution dispatch from
+    ///      the queue module or the EntryPoint, and the init path before any key exists.
+    function _checkManagerOrSelf() internal view {
         require(
             msg.sender == address(this) || _moduleKeyHasPurpose(hashAddress(msg.sender), KeyPurposes.MANAGEMENT),
             Errors.SenderDoesNotHaveManagementKey()
         );
-        _;
     }
 
     /// @notice Add a key to the identity. Caller must hold MANAGEMENT, or be the identity itself.
@@ -93,7 +97,7 @@ contract KeyManager {
         public
         virtual
         delegatedOnly
-        onlyManager
+        onlyManagerOrSelf
         returns (bool success)
     {
         _addKey(_key, _purpose, _type);
@@ -112,7 +116,13 @@ contract KeyManager {
 
     /// @notice Remove a purpose from a key. Caller must hold MANAGEMENT, or be the identity itself.
     /// @dev The module enforces the "can't remove the last MANAGEMENT key" guard.
-    function removeKey(bytes32 _key, uint256 _purpose) public virtual delegatedOnly onlyManager returns (bool success) {
+    function removeKey(bytes32 _key, uint256 _purpose)
+        public
+        virtual
+        delegatedOnly
+        onlyManagerOrSelf
+        returns (bool success)
+    {
         _removeKeyPurpose(_key, _purpose);
         return true;
     }
@@ -135,7 +145,7 @@ contract KeyManager {
         uint256 _type,
         bytes memory _signerData,
         bytes memory _clientData
-    ) external virtual delegatedOnly onlyManager {
+    ) external virtual delegatedOnly onlyManagerOrSelf {
         _addKeyWithData(_key, _purpose, _type, _signerData, _clientData);
     }
 

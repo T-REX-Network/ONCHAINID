@@ -25,7 +25,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
 
     /// @notice Install a module. Gated on MANAGEMENT.
     /// @dev The OZ default gate (`onlyEntryPointOrSelf`) is replaced with the stricter
-    ///      ERC-734 `onlyManager` check, and `_installModule` is invoked directly instead
+    ///      ERC-734 `onlyManagerOrSelf` check, and `_installModule` is invoked directly instead
     ///      of `super.installModule`. The translated gate is at least as strict as the
     ///      OZ default, because the only paths that satisfied `onlyEntryPointOrSelf` were
     ///      (a) the canonical EntryPoint, which in turn ran a MANAGEMENT-signed UserOp,
@@ -47,20 +47,20 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         virtual
         override
         delegatedOnly
-        onlyManager
+        onlyManagerOrSelf
     {
         _installModule(moduleTypeId, module, initData);
     }
 
     /// @notice Uninstall a module. MANAGEMENT-gated.
     /// @dev See {installModule} for the rationale behind replacing the OZ default
-    ///      `onlyEntryPointOrSelf` gate with `onlyManager` and bypassing `super`.
+    ///      `onlyEntryPointOrSelf` gate with `onlyManagerOrSelf` and bypassing `super`.
     function uninstallModule(uint256 moduleTypeId, address module, bytes calldata deInitData)
         public
         virtual
         override
         delegatedOnly
-        onlyManager
+        onlyManagerOrSelf
     {
         _uninstallModule(moduleTypeId, module, deInitData);
     }
