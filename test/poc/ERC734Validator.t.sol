@@ -162,9 +162,10 @@ contract ERC734ValidatorTest is OnchainIDSetup {
     }
 
     /// @notice A registered ERC-7913 signer whose verifier has no code fails validation instead
-    ///         of reverting. Without the code-length guard, Solidity's own no-code check on the
-    ///         high-level verifier call reverts outside the try/catch and the whole
-    ///         `validateUserOp` blows up, which a malicious key could use to grief the account.
+    ///         of reverting. The verifier is reached via raw staticcall: a codeless verifier
+    ///         returns no data and fails the length check, while a high-level call would revert
+    ///         the whole `validateUserOp` (Solidity's no-code handling happens in the caller's
+    ///         frame, outside any try/catch).
     function test_validateUserOp_codelessVerifier_failsInsteadOfReverting() public {
         // Register a verifier-form signer (20-byte verifier address + key bytes) whose
         // verifier is a plain EOA.

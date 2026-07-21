@@ -509,16 +509,16 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         }
         address verifier = address(bytes20(Bytes.slice(signer, 0, 20)));
         bytes memory key = Bytes.slice(signer, 20);
-        // A codeless verifier must be an invalid signer, not a revert: Solidity's no-code check
-        // on the high-level call below reverts in THIS frame, outside the try/catch. ERC-7562
-        // only forbids EXTCODESIZE (and calls) against codeless addresses, and the call below
-        // performs that same check anyway, so this guard adds no new bundler-rule exposure.
-        if (verifier.code.length == 0) return false;
-        try IERC7913SignatureVerifier(verifier).verify(key, hash, signature) returns (bytes4 result) {
-            return result == IERC7913SignatureVerifier.verify.selector;
-        } catch {
-            return false;
-        }
+        // Raw staticcall on purpose. A high-level call would revert on a codeless verifier in
+        // THIS frame (outside any try/catch), and guarding that with an explicit code check
+        // would put an EXTCODESIZE in the 4337 validation path, which strict ERC-7562 bundler
+        // rules frown on. Here a codeless verifier just returns no data and fails the length
+        // check. Only registered signers reach this call: membership is checked first, so an
+        // arbitrary user op cannot even execute it with an unregistered verifier.
+        (bool success, bytes memory result) =
+            verifier.staticcall(abi.encodeCall(IERC7913SignatureVerifier.verify, (key, hash, signature)));
+        return success && result.length >= 32
+            && abi.decode(result, (bytes32)) == bytes32(IERC7913SignatureVerifier.verify.selector);
     }
 
     function _addKey(
