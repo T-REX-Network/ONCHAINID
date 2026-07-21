@@ -2,13 +2,10 @@
 pragma solidity ^0.8.28;
 
 import { KeyManager } from "./KeyManager.sol";
-import { IKeyExecutor } from "./interface/IKeyExecutor.sol";
 import { Errors } from "./libraries/Errors.sol";
 import { hashAddress } from "./libraries/Hashing.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
-import { KeyApprovalModule } from "./modules/executors/KeyApprovalModule.sol";
 import { ERC734Validator } from "./modules/validators/ERC734Validator.sol";
-import { LowLevelCall } from "./vendor/utils/LowLevelCall.sol";
 import {
     AccountERC7579Upgradeable
 } from "@openzeppelin/contracts-upgradeable/account/extensions/draft-AccountERC7579Upgradeable.sol";
@@ -91,12 +88,10 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
     ///         MANAGEMENT self-calls) and {executeFromExecutor} go through here, so there is only one
     ///         authorization path to keep right. DELEGATECALL and unknown call types are rejected.
     function _execute(Mode mode, bytes calldata executionCalldata) internal virtual override returns (bytes[] memory) {
-        // Work out who is calling: their key hash, whether they are an installed executor (which
-        // gets purpose-checked), and whether they are privileged (the account, or a MANAGEMENT module).
+        // Work out who is calling: their key hash, and whether they are an installed executor
+        // (which gets purpose-checked).
         bytes32 callerKeyHash = hashAddress(msg.sender);
         bool callerIsExecutor = isModuleInstalled(MODULE_TYPE_EXECUTOR, msg.sender, Calldata.emptyBytes());
-        bool privilegedCaller =
-            msg.sender == address(this) || _moduleKeyHasPurpose(callerKeyHash, KeyPurposes.MANAGEMENT);
 
         (CallType callType,,,) = ERC7579Utils.decodeMode(mode);
 
@@ -105,12 +100,12 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
             // reject it here so a call can never skip the guard below and reach super unauthorized.
             require(executionCalldata.length >= 52, Errors.UnsupportedExecutionMode(Mode.unwrap(mode)));
             address target = address(bytes20(executionCalldata[:20]));
-            _authorizeCall(target, executionCalldata[52:], callerKeyHash, privilegedCaller, callerIsExecutor);
+            _authorizeCall(target, executionCalldata[52:], callerKeyHash, callerIsExecutor);
         } else if (callType == ERC7579Utils.CALLTYPE_BATCH) {
             // Every call in the batch must pass.
             Execution[] calldata batch = ERC7579Utils.decodeBatch(executionCalldata);
             for (uint256 i = 0; i < batch.length; i++) {
-                _authorizeCall(batch[i].target, batch[i].callData, callerKeyHash, privilegedCaller, callerIsExecutor);
+                _authorizeCall(batch[i].target, batch[i].callData, callerKeyHash, callerIsExecutor);
             }
         } else {
             revert Errors.UnsupportedExecutionMode(Mode.unwrap(mode));
@@ -119,59 +114,35 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         return super._execute(mode, executionCalldata);
     }
 
-    /// @dev Authorizes one call: block re-entry into the account's own modules, then, for an
-    ///      executor caller, require its key to have a purpose for the target.
-    function _authorizeCall(
-        address target,
-        bytes calldata inner,
-        bytes32 callerKeyHash,
-        bool privilegedCaller,
-        bool callerIsExecutor
-    ) private view {
+    /// @dev Authorizes one call: no dispatched call may target one of the account's own modules,
+    ///      and an executor caller needs a key purpose for the target.
+    function _authorizeCall(address target, bytes calldata inner, bytes32 callerKeyHash, bool callerIsExecutor)
+        private
+        view
+    {
         // OZ rewrites target 0 to the account before dispatch; do the same so the checks agree.
         if (target == address(0)) target = address(this);
 
-        // Only a privileged caller may re-enter one of the account's own modules: an installed
-        // executor, or the fallback handler for this call's selector. `bytes4(inner)` zero-pads
-        // short/empty calldata, which matches no handler.
+        // A dispatched call must never land on one of the account's own modules: an installed
+        // executor, or the fallback handler for this call's selector. Module functions are reached
+        // through the account's fallback dispatch, which appends the real caller (ERC-2771 style);
+        // `execute(module, ...)` skips that append, so the module would misread its caller.
+        // `bytes4(inner)` zero-pads short/empty calldata, which matches no handler.
         bool targetIsOwnModule = isModuleInstalled(MODULE_TYPE_EXECUTOR, target, Calldata.emptyBytes())
             || _fallbackHandler(bytes4(inner)) == target;
-        if (targetIsOwnModule && !privilegedCaller) {
-            revert Errors.PrivilegedTargetRequiresManagement(target);
+        if (targetIsOwnModule) {
+            revert Errors.OwnModuleTargetBlocked(target);
         }
 
         // An executor's own key must have a purpose that authorizes this target.
-        if (callerIsExecutor && !_isKeyAuthorizedToCallTarget(callerKeyHash, target, inner)) {
+        if (callerIsExecutor && !_isKeyAuthorizedToCallTarget(callerKeyHash, target)) {
             revert Errors.ExecutorPurposeNotAuthorized();
         }
     }
 
-    /// @dev Decides the purpose an executor's key needs for a target. Asks the installed policy
-    ///      module (KeyApprovalModule) first; if none is installed or it reverts, falls back to a
-    ///      conservative rule: self-target needs MANAGEMENT, any other target needs ACTION.
-    function _isKeyAuthorizedToCallTarget(bytes32 keyHash, address target, bytes calldata data)
-        private
-        view
-        returns (bool)
-    {
-        // target is already self-aliased and re-entry-guarded by {_authorizeCall}.
-
-        // The policy module is whatever contract handles the `execute` fallback selector.
-        address policy = _fallbackHandler(IKeyExecutor.execute.selector);
-
-        if (policy != address(0)) {
-            // LowLevelCall so a broken policy can't brick the account.
-            (bool success, bytes32 result,) = LowLevelCall.staticcallReturn64Bytes(
-                policy, abi.encodeCall(KeyApprovalModule.canAutoApprove, (address(this), keyHash, target, data))
-            );
-            if (success && LowLevelCall.returnDataSize() == 32 && result == bytes32(uint256(1))) {
-                return true;
-            }
-        }
-
-        // Built-in rule (the "strict default"):
-        //   self-target  -> MANAGEMENT required
-        //   anything else -> ACTION required
+    /// @dev The purpose an executor's key needs for a target: self-target needs MANAGEMENT,
+    ///      any other target needs ACTION. MANAGEMENT satisfies every purpose check.
+    function _isKeyAuthorizedToCallTarget(bytes32 keyHash, address target) private view returns (bool) {
         uint256 requiredPurpose = target == address(this) ? KeyPurposes.MANAGEMENT : KeyPurposes.ACTION;
         return _moduleKeyHasPurpose(keyHash, requiredPurpose);
     }

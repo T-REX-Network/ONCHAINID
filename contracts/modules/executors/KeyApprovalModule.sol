@@ -4,7 +4,6 @@ pragma solidity ^0.8.28;
 import {
     IERC7579Execution,
     IERC7579Module,
-    IERC7579ModuleConfig,
     MODULE_TYPE_EXECUTOR,
     MODULE_TYPE_FALLBACK
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
@@ -167,19 +166,9 @@ contract KeyApprovalModule is IERC7579Module {
         return _state[account].executions[executionId];
     }
 
-    /// @notice External view of the auto-approval rule. Lets the calling account reuse this
-    ///         table see {SmartAccount._isKeyAuthorizedToCallTarget}.
-    /// @dev    `account` must equal `msg.sender`: only an identity can ask about its own rule.
-    function canAutoApprove(address account, bytes32 keyHash, address target, bytes calldata data)
-        external
-        view
-        returns (bool)
-    {
-        require(account == msg.sender, Errors.UnauthorizedPolicyQuery());
-        return _canAutoApprove(account, keyHash, target, data);
-    }
-
-    /// @dev Auto-approval policy. See contract NatSpec for the rule table.
+    /// @dev Auto-approval policy. See contract NatSpec for the rule table. Module targets are
+    ///      not special-cased here: the account itself refuses to dispatch into its own modules
+    ///      (see {SmartAccount}), so such a request just fails there and emits `ExecutionFailed`.
     function _canAutoApprove(address account, bytes32 keyHash, address to, bytes calldata data)
         internal
         view
@@ -191,16 +180,6 @@ contract KeyApprovalModule is IERC7579Module {
         // MANAGEMENT keys pass any check.
         if (IERC734(account).keyHasPurpose(keyHash, KeyPurposes.MANAGEMENT)) {
             return true;
-        }
-
-        // Never auto-approve a call into one of the account's own modules (the account blocks it
-        // too): an installed executor, or the fallback handler for this selector. Ask the account's
-        // standard module config so this stays in step. bytes4(data) zero-pads short calldata.
-        IERC7579ModuleConfig cfg = IERC7579ModuleConfig(account);
-        bool toIsOwnModule = cfg.isModuleInstalled(MODULE_TYPE_EXECUTOR, to, "")
-            || cfg.isModuleInstalled(MODULE_TYPE_FALLBACK, to, abi.encodePacked(bytes4(data)));
-        if (to != account && toIsOwnModule) {
-            return false;
         }
 
         // Self-targeted calls: only claim-related selectors auto-approve for claim keys.

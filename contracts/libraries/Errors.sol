@@ -218,20 +218,16 @@ library Errors {
     /// @notice The execution mode requested is not supported by the account's purpose check.
     error UnsupportedExecutionMode(bytes32 mode);
 
-    /// @notice A dispatched call targeted one of the account's own modules, but the caller is not
-    ///         the account itself or a MANAGEMENT module. Re-entering an own module needs MANAGEMENT.
-    error PrivilegedTargetRequiresManagement(address target);
+    /// @notice A dispatched call targeted one of the account's own modules (an installed executor,
+    ///         or the fallback handler for the call's selector). Module functions are reached via
+    ///         the account's fallback dispatch, never via `execute(module, ...)`.
+    error OwnModuleTargetBlocked(address target);
 
     /// @notice An installed executor or fallback handler tried to dispatch a call whose target
     ///         is not authorized by the purpose registered for that module at install time.
     ///         Also raised at install time if the module's initData does not begin with a
     ///         non-zero `uint256 purpose`.
     error ExecutorPurposeNotAuthorized();
-
-    /// @notice `KeyApprovalModule.canAutoApprove` was queried for an `account` that does not
-    ///         match `msg.sender`. The module only answers about the calling identity's own
-    ///         authorization table; cross-identity queries are rejected.
-    error UnauthorizedPolicyQuery();
 
     /// @notice ETH push from `KeyApprovalModule` back to the identity failed.
     error ReturnToAccountFailed();

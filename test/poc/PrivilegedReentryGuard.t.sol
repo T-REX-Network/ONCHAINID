@@ -9,7 +9,6 @@ import { IAccount, PackedUserOperation } from "@openzeppelin/contracts/interface
 import {
     Execution,
     IERC7579Execution,
-    MODULE_TYPE_FALLBACK,
     MODULE_TYPE_VALIDATOR
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { IERC734 } from "contracts/interface/IERC734.sol";
@@ -30,10 +29,11 @@ contract PocCounter {
 
 }
 
-/// @title Privileged re-entry guard
-/// @notice The account must never let a call it dispatches re-enter one of its own installed
-///         modules unless a privileged caller (the account itself, or a MANAGEMENT module)
-///         drives it. The headline case: an ACTION signer must not be able to route a user op
+/// @title Own-module re-entry guard
+/// @notice The account must never let a call it dispatches land on one of its own installed
+///         modules, no matter who drives it. Module functions are reached via the account's
+///         fallback dispatch, which appends the real caller; `execute(module, ...)` skips that
+///         append. The headline case: an ACTION signer must not be able to route a user op
 ///         through the installed {KeyApprovalModule} executor to grant itself MANAGEMENT.
 ///
 ///         The block lives in `SmartAccount._execute`, the single dispatch chokepoint both the
@@ -92,7 +92,7 @@ contract PrivilegedReentryGuardTest is OnchainIDSetup {
         bytes memory innerKamCall = abi.encodeCall(KeyApprovalModule.execute, (address(validator), 0, addMgmt));
         bytes memory callData = _singleExecute(address(kam), innerKamCall);
 
-        vm.expectRevert(abi.encodeWithSelector(Errors.PrivilegedTargetRequiresManagement.selector, address(kam)));
+        vm.expectRevert(abi.encodeWithSelector(Errors.OwnModuleTargetBlocked.selector, address(kam)));
         _dispatchAsEntryPoint(callData);
 
         assertFalse(
@@ -117,7 +117,7 @@ contract PrivilegedReentryGuardTest is OnchainIDSetup {
         bytes memory innerKamCall = abi.encodeCall(KeyApprovalModule.execute, (address(validator), 0, forgedData));
         bytes memory callData = _singleExecute(address(kam), innerKamCall);
 
-        vm.expectRevert(abi.encodeWithSelector(Errors.PrivilegedTargetRequiresManagement.selector, address(kam)));
+        vm.expectRevert(abi.encodeWithSelector(Errors.OwnModuleTargetBlocked.selector, address(kam)));
         _dispatchAsEntryPoint(callData);
 
         assertFalse(
@@ -135,7 +135,7 @@ contract PrivilegedReentryGuardTest is OnchainIDSetup {
         );
         bytes memory callData = _singleExecute(address(validator), addMgmt);
 
-        vm.expectRevert(abi.encodeWithSelector(Errors.PrivilegedTargetRequiresManagement.selector, address(validator)));
+        vm.expectRevert(abi.encodeWithSelector(Errors.OwnModuleTargetBlocked.selector, address(validator)));
         _dispatchAsEntryPoint(callData);
     }
 
@@ -156,7 +156,7 @@ contract PrivilegedReentryGuardTest is OnchainIDSetup {
             IERC7579Execution.execute.selector, bytes32(uint256(0x01) << 248), ERC7579Utils.encodeBatch(batch)
         );
 
-        vm.expectRevert(abi.encodeWithSelector(Errors.PrivilegedTargetRequiresManagement.selector, address(kam)));
+        vm.expectRevert(abi.encodeWithSelector(Errors.OwnModuleTargetBlocked.selector, address(kam)));
         _dispatchAsEntryPoint(callData);
     }
 
@@ -194,48 +194,24 @@ contract PrivilegedReentryGuardTest is OnchainIDSetup {
         assertEq(counter.count(), 1, "ordinary external ACTION call must still run");
     }
 
-    /// @notice Regression: MANAGEMENT reaching an installed module through a self-call is allowed
-    ///         (the account itself is a privileged caller).
-    function test_selfCall_management_canTargetModule() public {
+    /// @notice The own-module guard is unconditional: even the account itself cannot dispatch
+    ///         `execute` into one of its own modules. Key changes go through the MANAGEMENT-gated
+    ///         entry points (addKey and friends); module functions go through the fallback dispatch.
+    function test_selfCall_cannotTargetModule() public {
         bytes memory addKeyData =
             abi.encodeCall(ERC734Validator.addKey, (abi.encodePacked(bob), "", KeyPurposes.ACTION, KeyTypes.ECDSA));
-        bytes memory callData = _singleExecute(address(validator), addKeyData);
 
-        // A self-call: msg.sender == the account, so the guard treats it as privileged.
+        // Fallback-handler target: the validator serves addKey via the fallback dispatch.
         vm.prank(address(aliceIdentity));
-        (bool ok,) = address(aliceIdentity).call(callData);
-        assertTrue(ok, "MANAGEMENT self-call into a module must be allowed");
-        assertTrue(
-            validator.keyHasPurpose(address(aliceIdentity), keccak256(abi.encodePacked(bob)), KeyPurposes.ACTION),
-            "self-call addKey should have registered bob"
-        );
-    }
+        (bool ok, bytes memory ret) = address(aliceIdentity).call(_singleExecute(address(validator), addKeyData));
+        assertFalse(ok, "self-call into a fallback handler module must be blocked");
+        assertEq(ret, abi.encodeWithSelector(Errors.OwnModuleTargetBlocked.selector, address(validator)));
 
-    // --- KeyApprovalModule policy agrees with the account ---------------
-
-    /// @notice KAM's auto-approval table must also refuse a module target for an ACTION key, so the
-    ///         two surfaces stay in step.
-    function test_kam_canAutoApprove_refusesModuleTarget() public {
-        bytes memory anyData = abi.encodeCall(PocCounter.increment, ());
+        // Executor target.
         vm.prank(address(aliceIdentity));
-        bool approved = kam.canAutoApprove(address(aliceIdentity), _davidKey(), address(kam), anyData);
-        assertFalse(approved, "ACTION must not auto-approve a call into an installed module");
-    }
-
-    /// @notice KAM must also refuse a target that is only a FALLBACK handler (not an executor), so
-    ///         its auto-approval table can never be looser than the account's re-entry guard.
-    function test_kam_canAutoApprove_refusesFallbackOnlyModuleTarget() public {
-        DummyFallback handler = new DummyFallback();
-        // Install it as a fallback-only handler for its own selector (no executor install).
-        vm.prank(alice);
-        aliceIdentity.installModule(
-            MODULE_TYPE_FALLBACK, address(handler), abi.encodePacked(DummyFallback.ping.selector)
-        );
-
-        bytes memory pingData = abi.encodeCall(DummyFallback.ping, ());
-        vm.prank(address(aliceIdentity));
-        bool approved = kam.canAutoApprove(address(aliceIdentity), _davidKey(), address(handler), pingData);
-        assertFalse(approved, "ACTION must not auto-approve a call into a fallback-only module");
+        (ok, ret) = address(aliceIdentity).call(_singleExecute(address(kam), addKeyData));
+        assertFalse(ok, "self-call into an executor module must be blocked");
+        assertEq(ret, abi.encodeWithSelector(Errors.OwnModuleTargetBlocked.selector, address(kam)));
     }
 
     // --- validators-as-keys trust model (documented, not a gap) ---------
@@ -288,19 +264,3 @@ contract PrivilegedReentryGuardTest is OnchainIDSetup {
 
 }
 
-/// @dev A minimal ERC-7579 fallback handler used to exercise the fallback-only target branch.
-contract DummyFallback {
-
-    function ping() external pure returns (uint256) {
-        return 1;
-    }
-
-    function onInstall(bytes calldata) external pure { }
-
-    function onUninstall(bytes calldata) external pure { }
-
-    function isModuleType(uint256 moduleTypeId) external pure returns (bool) {
-        return moduleTypeId == 3; // MODULE_TYPE_FALLBACK
-    }
-
-}

@@ -21,7 +21,6 @@ import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
-import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 
 import { ClaimSignerHelper } from "./helpers/ClaimSignerHelper.sol";
@@ -293,13 +292,10 @@ contract SmartAccountTest is OnchainIDSetup {
     }
 
     // -----------------------------------------------------------------------
-    // Selector-aware authorization — `_isKeyAuthorizedToCallTarget`.
-    //
-    // The helper is shared by `_validateUserOp` (AA path) and `executeFromExecutor`
-    // (executor path), so every executor-as-key test below also covers the AA-path
-    // rule for the same caller. The rule table mirrors `KeyApprovalModule._canAutoApprove`:
-    //   MANAGEMENT: anything; ACTION: external only; CLAIM_SIGNER on self: addClaim
-    //   / removeClaim; CLAIM_ADDER on self: addClaim.
+    // Executor authorization — `_execute` purpose-checks executor callers with
+    // one built-in rule: self-target needs MANAGEMENT, any other target needs
+    // ACTION, and no dispatched call may land on one of the account's own
+    // modules. No policy module is consulted.
     // -----------------------------------------------------------------------
 
     /// @notice An executor whose key holds CLAIM_SIGNER CANNOT dispatch `addClaim` on self.
@@ -548,28 +544,15 @@ contract SmartAccountTest is OnchainIDSetup {
     }
 
     // -----------------------------------------------------------------------
-    // Rule-consolidation tests — `KeyApprovalModule` is the single source of
-    // truth for the authorization table. `SmartAccount._isKeyAuthorizedToCallTarget`
-    // delegates to the module via STATICCALL and falls back to the conservative
-    // pre-consolidation rule (self → MANAGEMENT, else → ACTION) when no policy
-    // module is installed or its call reverts.
+    // Strict-rule tests — the account applies its built-in rule to executor
+    // callers (self → MANAGEMENT, else → ACTION) and consults no policy module.
     // -----------------------------------------------------------------------
 
-    /// @notice The module's external `canAutoApprove` rejects queries for any account
-    ///         other than `msg.sender`. Prevents one identity from reading another's rule.
-    function test_canAutoApprove_externalAccount_mismatch_reverts() public {
-        KeyApprovalModule kam = onchainidSetup.keyApprovalModule;
-        // Query under an arbitrary EOA — `msg.sender` is that EOA, not aliceIdentity.
-        vm.expectRevert(Errors.UnauthorizedPolicyQuery.selector);
-        kam.canAutoApprove(address(aliceIdentity), keccak256(abi.encodePacked(alice)), address(0), "");
-    }
-
-    /// @notice Proves that `executeFromExecutor` actually asks the policy module before
-    ///         dispatching. We swap the real policy for one that always says yes, then use
-    ///         an executor with no key purpose. The built-in fallback rule would reject
-    ///         this call, so it can only go through if the policy was consulted.
-    function test_executeFromExecutor_path_consultsKeyApprovalModule() public {
-        // Replace the real policy with one that approves everything.
+    /// @notice The account consults no policy module: the built-in rule is the only rule.
+    ///         Even with an always-approve policy wired as the `execute` fallback handler,
+    ///         a keyless executor stays unauthorized.
+    function test_executeFromExecutor_policyModuleIsNotConsulted() public {
+        // Replace the real handler with one that would approve everything, if asked.
         address kam = address(onchainidSetup.keyApprovalModule);
         vm.startPrank(alice);
         aliceIdentity.uninstallModule(MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.execute.selector));
@@ -579,8 +562,8 @@ contract SmartAccountTest is OnchainIDSetup {
             MODULE_TYPE_FALLBACK, address(approveAll), abi.encodePacked(IKeyExecutor.execute.selector)
         );
 
-        // Install the executor but do not give it any key. Without a key, only the
-        // policy can authorize the call. If the policy is skipped, the test fails.
+        // Install the executor but do not give it any key. If the account asked the policy,
+        // this call would go through; the built-in rule rejects it.
         TestExecutor testExec = new TestExecutor();
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
         vm.stopPrank();
@@ -589,14 +572,13 @@ contract SmartAccountTest is OnchainIDSetup {
         bytes memory call = abi.encodeCall(Counter.increment, ());
         bytes memory executionCalldata = abi.encodePacked(address(counter), uint256(0), call);
 
+        vm.expectRevert(Errors.ExecutorPurposeNotAuthorized.selector);
         testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
-        assertEq(counter.count(), 1, "executor without a key should only dispatch if the policy was consulted");
     }
 
     /// @notice Ernest's r3421876946 happy path: an ACTION executor targeting an external
-    ///         contract that KAM auto-approves. The simple positive case that the original
-    ///         deleted test covered, restored on a scenario that still passes after H-04.
-    function test_executeFromExecutor_path_actionOnExternal_kamAutoApproves() public {
+    ///         contract. The built-in rule authorizes it.
+    function test_executeFromExecutor_path_actionOnExternal_succeeds() public {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
@@ -614,44 +596,12 @@ contract SmartAccountTest is OnchainIDSetup {
         bytes memory executionCalldata = abi.encodePacked(address(counter), uint256(0), call);
 
         testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
-        assertEq(counter.count(), 1, "ACTION executor on external target should be auto-approved by KAM");
+        assertEq(counter.count(), 1, "ACTION executor on external target should be authorized");
     }
 
-    /// @notice No-policy strict fallback: with `KeyApprovalModule` uninstalled, an ACTION
-    ///         executor can still dispatch external calls. The pre-PR rule applies.
-    function test_executeFromExecutor_path_noPolicyInstalled_strictFallback_actionExternal() public {
-        address kam = address(onchainidSetup.keyApprovalModule);
-        // Uninstall the fallback handler for `execute` so policy discovery returns address(0).
-        vm.prank(alice);
-        aliceIdentity.uninstallModule(MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.execute.selector));
-
-        TestExecutor testExec = new TestExecutor();
-        vm.startPrank(alice);
-        aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKeyWithData(
-            keccak256(abi.encodePacked(address(testExec))),
-            KeyPurposes.ACTION,
-            KeyTypes.ECDSA,
-            abi.encodePacked(address(testExec)),
-            ""
-        );
-        vm.stopPrank();
-
-        Counter counter = new Counter();
-        bytes memory call = abi.encodeCall(Counter.increment, ());
-        bytes memory executionCalldata = abi.encodePacked(address(counter), uint256(0), call);
-
-        testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
-        assertEq(counter.count(), 1, "ACTION executor + no policy must still hit external target");
-    }
-
-    /// @notice No-policy strict fallback: a CLAIM_SIGNER-only executor CANNOT dispatch
-    ///         `addClaim` on self without the policy module — the conservative rule applies.
-    function test_executeFromExecutor_path_noPolicyInstalled_strictFallback_claimSignerSelfFails() public {
-        address kam = address(onchainidSetup.keyApprovalModule);
-        vm.prank(alice);
-        aliceIdentity.uninstallModule(MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.execute.selector));
-
+    /// @notice A CLAIM_SIGNER-only executor CANNOT dispatch `addClaim` on self: the built-in
+    ///         rule requires MANAGEMENT for self-targets, with no claim-selector exception.
+    function test_executeFromExecutor_strictRule_claimSignerSelfFails() public {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
@@ -679,79 +629,6 @@ contract SmartAccountTest is OnchainIDSetup {
 
         vm.expectRevert(Errors.ExecutorPurposeNotAuthorized.selector);
         testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
-    }
-
-    /// @notice If the installed policy reverts in `canAutoApprove`, the account falls through
-    ///         to the conservative rule. A CLAIM_SIGNER-only executor calling `addClaim` self
-    ///         must be rejected (the strict fallback does not honor the claim selectors).
-    function test_executeFromExecutor_path_brokenPolicy_fallsBackToStrictRule() public {
-        // Replace the real fallback handler with a deliberately-reverting one.
-        address kam = address(onchainidSetup.keyApprovalModule);
-        vm.startPrank(alice);
-        aliceIdentity.uninstallModule(MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.execute.selector));
-
-        BrokenPolicy broken = new BrokenPolicy();
-        aliceIdentity.installModule(
-            MODULE_TYPE_FALLBACK, address(broken), abi.encodePacked(IKeyExecutor.execute.selector)
-        );
-
-        TestExecutor testExec = new TestExecutor();
-        aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKeyWithData(
-            keccak256(abi.encodePacked(address(testExec))),
-            KeyPurposes.CLAIM_SIGNER,
-            KeyTypes.ECDSA,
-            abi.encodePacked(address(testExec)),
-            ""
-        );
-        vm.stopPrank();
-
-        bytes memory addClaimData = abi.encodeCall(
-            IERC735.addClaim,
-            (
-                uint256(203),
-                uint256(1),
-                address(aliceIdentity),
-                bytes(""),
-                Structs.ClaimData({ issuedAt: 0, validUntil: 0, payload: bytes("payload") }),
-                string("")
-            )
-        );
-        bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity), uint256(0), addClaimData);
-
-        vm.expectRevert(Errors.ExecutorPurposeNotAuthorized.selector);
-        testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
-    }
-
-    /// @notice With a broken policy installed, the strict fallback still authorizes ACTION
-    ///         on external targets — proving the try/catch never leaves the gate stuck-true.
-    function test_executeFromExecutor_path_brokenPolicy_strictRuleStillAllowsAction() public {
-        address kam = address(onchainidSetup.keyApprovalModule);
-        vm.startPrank(alice);
-        aliceIdentity.uninstallModule(MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.execute.selector));
-
-        BrokenPolicy broken = new BrokenPolicy();
-        aliceIdentity.installModule(
-            MODULE_TYPE_FALLBACK, address(broken), abi.encodePacked(IKeyExecutor.execute.selector)
-        );
-
-        TestExecutor testExec = new TestExecutor();
-        aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKeyWithData(
-            keccak256(abi.encodePacked(address(testExec))),
-            KeyPurposes.ACTION,
-            KeyTypes.ECDSA,
-            abi.encodePacked(address(testExec)),
-            ""
-        );
-        vm.stopPrank();
-
-        Counter counter = new Counter();
-        bytes memory call = abi.encodeCall(Counter.increment, ());
-        bytes memory executionCalldata = abi.encodePacked(address(counter), uint256(0), call);
-
-        testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
-        assertEq(counter.count(), 1, "broken policy must not lock out ACTION on external targets");
     }
 
     // -----------------------------------------------------------------------
@@ -944,28 +821,9 @@ contract Counter {
 
 }
 
-/// @notice ERC-7579 FALLBACK module whose `canAutoApprove` always reverts. Used to verify
-///         that `SmartAccount._isKeyAuthorizedToCallTarget` recovers via try/catch and applies
-///         the conservative pre-consolidation rule instead of bricking the account.
-contract BrokenPolicy is IERC7579Module {
-
-    function isModuleType(uint256 moduleTypeId) external pure returns (bool) {
-        return moduleTypeId == MODULE_TYPE_FALLBACK;
-    }
-
-    function onInstall(bytes calldata) external pure { }
-    function onUninstall(bytes calldata) external pure { }
-
-    function canAutoApprove(address, bytes32, address, bytes calldata) external pure returns (bool) {
-        revert("nope");
-    }
-
-}
-
 /// @notice ERC-7579 FALLBACK module whose `canAutoApprove` returns true for any input.
-///         Used to prove that `SmartAccount._isKeyAuthorizedToCallTarget` actually consults
-///         the wired policy module. Outcomes that disagree with the strict default
-///         (e.g. authorizing a keyless executor) can only come from the policy staticcall.
+///         Used to prove that the account does NOT consult a policy module: wiring this
+///         handler must not authorize a keyless executor.
 contract AlwaysApprovePolicy is IERC7579Module {
 
     function isModuleType(uint256 moduleTypeId) external pure returns (bool) {
