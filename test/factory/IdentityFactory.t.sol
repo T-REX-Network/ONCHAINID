@@ -143,40 +143,49 @@ contract IdentityFactoryTest is OnchainIDSetup {
         new IdentityFactory(address(0));
     }
 
-    // ============ setBeacon ============
+    // ============ initializeBeacon ============
 
-    function test_setBeacon_revertWhenAlreadySet() public {
-        vm.prank(deployer);
-        vm.expectRevert(Errors.BeaconAlreadySet.selector);
-        onchainidSetup.idFactory.setBeacon(address(onchainidSetup.beacon));
+    function test_initializeBeacon_deploysAtCommittedSlot() public view {
+        // The setup factory's beacon lives at the address committed in the constructor,
+        // points at the Identity implementation and is owned by the AccessManager.
+        UpgradeableBeacon b = UpgradeableBeacon(onchainidSetup.idFactory.beacon());
+        assertGt(address(b).code.length, 0, "beacon deployed at the committed slot");
+        assertEq(b.implementation(), address(onchainidSetup.identityImplementation), "beacon points at the impl");
+        assertEq(b.owner(), address(onchainidSetup.accessManager), "beacon owned by the AccessManager");
     }
 
-    function test_setBeacon_revertForZeroAddress() public {
+    function test_initializeBeacon_revertWhenAlreadyInitialized() public {
+        vm.prank(deployer);
+        vm.expectRevert(Errors.BeaconAlreadyInitialized.selector);
+        onchainidSetup.idFactory.initializeBeacon(address(onchainidSetup.identityImplementation));
+    }
+
+    function test_initializeBeacon_revertForZeroImplementation() public {
         AccessManager am = new AccessManager(deployer);
         IdentityFactory freshFactory = new IdentityFactory(address(am));
 
         vm.prank(deployer);
         vm.expectRevert(Errors.ZeroAddress.selector);
-        freshFactory.setBeacon(address(0));
+        freshFactory.initializeBeacon(address(0));
     }
 
-    function test_setBeacon_revertForUnauthorizedCaller() public {
+    function test_initializeBeacon_revertForUnauthorizedCaller() public {
         AccessManager am = new AccessManager(deployer);
         IdentityFactory freshFactory = new IdentityFactory(address(am));
 
         vm.prank(alice);
         vm.expectRevert();
-        freshFactory.setBeacon(address(onchainidSetup.beacon));
+        freshFactory.initializeBeacon(address(onchainidSetup.identityImplementation));
     }
 
-    function test_createIdentity_revertWhenBeaconNotSet() public {
+    function test_createIdentity_revertWhenBeaconNotInitialized() public {
         AccessManager am = new AccessManager(deployer);
         IdentityFactory freshFactory = new IdentityFactory(address(am));
         vm.prank(deployer);
         freshFactory.setIdentityTypePolicy(IdentityTypes.INDIVIDUAL, type(uint64).max, true);
 
         vm.prank(david);
-        vm.expectRevert(Errors.BeaconNotSet.selector);
+        vm.expectRevert(Errors.BeaconNotInitialized.selector);
         freshFactory.createIdentity(
             IdentityTypes.INDIVIDUAL, "noBeaconSalt", _makeSingleMgmtKeys(david), _defaultModules()
         );
@@ -992,12 +1001,11 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
     function test_createIdentity_revertWhenCreate2Fails() public {
         RevertingIdentity revertingImpl = new RevertingIdentity();
-        UpgradeableBeacon badBeacon = new UpgradeableBeacon(address(revertingImpl), deployer);
 
         AccessManager am = new AccessManager(deployer);
         IdentityFactory badFactory = new IdentityFactory(address(am));
         vm.prank(deployer);
-        badFactory.setBeacon(address(badBeacon));
+        badFactory.initializeBeacon(address(revertingImpl));
 
         // deployer is AM admin — bypasses the `restricted` gate on createIdentityFor.
         vm.prank(deployer);

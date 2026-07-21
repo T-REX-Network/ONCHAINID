@@ -4,7 +4,6 @@ pragma solidity ^0.8.27;
 import { Script, console } from "forge-std/Script.sol";
 
 import { AccessManager } from "@openzeppelin/contracts/access/manager/AccessManager.sol";
-import { UpgradeableBeacon } from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import {
     ERC7913WebAuthnVerifier
 } from "@openzeppelin/contracts/utils/cryptography/verifiers/ERC7913WebAuthnVerifier.sol";
@@ -25,11 +24,11 @@ import { ReputationRegistry } from "contracts/reputation/ReputationRegistry.sol"
  *   1. IdentityUtilities implementation + proxy
  *   2. KeyApprovalModule (no deps)
  *   3. AccessManager (single source of truth for IdentityFactory permissions)
- *   4. IdentityFactory (no beacon yet; wired in step 8)
+ *   4. IdentityFactory (commits its beacon CREATE3 slot as an immutable)
  *   5. ReputationRegistry (needs AM + factory)
  *   6. ERC734Validator (needs factory + registry)
  *   7. Identity implementation (needs the validator — its enshrined registry immutable)
- *   8. UpgradeableBeacon (points to Identity impl) + factory.setBeacon
+ *   8. factory.initializeBeacon (deploys the UpgradeableBeacon at the committed slot)
  *   9. AccessManager role wiring (per-identity-type role mapping)
  *
  * Usage:
@@ -75,9 +74,10 @@ contract DeployOnchainID is Script {
         am.labelRole(ROLE_TOKEN_FACTORY, "TOKEN_FACTORY");
         am.labelRole(ROLE_CLAIM_ISSUER_ADMIN, "CLAIM_ISSUER_ADMIN");
 
-        // 4. IdentityFactory. Deployed without a beacon: the beacon needs the Identity
-        //    implementation, which needs the validator, which needs this factory. The
-        //    beacon is wired via `setBeacon` once the chain below exists.
+        // 4. IdentityFactory. The beacon cannot exist yet (it needs the Identity
+        //    implementation, which needs the validator, which needs this factory), so the
+        //    factory commits its predetermined CREATE3 beacon slot as an immutable and the
+        //    beacon is deployed there via `initializeBeacon` once the chain below exists.
         IdentityFactory idFactory = new IdentityFactory(address(am));
         console.log("IdentityFactory:", address(idFactory));
 
@@ -98,13 +98,12 @@ contract DeployOnchainID is Script {
         Identity identityImpl = new Identity(address(signatureValidator));
         console.log("Identity implementation:", address(identityImpl));
 
-        // 8. UpgradeableBeacon for identity proxies. Owned by the deployer initially,
-        //    handed to the AccessManager so upgrades go through role gating, then wired
-        //    into the factory (deployer is still the AM admin at this point).
-        UpgradeableBeacon beacon = new UpgradeableBeacon(address(identityImpl), deployer);
-        console.log("Beacon:", address(beacon));
-        beacon.transferOwnership(address(am));
-        idFactory.setBeacon(address(beacon));
+        // 8. UpgradeableBeacon for identity proxies, deployed by the factory at its
+        //    predetermined CREATE3 slot (already committed as the factory's `beacon`
+        //    immutable) and owned by the AccessManager so upgrades go through role
+        //    gating. Deployer is still the AM admin at this point.
+        idFactory.initializeBeacon(address(identityImpl));
+        console.log("Beacon:", idFactory.beacon());
 
         // ===== 9. Per-identity-type deploy policy =====
         // Each type carries a policy: an AM role id (gates createIdentityFor) and a
@@ -144,7 +143,7 @@ contract DeployOnchainID is Script {
         console.log("Identity impl:          ", address(identityImpl));
         console.log("IdentityUtilities impl: ", address(utilitiesImpl));
         console.log("IdentityUtilities proxy:", address(utilitiesProxy));
-        console.log("Beacon:                 ", address(beacon));
+        console.log("Beacon:                 ", idFactory.beacon());
         console.log("AccessManager:          ", address(am));
         console.log("IdentityFactory:        ", address(idFactory));
         console.log("ERC734Validator:        ", address(signatureValidator));

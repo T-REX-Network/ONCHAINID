@@ -157,11 +157,12 @@ library Errors {
 
     /* ----- Identity ----- */
 
-    /// @notice {IdentityFactory.setBeacon} was called but the beacon is already wired.
-    error BeaconAlreadySet();
+    /// @notice {IdentityFactory.initializeBeacon} was called but the beacon is already deployed.
+    error BeaconAlreadyInitialized();
 
-    /// @notice Identity deployment was attempted before {IdentityFactory.setBeacon} wired the beacon.
-    error BeaconNotSet();
+    /// @notice Identity deployment was attempted before {IdentityFactory.initializeBeacon}
+    ///         deployed the beacon at its predetermined slot.
+    error BeaconNotInitialized();
 
     /// @notice The sender does not have the management key.
     error SenderDoesNotHaveManagementKey();

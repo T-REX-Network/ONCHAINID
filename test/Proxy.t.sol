@@ -87,9 +87,12 @@ contract ProxyTest is OnchainIDSetup {
     }
 
     function test_preventUpdatingToZeroAddress() public {
+        // The beacon is owned by the AccessManager, so the AM admin routes the upgrade
+        // through it; the inner revert bubbles up unchanged.
         vm.prank(deployer);
         vm.expectRevert(abi.encode(UpgradeableBeacon.BeaconInvalidImplementation.selector, address(0)));
-        onchainidSetup.beacon.upgradeTo(address(0));
+        onchainidSetup.accessManager
+            .execute(address(onchainidSetup.beacon), abi.encodeCall(UpgradeableBeacon.upgradeTo, (address(0))));
     }
 
     function test_preventUpdatingWhenNotOwner() public {

@@ -54,15 +54,17 @@ library IdentityHelper {
         // Linear order — each contract only needs addresses that already exist:
         // KAM (no deps) -> AM -> factory (no beacon yet) -> reputation registry (needs the
         // factory) -> validator (needs factory + registry) -> Identity impl (the validator is
-        // its enshrined registry immutable) -> beacon -> factory.setBeacon.
+        // its enshrined registry immutable) -> factory.initializeBeacon.
         setup.keyApprovalModule = new KeyApprovalModule();
         setup.accessManager = new AccessManager(managementKey);
         setup.idFactory = new IdentityFactory(address(setup.accessManager));
         setup.reputationRegistry = new ReputationRegistry(address(setup.accessManager), address(setup.idFactory));
         setup.signatureValidator = new ERC734Validator(address(setup.idFactory), address(setup.reputationRegistry));
         setup.identityImplementation = new Identity(address(setup.signatureValidator));
-        setup.beacon = new UpgradeableBeacon(address(setup.identityImplementation), managementKey);
-        setup.idFactory.setBeacon(address(setup.beacon));
+        // The factory deploys the beacon at its predetermined CREATE3 slot; its owner is
+        // the AccessManager, so upgrades in tests route through `accessManager.execute`.
+        setup.idFactory.initializeBeacon(address(setup.identityImplementation));
+        setup.beacon = UpgradeableBeacon(setup.idFactory.beacon());
 
         // Register every standard type with PUBLIC_ROLE and selfDeployable = true for
         // a permissive test default.
