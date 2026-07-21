@@ -517,8 +517,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         // arbitrary user op cannot even execute it with an unregistered verifier.
         (bool success, bytes memory result) =
             verifier.staticcall(abi.encodeCall(IERC7913SignatureVerifier.verify, (key, hash, signature)));
-        return success && result.length >= 32
-            && abi.decode(result, (bytes32)) == bytes32(IERC7913SignatureVerifier.verify.selector);
+        // The length check is not strictly needed (a short result casts to zero-padded bytes32
+        // and fails the compare), but it keeps the intent obvious.
+        return success && result.length >= 32 && bytes32(result) == bytes32(IERC7913SignatureVerifier.verify.selector);
     }
 
     function _addKey(
