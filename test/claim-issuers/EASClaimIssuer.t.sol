@@ -190,6 +190,14 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         adapter.setAttester(attester, true);
     }
 
+    /// @notice A deployment-script bug passing an unset address must fail loudly instead of
+    ///         silently writing a garbage allowlist entry.
+    function test_setAttester_revertsOnZeroAddress() public {
+        vm.prank(deployer);
+        vm.expectRevert(Errors.ZeroAddress.selector);
+        adapter.setAttester(address(0), true);
+    }
+
     /* ----- isClaimValid happy paths ----- */
 
     function test_isClaimValid_recipientIsIdentity() public {
@@ -424,9 +432,21 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         adapter.revokeClaimByDigest(bytes32(uint256(1)));
     }
 
-    function test_isDigestRevoked_reverts() public {
-        vm.expectRevert(Errors.EASNotSupported.selector);
-        adapter.isDigestRevoked(bytes32(uint256(1)));
+    /// @notice `isDigestRevoked` answers `false` instead of reverting so compliance call
+    ///         chains (`isVerified` -> `isDigestRevoked` -> `isClaimValid`) do not abort
+    ///         mid-sequence on a stateless issuer. Even for an attestation revoked on EAS
+    ///         the digest read stays `false`: revocation surfaces through `isClaimValid`,
+    ///         which is the source of truth.
+    function test_isDigestRevoked_returnsFalse() public {
+        assertFalse(adapter.isDigestRevoked(bytes32(uint256(1))));
+
+        bytes32 uid = _attestValid(address(aliceIdentity));
+        _revoke(uid);
+        assertFalse(adapter.isDigestRevoked(uid), "digest read stays false even after EAS revocation");
+        assertFalse(
+            adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData),
+            "isClaimValid is where the revocation shows"
+        );
     }
 
     function test_addClaimTo_reverts() public {
