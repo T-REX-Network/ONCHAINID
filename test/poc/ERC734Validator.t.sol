@@ -161,6 +161,28 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         );
     }
 
+    /// @notice A registered ERC-7913 signer whose verifier has no code fails validation instead
+    ///         of reverting. Without the code-length guard, Solidity's own no-code check on the
+    ///         high-level verifier call reverts outside the try/catch and the whole
+    ///         `validateUserOp` blows up, which a malicious key could use to grief the account.
+    function test_validateUserOp_codelessVerifier_failsInsteadOfReverting() public {
+        // Register a verifier-form signer (20-byte verifier address + key bytes) whose
+        // verifier is a plain EOA.
+        address eoaVerifier = makeAddr("codeless-verifier");
+        bytes memory signerData = abi.encodePacked(eoaVerifier, "some-key");
+        vm.prank(address(aliceIdentity));
+        validator.addKey(signerData, "", KeyPurposes.ACTION, KeyTypes.ECDSA);
+
+        (PackedUserOperation memory userOp, bytes32 userOpHash) = _userOpTo(address(0xBEEF), "");
+        userOp.signature = abi.encode(signerData, bytes("irrelevant"));
+
+        assertEq(
+            _validate(userOp, userOpHash),
+            ERC4337Utils.SIG_VALIDATION_FAILED,
+            "codeless verifier must fail validation, not revert"
+        );
+    }
+
     /// @notice A signer shorter than 20 bytes is rejected. The guard lives in `_addKey`, so it
     ///         applies to every caller (here via the public `addKey`).
     function test_addKey_shortSigner_reverts() public {

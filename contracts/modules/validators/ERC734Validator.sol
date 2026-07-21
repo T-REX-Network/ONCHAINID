@@ -509,7 +509,11 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         }
         address verifier = address(bytes20(Bytes.slice(signer, 0, 20)));
         bytes memory key = Bytes.slice(signer, 20);
-        // A verifier with no code makes this call revert; catch it and treat as an invalid signer.
+        // A codeless verifier must be an invalid signer, not a revert: Solidity's no-code check
+        // on the high-level call below reverts in THIS frame, outside the try/catch. ERC-7562
+        // only forbids EXTCODESIZE (and calls) against codeless addresses, and the call below
+        // performs that same check anyway, so this guard adds no new bundler-rule exposure.
+        if (verifier.code.length == 0) return false;
         try IERC7913SignatureVerifier(verifier).verify(key, hash, signature) returns (bytes4 result) {
             return result == IERC7913SignatureVerifier.verify.selector;
         } catch {
