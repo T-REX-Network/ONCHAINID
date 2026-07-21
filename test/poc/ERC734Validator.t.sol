@@ -148,6 +148,22 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         return abi.encodePacked(address(validator), _sign(pk, who, digest));
     }
 
+    /// @notice A MODULE-type key must not be able to sign as the account over ERC-1271. Module
+    ///         keys exist to gate installed modules, not to act as human signers. Registered with
+    ///         MANAGEMENT (so purpose alone would pass), it is still rejected on keyType.
+    function test_isValidSignature_moduleKeyRejected() public {
+        (address modSigner, uint256 modSignerPk) = makeAddrAndKey("module-signer");
+        vm.prank(address(aliceIdentity));
+        validator.addKey(abi.encodePacked(modSigner), "", KeyPurposes.MANAGEMENT, KeyTypes.MODULE);
+
+        bytes32 digest = keccak256("module-key-should-not-sign");
+        assertEq(
+            IERC1271(address(aliceIdentity)).isValidSignature(digest, _sign1271(modSignerPk, modSigner, digest)),
+            bytes4(0xffffffff),
+            "a MODULE key must not sign as the account"
+        );
+    }
+
     /// @notice A malformed 1271 signature returns the failure magic through the account. The
     ///         account's own isValidSignature wraps the validator call in try/catch, so a signature
     ///         that can't be decoded is reported as invalid rather than surfacing as a revert.
