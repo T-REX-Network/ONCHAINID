@@ -17,7 +17,7 @@ import { Structs } from "contracts/storage/Structs.sol";
 
 /// @notice Coverage for `ERC734Validator`. Exercises the dual registry (authorization purposes
 ///         in the validator, identity purposes on the account), per-target scoping, the
-///         self-target escalation guard, BATCH scoping, and reinstall cleanup.
+///         self-target escalation guard, BATCH scoping, and registry durability across reinstall.
 contract ERC734ValidatorTest is OnchainIDSetup {
 
     address internal constant ENTRY_POINT = 0x433709009B8330FDa32311DF1C2AFA402eD8D009;
@@ -377,57 +377,59 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         }
     }
 
-    // --- §7.3 full uninstall cleanup ------------------------------------
+    // --- §7.3 registry durability across uninstall/reinstall -------------
 
-    /// @notice Cleanup happens on (re)install, not on uninstall. `onUninstall` is a no-op
-    ///         because it can be bypassed by a gas-starved subcall, so keys stay dormant after
-    ///         uninstall and are wiped when the module is installed again.
-    function test_reinstall_wipesStaleKeys_uninstallLeavesThemDormant() public {
-        (address who,) = makeAddrAndKey("cleanup");
+    /// @notice The registry is durable: it is enshrined in the account implementation and
+    ///         {KeyManager} reads it whether or not the module is installed, so neither
+    ///         uninstall (a documented no-op hook) nor reinstall touches existing keys.
+    ///         Stale keys are removed individually via `removeKey`.
+    function test_registryPersistsAcross_uninstallAndReinstall() public {
+        (address who,) = makeAddrAndKey("durable");
         bytes32 keyHash = keccak256(abi.encodePacked(who));
         _validatorAddKey(who, KeyPurposes.ACTION);
 
         (bytes memory before,) = validator.getKeyData(address(aliceIdentity), keyHash);
         assertGt(before.length, 0, "key present before uninstall");
 
-        // Uninstall leaves the record dormant (onUninstall is a documented no-op).
+        // Uninstall leaves the record in place (onUninstall is a documented no-op).
         vm.prank(alice);
         aliceIdentity.uninstallModule(MODULE_TYPE_VALIDATOR, address(validator), "");
         (bytes memory afterUninstall,) = validator.getKeyData(address(aliceIdentity), keyHash);
-        assertGt(afterUninstall.length, 0, "uninstall leaves the record dormant");
+        assertGt(afterUninstall.length, 0, "uninstall leaves the record in place");
 
-        // Reinstall wipes the stale registry, then seeds only the new manager.
+        // Reinstall resumes the same registry: the seed is added, nothing is wiped.
         vm.prank(alice);
         aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), abi.encodePacked(alice));
 
         (bytes memory afterReinstall,) = validator.getKeyData(address(aliceIdentity), keyHash);
-        assertEq(afterReinstall.length, 0, "reinstall wipes the stale key record");
-        assertFalse(validator.keyHasPurpose(address(aliceIdentity), keyHash, KeyPurposes.ACTION), "no residual purpose");
+        assertGt(afterReinstall.length, 0, "reinstall keeps the existing key record");
+        assertTrue(
+            validator.keyHasPurpose(address(aliceIdentity), keyHash, KeyPurposes.ACTION), "purpose survives reinstall"
+        );
+        assertTrue(
+            validator.keyHasPurpose(address(aliceIdentity), keccak256(abi.encodePacked(alice)), KeyPurposes.MANAGEMENT),
+            "reinstall seed registered alongside the existing keys"
+        );
     }
 
-    /// @notice Re-registering the same keyHash after a wipe starts from clean purpose state.
-    ///         Guards the EnumerableSet gotcha: a plain `delete keys[keyHash]` would leave the
-    ///         nested `purposes._positions` mapping behind, so `.clear()` must be used.
-    function test_reinstall_reregisterSameKeyHash_hasCleanPurposes() public {
-        (address who,) = makeAddrAndKey("recycle");
-        bytes32 keyHash = keccak256(abi.encodePacked(who));
+    /// @notice Reinstalling with the same MANAGEMENT seed must not revert: the seed is
+    ///         idempotent, so a signer that already holds MANAGEMENT is left untouched
+    ///         instead of tripping KeyAlreadyRegistered.
+    function test_reinstall_sameSeed_isIdempotent() public {
+        bytes32 mgrKey = keccak256(abi.encodePacked(mgr));
+        assertTrue(validator.keyHasPurpose(address(aliceIdentity), mgrKey, KeyPurposes.MANAGEMENT), "mgr seeded");
 
-        // Give the key two purposes, then wipe via uninstall + reinstall.
-        _validatorAddKey(who, KeyPurposes.ACTION);
-        _validatorAddKey(who, KeyPurposes.PROPOSER);
         vm.startPrank(alice);
         aliceIdentity.uninstallModule(MODULE_TYPE_VALIDATOR, address(validator), "");
-        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), abi.encodePacked(alice));
+        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), abi.encodePacked(mgr));
         vm.stopPrank();
 
-        // Re-register the same keyHash with a single purpose; it must hold exactly that one.
-        _validatorAddKey(who, KeyPurposes.ACTION);
-        uint256[] memory purposes = validator.getKeyPurposes(address(aliceIdentity), keyHash);
-        assertEq(purposes.length, 1, "recycled key must have exactly one purpose, not stale entries");
-        assertEq(purposes[0], KeyPurposes.ACTION, "recycled key purpose must be ACTION");
-        assertFalse(
-            validator.keyHasPurpose(address(aliceIdentity), keyHash, KeyPurposes.PROPOSER), "no stale PROPOSER purpose"
+        assertTrue(
+            validator.keyHasPurpose(address(aliceIdentity), mgrKey, KeyPurposes.MANAGEMENT),
+            "mgr still MANAGEMENT after same-seed reinstall"
         );
+        uint256[] memory purposes = validator.getKeyPurposes(address(aliceIdentity), mgrKey);
+        assertEq(purposes.length, 1, "no duplicate purpose entries from the reseed");
     }
 
     // --- data preservation ----------------------------------------------

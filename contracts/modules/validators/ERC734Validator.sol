@@ -68,10 +68,10 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         bytes clientData;
     }
 
-    /// @dev ERC-734 key registry plus ERC-735 claim state, scoped to one account. `allKeys` tracks
-    ///      every registered keyHash so `_clearRegistry` can delete each `Key` record on reinstall,
-    ///      not just empty the sets. `claims` / `claimsByTopic` / `revokedDigests` hold the claim
-    ///      registry (see the claims section below).
+    /// @dev ERC-734 key registry plus ERC-735 claim state, scoped to one account. `allKeys` is
+    ///      the membership index backing `keyHasPurpose` and the getters. `claims` /
+    ///      `claimsByTopic` / `revokedDigests` hold the claim registry (see the claims section
+    ///      below).
     struct AccountRegistry {
         mapping(bytes32 keyHash => Key) keys;
         mapping(uint256 purpose => EnumerableSet.Bytes32Set) byPurpose;
@@ -142,24 +142,25 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
 
     // --- installation ----------------------------------------------------
 
-    /// @dev Clears any leftover state from a prior install, then seeds the registry with a
-    ///      single MANAGEMENT key from `data` (an ERC-7913 signer blob). keyType is inferred by
-    ///      length; clientData is empty at install.
+    /// @dev Seeds the registry with a single MANAGEMENT key from `data` (an ERC-7913 signer
+    ///      blob). keyType is inferred by length; clientData is empty at install.
     ///
-    ///      Cleanup happens here, not in {onUninstall}: OZ's `AccountERC7579._uninstallModule`
-    ///      calls `onUninstall` with `callNoReturn`, so an aggressive gas estimator can starve
-    ///      that subcall and skip it while the outer uninstall still succeeds. Doing the wipe on
-    ///      (re)install means a stale registry can never leak into a fresh install regardless of
-    ///      whether `onUninstall` ran.
+    ///      The registry is durable on purpose. It is enshrined in the account implementation,
+    ///      and {KeyManager} keeps reading it whether or not this module is installed, so an
+    ///      install never wipes prior state: a reinstall resumes the existing registry (keys,
+    ///      claims and revoked digests included), and stale keys are removed individually via
+    ///      {removeKey}. The seed is idempotent so a reinstall may reuse the same signer.
     function onInstall(bytes calldata data) public virtual {
         // Empty data is an executor or fallback install (claims and the ERC-734 getters). There is
         // no key to seed, so it is a no-op; the registry is seeded by the validator install below.
         if (data.length == 0) return;
 
+        // Reinstall with a signer that already holds MANAGEMENT: nothing to seed.
+        if (_keyHasPurpose(msg.sender, keccak256(data), KeyPurposes.MANAGEMENT)) return;
+
         // keyType is stored metadata only; _verify dispatches on the signer length, not on this.
         // A 20-byte signer is an EOA (ECDSA=1). A longer one is a generic ERC-7913 verifier+key
         // blob; we can't tell WebAuthn from RSA by length, so we label the common case, WEBAUTHN=3.
-        _clearRegistry(msg.sender);
         _addKey(msg.sender, data, "", KeyPurposes.MANAGEMENT, data.length == 20 ? 1 : 3);
     }
 
@@ -170,40 +171,15 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
             || moduleTypeId == MODULE_TYPE_FALLBACK;
     }
 
-    /// @dev No-op by design. Cleanup lives in {onInstall} instead, because this hook can be
-    ///      bypassed by a gas-starved `callNoReturn` (see {onInstall}). Relying on it to clear
-    ///      state would leave the registry populated after a bypassed uninstall; a reinstall
-    ///      wipes it anyway. Uninstalling without reinstalling leaves the old keys dormant, which
-    ///      is harmless: the account no longer routes to this validator once it is uninstalled.
+    /// @dev No-op by design: the registry is durable (see {onInstall}), and this hook can be
+    ///      bypassed by a gas-starved `callNoReturn` anyway, so nothing may depend on it running.
+    ///      Uninstalling leaves the keys in place, which is intended: the enshrined registry
+    ///      keeps serving the account's ERC-734 reads whether or not this module is installed.
     function onUninstall(
         bytes calldata /* data */
     )
         public
         virtual { }
-
-    /// @dev Wipes every `Key` record, every byPurpose entry, and the key index for `account`.
-    ///      Each `Key.purposes` is an EnumerableSet, so it is `.clear()`ed explicitly: a plain
-    ///      `delete keys[keyHash]` would leave the set's `_positions` mapping behind (see the
-    ///      warning in OZ's EnumerableSet), which would corrupt a later re-registration.
-    function _clearRegistry(address account) private {
-        AccountRegistry storage registry = _store().registries[account];
-        bytes32[] memory keyHashes = registry.allKeys.values();
-        for (uint256 i = 0; i < keyHashes.length; i++) {
-            Key storage key = registry.keys[keyHashes[i]];
-            key.purposes.clear();
-            delete key.keyType;
-            delete key.signerData;
-            delete key.clientData;
-        }
-        // Clear every purpose index. The module now holds all six ERC-734 purposes.
-        registry.byPurpose[KeyPurposes.MANAGEMENT].clear();
-        registry.byPurpose[KeyPurposes.ACTION].clear();
-        registry.byPurpose[KeyPurposes.CLAIM_SIGNER].clear();
-        registry.byPurpose[KeyPurposes.ENCRYPTION].clear();
-        registry.byPurpose[KeyPurposes.CLAIM_ADDER].clear();
-        registry.byPurpose[KeyPurposes.PROPOSER].clear();
-        registry.allKeys.clear();
-    }
 
     // --- registry (called by the account on itself) ----------------------
 
