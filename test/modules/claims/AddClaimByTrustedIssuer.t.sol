@@ -221,6 +221,17 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
         assertEq(issuerAfter, address(0));
     }
 
+    /// @notice A claim on topic 0 is rejected. Topic 0 is the "no claim" sentinel removeClaim
+    ///         reads, so a stored topic-0 claim could never be removed.
+    function test_addClaim_topicZero_reverts() public {
+        (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
+            _buildSignedClaim(address(aliceIdentity), address(claimIssuer), 0);
+
+        vm.prank(claimIssuerOwner);
+        vm.expectRevert(Errors.InvalidClaimTopic.selector);
+        ERC734Validator(address(aliceIdentity)).addClaimByTrustedIssuer(0, scheme, issuer, signature, data, "");
+    }
+
     // ============ Helper ============
 
     /// @dev Build the four signed-claim components used by addClaimByTrustedIssuer.

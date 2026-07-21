@@ -603,6 +603,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         Structs.ClaimData memory data,
         string memory uri
     ) internal returns (bytes32 claimId) {
+        // removeClaim reads a claim's topic and treats 0 as "no such claim". So a claim stored
+        // under topic 0 could never be removed. Reject it up front.
+        require(topic != 0, Errors.InvalidClaimTopic());
         require(IClaimIssuer(issuer).isClaimValid(IIdentity(account), topic, signature, data), Errors.InvalidClaim());
 
         AccountRegistry storage s = _store().registries[account];
