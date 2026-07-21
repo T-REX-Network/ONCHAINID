@@ -251,24 +251,54 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
                 || registry.keys[keyHash].purposes.contains(KeyPurposes.MANAGEMENT));
     }
 
-    /// @notice Purposes held by `keyHash` on `account`.
+    /// @notice Purposes held by `keyHash` on `account`. Returns the full set. Use the
+    ///         `(account, keyHash, start, end)` overload for large sets.
     function getKeyPurposes(address account, bytes32 keyHash) public view returns (uint256[] memory) {
-        return _getKeyPurposes(account, keyHash);
+        return _getKeyPurposes(account, keyHash, 0, type(uint64).max);
     }
 
-    /// @dev Shared implementation for both `getKeyPurposes` overloads.
-    function _getKeyPurposes(address account, bytes32 keyHash) internal view returns (uint256[] memory) {
-        return _store().registries[account].keys[keyHash].purposes.values();
+    /// @notice Paginated variant of {getKeyPurposes}. Returns purposes in the index range
+    ///         `[start, end)`. `end` past the set size returns the available tail.
+    function getKeyPurposes(address account, bytes32 keyHash, uint256 start, uint256 end)
+        public
+        view
+        returns (uint256[] memory)
+    {
+        return _getKeyPurposes(account, keyHash, start, end);
     }
 
-    /// @notice Key hashes with `purpose` on `account`.
+    /// @dev Shared implementation for every `getKeyPurposes` overload.
+    function _getKeyPurposes(address account, bytes32 keyHash, uint256 start, uint256 end)
+        internal
+        view
+        returns (uint256[] memory)
+    {
+        return _store().registries[account].keys[keyHash].purposes.values(start, end);
+    }
+
+    /// @notice Key hashes with `purpose` on `account`. Returns the full set. Use the
+    ///         `(account, purpose, start, end)` overload for large sets.
     function getKeysByPurpose(address account, uint256 purpose) public view returns (bytes32[] memory) {
-        return _getKeysByPurpose(account, purpose);
+        return _getKeysByPurpose(account, purpose, 0, type(uint64).max);
     }
 
-    /// @dev Shared implementation for both `getKeysByPurpose` overloads.
-    function _getKeysByPurpose(address account, uint256 purpose) internal view returns (bytes32[] memory) {
-        return _store().registries[account].byPurpose[purpose].values();
+    /// @notice Paginated variant of {getKeysByPurpose}. Returns key hashes in the index range
+    ///         `[start, end)`. `end` past the set size returns the available tail.
+    function getKeysByPurpose(address account, uint256 purpose, uint256 start, uint256 end)
+        public
+        view
+        returns (bytes32[] memory)
+    {
+        return _getKeysByPurpose(account, purpose, start, end);
+    }
+
+    /// @dev Shared implementation for every `getKeysByPurpose` overload.
+    function _getKeysByPurpose(address account, uint256 purpose, uint256 start, uint256 end)
+        internal
+        view
+        returns (bytes32[] memory)
+    {
+        return _store().registries[account].byPurpose[purpose].values(start, end);
     }
 
     /// @notice `KeyManager.getKeyData` for `account`: the signerData/clientData a key carries.
@@ -300,14 +330,26 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         return _keyHasPurpose(msg.sender, _key, _purpose);
     }
 
-    /// @notice ERC-734 getKeyPurposes for the calling account.
+    /// @notice ERC-734 getKeyPurposes for the calling account. Returns the full set. Use the
+    ///         `(_key, start, end)` overload for large sets.
     function getKeyPurposes(bytes32 _key) external view returns (uint256[] memory) {
-        return _getKeyPurposes(msg.sender, _key);
+        return _getKeyPurposes(msg.sender, _key, 0, type(uint64).max);
     }
 
-    /// @notice ERC-734 getKeysByPurpose for the calling account.
+    /// @notice Paginated variant of {getKeyPurposes} for the calling account.
+    function getKeyPurposes(bytes32 _key, uint256 start, uint256 end) external view returns (uint256[] memory) {
+        return _getKeyPurposes(msg.sender, _key, start, end);
+    }
+
+    /// @notice ERC-734 getKeysByPurpose for the calling account. Returns the full set. Use the
+    ///         `(_purpose, start, end)` overload for large sets.
     function getKeysByPurpose(uint256 _purpose) external view returns (bytes32[] memory) {
-        return _getKeysByPurpose(msg.sender, _purpose);
+        return _getKeysByPurpose(msg.sender, _purpose, 0, type(uint64).max);
+    }
+
+    /// @notice Paginated variant of {getKeysByPurpose} for the calling account.
+    function getKeysByPurpose(uint256 _purpose, uint256 start, uint256 end) external view returns (bytes32[] memory) {
+        return _getKeysByPurpose(msg.sender, _purpose, start, end);
     }
 
     /// @notice ERC-734 getKey for the calling account.

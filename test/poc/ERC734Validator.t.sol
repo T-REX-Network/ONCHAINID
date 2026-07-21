@@ -480,6 +480,57 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         assertFalse(validator.keyHasPurpose(keyHash, KeyPurposes.ACTION), "another account sees nothing");
     }
 
+    /// @notice The paginated `(start, end)` overloads of getKeyPurposes / getKeysByPurpose slice
+    ///         the enumerable set in [start, end). The account-scoped and msg.sender-scoped
+    ///         overloads return the same shape.
+    function test_getKeyPurposes_and_getKeysByPurpose_paginated() public {
+        // Give one signer three purposes so getKeyPurposes has something to page.
+        (address multi,) = makeAddrAndKey("paginated-multi");
+        bytes32 multiHash = keccak256(abi.encodePacked(multi));
+        _validatorAddKey(multi, KeyPurposes.ACTION);
+        _validatorAddKey(multi, KeyPurposes.CLAIM_SIGNER);
+        _validatorAddKey(multi, KeyPurposes.PROPOSER);
+
+        // Give three signers ACTION so getKeysByPurpose has something to page.
+        (address a,) = makeAddrAndKey("paginated-a");
+        (address b,) = makeAddrAndKey("paginated-b");
+        _validatorAddKey(a, KeyPurposes.ACTION);
+        _validatorAddKey(b, KeyPurposes.ACTION);
+
+        // Account-scoped overloads: full list matches paged [0, N) and tail matches [1, N).
+        uint256[] memory allPurposes = validator.getKeyPurposes(address(aliceIdentity), multiHash);
+        assertEq(allPurposes.length, 3, "three purposes registered");
+        uint256[] memory firstTwo = validator.getKeyPurposes(address(aliceIdentity), multiHash, 0, 2);
+        assertEq(firstTwo.length, 2, "first two purposes");
+        assertEq(firstTwo[0], allPurposes[0]);
+        assertEq(firstTwo[1], allPurposes[1]);
+        uint256[] memory lastTwo = validator.getKeyPurposes(address(aliceIdentity), multiHash, 1, 3);
+        assertEq(lastTwo.length, 2, "purposes[1..3)");
+        assertEq(lastTwo[0], allPurposes[1]);
+        assertEq(lastTwo[1], allPurposes[2]);
+
+        // Same shape for byPurpose: three ACTION keys registered above (multi, a, b).
+        bytes32[] memory allActions = validator.getKeysByPurpose(address(aliceIdentity), KeyPurposes.ACTION);
+        assertEq(allActions.length, 3, "three ACTION keys");
+        bytes32[] memory firstTwoActions = validator.getKeysByPurpose(address(aliceIdentity), KeyPurposes.ACTION, 0, 2);
+        assertEq(firstTwoActions.length, 2, "first two ACTION keys");
+        assertEq(firstTwoActions[0], allActions[0]);
+        assertEq(firstTwoActions[1], allActions[1]);
+        bytes32[] memory lastActions = validator.getKeysByPurpose(address(aliceIdentity), KeyPurposes.ACTION, 1, 3);
+        assertEq(lastActions.length, 2, "ACTION keys[1..3)");
+        assertEq(lastActions[0], allActions[1]);
+        assertEq(lastActions[1], allActions[2]);
+
+        // msg.sender-scoped overloads read the calling account's registry, same result when
+        // called by the account itself.
+        vm.startPrank(address(aliceIdentity));
+        uint256[] memory selfPurposes = validator.getKeyPurposes(multiHash, 0, 3);
+        assertEq(selfPurposes.length, 3, "self-scoped purposes match");
+        bytes32[] memory selfActions = validator.getKeysByPurpose(KeyPurposes.ACTION, 0, 3);
+        assertEq(selfActions.length, 3, "self-scoped ACTION keys match");
+        vm.stopPrank();
+    }
+
 }
 
 /// @notice PoC-local counter target.
