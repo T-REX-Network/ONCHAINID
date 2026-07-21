@@ -7,7 +7,7 @@ import { IERC735 } from "contracts/interface/IERC735.sol";
 import { IIdentity } from "contracts/interface/IIdentity.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
-import { ClaimsModule } from "contracts/modules/claims/ClaimsModule.sol";
+import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
 import { ReputationRegistry } from "contracts/reputation/ReputationRegistry.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 
@@ -63,7 +63,8 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
             _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
 
         vm.prank(claimIssuerOwner);
-        ClaimsModule(address(aliceIdentity)).addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
+        ERC734Validator(address(aliceIdentity))
+            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
 
         (uint256 topic,, address issuerAfter,,,) = IIdentity(address(aliceIdentity)).getClaim(claimId);
         assertEq(topic, FRESH_TOPIC);
@@ -84,7 +85,8 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
         vm.expectRevert(
             abi.encodeWithSelector(Errors.ReputationBelowClaimAddThreshold.selector, address(claimIssuer), 0, THRESHOLD)
         );
-        ClaimsModule(address(aliceIdentity)).addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
+        ERC734Validator(address(aliceIdentity))
+            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
 
         bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), FRESH_TOPIC);
         (,, address issuerAfter,,,) = IIdentity(address(aliceIdentity)).getClaim(claimId);
@@ -99,7 +101,8 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
 
         vm.prank(stranger);
         vm.expectRevert(abi.encodeWithSelector(Errors.CallerNotLinkedToFactoryIdentity.selector, stranger));
-        ClaimsModule(address(aliceIdentity)).addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
+        ERC734Validator(address(aliceIdentity))
+            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
     }
 
     function test_declaredIssuerMismatch_revertsWithMismatchError() public {
@@ -113,7 +116,8 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
         vm.expectRevert(
             abi.encodeWithSelector(Errors.DeclaredIssuerMismatch.selector, address(bobIdentity), address(claimIssuer))
         );
-        ClaimsModule(address(aliceIdentity)).addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
+        ERC734Validator(address(aliceIdentity))
+            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
     }
 
     function test_highScoreNonClaimIssuer_cannotAddClaim() public {
@@ -136,7 +140,7 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
 
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(Errors.IdentityNotClaimIssuerType.selector, address(aliceIdentity)));
-        ClaimsModule(address(bobIdentity))
+        ERC734Validator(address(bobIdentity))
             .addClaimByTrustedIssuer(FRESH_TOPIC, uint256(1), address(aliceIdentity), signature, data, "");
 
         bytes32 claimId = ClaimSignerHelper.computeClaimId(address(aliceIdentity), FRESH_TOPIC);
@@ -149,7 +153,7 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
         (uint256 firstScheme, address firstIssuer, bytes memory firstSig, Structs.ClaimData memory firstData) =
             _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
         vm.prank(claimIssuerOwner);
-        ClaimsModule(address(aliceIdentity))
+        ERC734Validator(address(aliceIdentity))
             .addClaimByTrustedIssuer(FRESH_TOPIC, firstScheme, firstIssuer, firstSig, firstData, "");
 
         // Manager lowers the score. A subsequent attempt for a different topic must
@@ -165,7 +169,7 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
         vm.expectRevert(
             abi.encodeWithSelector(Errors.ReputationBelowClaimAddThreshold.selector, address(claimIssuer), 0, THRESHOLD)
         );
-        ClaimsModule(address(aliceIdentity))
+        ERC734Validator(address(aliceIdentity))
             .addClaimByTrustedIssuer(anotherTopic, secondScheme, secondIssuer, secondSig, secondData, "");
 
         bytes32 secondClaimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), anotherTopic);
@@ -185,7 +189,8 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
             _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
 
         vm.prank(claimIssuerOwner);
-        ClaimsModule(address(aliceIdentity)).addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
+        ERC734Validator(address(aliceIdentity))
+            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
 
         bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), FRESH_TOPIC);
         (,, address issuerAfter,,,) = IIdentity(address(aliceIdentity)).getClaim(claimId);
@@ -208,7 +213,8 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
                 Errors.ReputationBelowClaimAddThreshold.selector, address(claimIssuer), belowThreshold, THRESHOLD
             )
         );
-        ClaimsModule(address(aliceIdentity)).addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
+        ERC734Validator(address(aliceIdentity))
+            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
 
         bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), FRESH_TOPIC);
         (,, address issuerAfter,,,) = IIdentity(address(aliceIdentity)).getClaim(claimId);

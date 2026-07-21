@@ -3,10 +3,11 @@ pragma solidity ^0.8.27;
 
 import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { IdentityHelper } from "../helpers/IdentityHelper.sol";
-import { MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import { MODULE_TYPE_FALLBACK, MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { Errors as OZErrors } from "@openzeppelin/contracts/utils/Errors.sol";
 import { InteroperableAddress } from "@openzeppelin/contracts/utils/draft-InteroperableAddress.sol";
 import { Identity } from "contracts/Identity.sol";
+import { IERC734 } from "contracts/interface/IERC734.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
@@ -31,7 +32,7 @@ contract TokenOidTest is Test {
     address internal bob;
 
     /// @dev Minimal module bundle that satisfies Identity.initialize's "needs a validator
-    ///      or an executor" invariant. A single ERC7579Signature validator is enough.
+    ///      or an executor" invariant. A single ERC734Validator is enough.
     Structs.ModuleInstall[] internal _defaultModules;
 
     function setUp() public {
@@ -43,9 +44,44 @@ contract TokenOidTest is Test {
         setup = IdentityHelper.deployFactory(deployer);
         vm.stopPrank();
 
+        // The validator install carries empty initData: the MANAGEMENT key is seeded from the
+        // caller-supplied `keys`, so seeding it here in onInstall would collide. The four ERC-734
+        // getter fallbacks are needed so the factory's post-deploy management-key check can be
+        // answered via the fallback dispatch.
+        address validator = address(setup.signatureValidator);
+        _defaultModules.push(
+            Structs.ModuleInstall({ moduleType: MODULE_TYPE_VALIDATOR, module: validator, initData: "", purpose: 0 })
+        );
         _defaultModules.push(
             Structs.ModuleInstall({
-                moduleType: MODULE_TYPE_VALIDATOR, module: address(setup.signatureValidator), initData: "", purpose: 0
+                moduleType: MODULE_TYPE_FALLBACK,
+                module: validator,
+                initData: abi.encodePacked(IERC734.keyHasPurpose.selector),
+                purpose: 0
+            })
+        );
+        _defaultModules.push(
+            Structs.ModuleInstall({
+                moduleType: MODULE_TYPE_FALLBACK,
+                module: validator,
+                initData: abi.encodePacked(IERC734.getKey.selector),
+                purpose: 0
+            })
+        );
+        _defaultModules.push(
+            Structs.ModuleInstall({
+                moduleType: MODULE_TYPE_FALLBACK,
+                module: validator,
+                initData: abi.encodePacked(IERC734.getKeyPurposes.selector),
+                purpose: 0
+            })
+        );
+        _defaultModules.push(
+            Structs.ModuleInstall({
+                moduleType: MODULE_TYPE_FALLBACK,
+                module: validator,
+                initData: abi.encodePacked(IERC734.getKeysByPurpose.selector),
+                purpose: 0
             })
         );
     }
@@ -246,11 +282,12 @@ contract TokenOidTest is Test {
         Identity identity = Identity(payable(identityAddr));
 
         assertTrue(
-            identity.keyHasPurpose(ClaimSignerHelper.addressToKey(claimAdder), KeyPurposes.CLAIM_ADDER),
+            IERC734(address(identity))
+                .keyHasPurpose(ClaimSignerHelper.addressToKey(claimAdder), KeyPurposes.CLAIM_ADDER),
             "claimAdder should have CLAIM_ADDER purpose"
         );
         assertTrue(
-            identity.keyHasPurpose(ClaimSignerHelper.addressToKey(bob), KeyPurposes.MANAGEMENT),
+            IERC734(address(identity)).keyHasPurpose(ClaimSignerHelper.addressToKey(bob), KeyPurposes.MANAGEMENT),
             "bob should have MANAGEMENT purpose"
         );
     }
@@ -285,12 +322,14 @@ contract TokenOidTest is Test {
         Identity identity = Identity(payable(identityAddr));
         bytes32 amKeyHash = keccak256(abi.encodePacked(am));
 
-        (uint256[] memory purposes, uint256 keyType, bytes32 storedKey) = identity.getKey(amKeyHash);
+        (uint256[] memory purposes, uint256 keyType, bytes32 storedKey) = IERC734(address(identity)).getKey(amKeyHash);
         assertEq(keyType, KeyTypes.ACCESS_MANAGER, "key should be tagged ACCESS_MANAGER");
         assertEq(storedKey, amKeyHash, "stored key hash should match");
         assertEq(purposes.length, 1, "exactly one purpose");
         assertEq(purposes[0], KeyPurposes.MANAGEMENT, "the purpose is MANAGEMENT");
-        assertTrue(identity.keyHasPurpose(amKeyHash, KeyPurposes.MANAGEMENT), "AM passes MANAGEMENT check");
+        assertTrue(
+            IERC734(address(identity)).keyHasPurpose(amKeyHash, KeyPurposes.MANAGEMENT), "AM passes MANAGEMENT check"
+        );
     }
 
     /// @notice The AccessManager, registered as a MGMT key, can drive the AssetID directly.
@@ -312,10 +351,12 @@ contract TokenOidTest is Test {
         bytes32 claimSignerKey = keccak256(abi.encodePacked(claimSigner));
 
         vm.prank(am);
-        identity.addKey(claimSignerKey, KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+        identity.addKeyWithData(
+            claimSignerKey, KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA, abi.encodePacked(claimSigner), ""
+        );
 
         assertTrue(
-            identity.keyHasPurpose(claimSignerKey, KeyPurposes.CLAIM_SIGNER),
+            IERC734(address(identity)).keyHasPurpose(claimSignerKey, KeyPurposes.CLAIM_SIGNER),
             "AM-added claim signer should be registered"
         );
 

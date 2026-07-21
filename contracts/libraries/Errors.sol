@@ -132,9 +132,9 @@ library Errors {
     /// @notice The claim already exists.
     error ClaimAlreadyRevoked();
 
-    /* ----- ClaimsModule trusted-issuer path ----- */
+    /* ----- ERC734Validator trusted-issuer path ----- */
 
-    /// @notice Reverts when {ClaimsModule.addClaimByTrustedIssuer} is called by a wallet
+    /// @notice Reverts when {ERC734Validator.addClaimByTrustedIssuer} is called by a wallet
     ///         that the factory does not resolve to any identity. The trusted-issuer path
     ///         requires the caller wallet to be a linked account on a factory-deployed
     ///         identity.
@@ -157,8 +157,12 @@ library Errors {
 
     /* ----- Identity ----- */
 
-    /// @notice Interacting with the library contract is forbidden.
-    error InteractingWithLibraryContractForbidden();
+    /// @notice {IdentityFactory.initializeBeacon} was called but the beacon is already deployed.
+    error BeaconAlreadyInitialized();
+
+    /// @notice Identity deployment was attempted before {IdentityFactory.initializeBeacon}
+    ///         deployed the beacon at its predetermined slot.
+    error BeaconNotInitialized();
 
     /// @notice The sender does not have the management key.
     error SenderDoesNotHaveManagementKey();
@@ -172,9 +176,6 @@ library Errors {
     /// @notice The caller holds no key on the target identity that authorizes proposing an
     ///         execution. PROPOSER, ACTION, CLAIM_SIGNER, CLAIM_ADDER, or MANAGEMENT works.
     error SenderCannotPropose(address sender);
-
-    /// @notice The initial key was already setup.
-    error InitialKeyAlreadySetup();
 
     /// @notice The key is not registered.
     error KeyNotRegistered(bytes32 key);
@@ -220,16 +221,16 @@ library Errors {
     /// @notice The execution mode requested is not supported by the account's purpose check.
     error UnsupportedExecutionMode(bytes32 mode);
 
+    /// @notice A dispatched call targeted one of the account's own modules (an installed executor,
+    ///         or the fallback handler for the call's selector). Module functions are reached via
+    ///         the account's fallback dispatch, never via `execute(module, ...)`.
+    error OwnModuleTargetBlocked(address target);
+
     /// @notice An installed executor or fallback handler tried to dispatch a call whose target
     ///         is not authorized by the purpose registered for that module at install time.
     ///         Also raised at install time if the module's initData does not begin with a
     ///         non-zero `uint256 purpose`.
     error ExecutorPurposeNotAuthorized();
-
-    /// @notice `KeyApprovalModule.canAutoApprove` was queried for an `account` that does not
-    ///         match `msg.sender`. The module only answers about the calling identity's own
-    ///         authorization table; cross-identity queries are rejected.
-    error UnauthorizedPolicyQuery();
 
     /// @notice ETH push from `KeyApprovalModule` back to the identity failed.
     error ReturnToAccountFailed();

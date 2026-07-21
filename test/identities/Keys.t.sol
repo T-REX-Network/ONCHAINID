@@ -3,9 +3,11 @@ pragma solidity ^0.8.27;
 
 import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
+import { IERC734 } from "contracts/interface/IERC734.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
+import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
 
 /// @notice Tests for Identity Key Management (ERC-734)
 contract KeysTest is OnchainIDSetup {
@@ -23,7 +25,7 @@ contract KeysTest is OnchainIDSetup {
     // ============ Read key methods ============
 
     function test_RetrieveExistingKey() public view {
-        (uint256[] memory purposes, uint256 keyType, bytes32 key) = aliceIdentity.getKey(aliceKeyHash);
+        (uint256[] memory purposes, uint256 keyType, bytes32 key) = IERC734(address(aliceIdentity)).getKey(aliceKeyHash);
 
         assertEq(key, aliceKeyHash);
         assertEq(purposes.length, 1);
@@ -32,14 +34,14 @@ contract KeysTest is OnchainIDSetup {
     }
 
     function test_RetrieveExistingKeyPurposes() public view {
-        uint256[] memory purposes = aliceIdentity.getKeyPurposes(aliceKeyHash);
+        uint256[] memory purposes = IERC734(address(aliceIdentity)).getKeyPurposes(aliceKeyHash);
 
         assertEq(purposes.length, 1);
         assertEq(purposes[0], KeyPurposes.MANAGEMENT);
     }
 
     function test_RetrieveExistingKeysWithGivenPurpose() public view {
-        bytes32[] memory keys = aliceIdentity.getKeysByPurpose(KeyPurposes.MANAGEMENT);
+        bytes32[] memory keys = IERC734(address(aliceIdentity)).getKeysByPurpose(KeyPurposes.MANAGEMENT);
 
         // Alice is one MANAGEMENT key; the auto-installed KeyApprovalModule is registered
         // as another (its address is hashed and stored as a key so that dispatches through
@@ -55,20 +57,20 @@ contract KeysTest is OnchainIDSetup {
     }
 
     function test_ReturnTrueIfKeyHasGivenPurpose() public view {
-        bool hasPurpose = aliceIdentity.keyHasPurpose(aliceKeyHash, KeyPurposes.MANAGEMENT);
+        bool hasPurpose = IERC734(address(aliceIdentity)).keyHasPurpose(aliceKeyHash, KeyPurposes.MANAGEMENT);
 
         assertTrue(hasPurpose);
     }
 
     function test_ReturnTrueIfKeyIsManagementKeyButNotGivenPurpose() public view {
         // MANAGEMENT keys have universal permissions, so they return true for any purpose
-        bool hasPurpose = aliceIdentity.keyHasPurpose(aliceKeyHash, KeyPurposes.ACTION);
+        bool hasPurpose = IERC734(address(aliceIdentity)).keyHasPurpose(aliceKeyHash, KeyPurposes.ACTION);
 
         assertTrue(hasPurpose);
     }
 
     function test_ReturnFalseIfKeyDoesNotHaveGivenPurpose() public view {
-        bool hasPurpose = aliceIdentity.keyHasPurpose(bobKeyHash, KeyPurposes.ACTION);
+        bool hasPurpose = IERC734(address(aliceIdentity)).keyHasPurpose(bobKeyHash, KeyPurposes.ACTION);
 
         assertFalse(hasPurpose);
     }
@@ -87,7 +89,7 @@ contract KeysTest is OnchainIDSetup {
         vm.prank(alice);
         aliceIdentity.addKey(aliceKeyHash, KeyPurposes.ACTION, KeyTypes.ECDSA);
 
-        (uint256[] memory purposes, uint256 keyType, bytes32 key) = aliceIdentity.getKey(aliceKeyHash);
+        (uint256[] memory purposes, uint256 keyType, bytes32 key) = IERC734(address(aliceIdentity)).getKey(aliceKeyHash);
 
         assertEq(key, aliceKeyHash);
         assertEq(purposes.length, 2);
@@ -98,9 +100,9 @@ contract KeysTest is OnchainIDSetup {
 
     function test_AddNewKeyWithPurpose() public {
         vm.prank(alice);
-        aliceIdentity.addKey(bobKeyHash, KeyPurposes.MANAGEMENT, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(bobKeyHash, KeyPurposes.MANAGEMENT, KeyTypes.ECDSA, abi.encodePacked(bob), "");
 
-        (uint256[] memory purposes, uint256 keyType, bytes32 key) = aliceIdentity.getKey(bobKeyHash);
+        (uint256[] memory purposes, uint256 keyType, bytes32 key) = IERC734(address(aliceIdentity)).getKey(bobKeyHash);
 
         assertEq(key, bobKeyHash);
         assertEq(purposes.length, 1);
@@ -109,9 +111,9 @@ contract KeysTest is OnchainIDSetup {
     }
 
     function test_RevertAddKey_WhenKeyAlreadyHasPurpose() public {
-        vm.expectRevert(
-            abi.encodeWithSelector(Errors.KeyAlreadyHasPurpose.selector, aliceKeyHash, KeyPurposes.MANAGEMENT)
-        );
+        // The registry module rejects re-adding a purpose the key already holds with
+        // KeyAlreadyRegistered(keyHash) (the EnumerableSet.add returned false).
+        vm.expectRevert(abi.encodeWithSelector(ERC734Validator.KeyAlreadyRegistered.selector, aliceKeyHash));
         vm.prank(alice);
         aliceIdentity.addKey(aliceKeyHash, KeyPurposes.MANAGEMENT, KeyTypes.ECDSA);
     }
@@ -119,9 +121,8 @@ contract KeysTest is OnchainIDSetup {
     /// @notice Re-purposing an existing key with a different `_type` is rejected.
     function test_RevertAddKey_WhenKeyTypeDoesNotMatchExisting() public {
         // aliceKeyHash already exists with keyType = ECDSA. Attempt to add a new purpose with RSA.
-        vm.expectRevert(
-            abi.encodeWithSelector(Errors.KeyTypeMismatch.selector, aliceKeyHash, KeyTypes.ECDSA, KeyTypes.RSA)
-        );
+        // The registry module signals the mismatch with KeyTypeMismatch(keyHash).
+        vm.expectRevert(abi.encodeWithSelector(ERC734Validator.KeyTypeMismatch.selector, aliceKeyHash));
         vm.prank(alice);
         aliceIdentity.addKey(aliceKeyHash, KeyPurposes.ACTION, KeyTypes.RSA);
     }
@@ -140,12 +141,12 @@ contract KeysTest is OnchainIDSetup {
         // Removing the only MANAGEMENT key is forbidden. Add a second one first so the
         // invariant holds.
         vm.prank(alice);
-        aliceIdentity.addKey(bobKeyHash, KeyPurposes.MANAGEMENT, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(bobKeyHash, KeyPurposes.MANAGEMENT, KeyTypes.ECDSA, abi.encodePacked(bob), "");
 
         vm.prank(alice);
         aliceIdentity.removeKey(aliceKeyHash, KeyPurposes.MANAGEMENT);
 
-        (uint256[] memory purposes, uint256 keyType, bytes32 key) = aliceIdentity.getKey(aliceKeyHash);
+        (uint256[] memory purposes, uint256 keyType, bytes32 key) = IERC734(address(aliceIdentity)).getKey(aliceKeyHash);
 
         assertEq(key, bytes32(0));
         assertEq(purposes.length, 0);
@@ -165,9 +166,10 @@ contract KeysTest is OnchainIDSetup {
     }
 
     function test_RemoveKeyFromPurposeArray() public {
-        // Add bob as MANAGEMENT + ACTION key
+        // Add bob as MANAGEMENT + ACTION key. The first call registers the new key (data-carrying
+        // form); the second only adds a purpose to the now-existing key (3-arg form).
         vm.startPrank(alice);
-        aliceIdentity.addKey(bobKeyHash, KeyPurposes.MANAGEMENT, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(bobKeyHash, KeyPurposes.MANAGEMENT, KeyTypes.ECDSA, abi.encodePacked(bob), "");
         aliceIdentity.addKey(bobKeyHash, KeyPurposes.ACTION, KeyTypes.ECDSA);
 
         // Remove MANAGEMENT purpose
@@ -175,7 +177,7 @@ contract KeysTest is OnchainIDSetup {
         vm.stopPrank();
 
         // Verify the key still has ACTION purpose only
-        (uint256[] memory purposes, uint256 keyType, bytes32 key) = aliceIdentity.getKey(bobKeyHash);
+        (uint256[] memory purposes, uint256 keyType, bytes32 key) = IERC734(address(aliceIdentity)).getKey(bobKeyHash);
 
         assertEq(key, bobKeyHash);
         assertEq(purposes.length, 1);
@@ -195,7 +197,7 @@ contract KeysTest is OnchainIDSetup {
         aliceIdentity.removeKey(carolKeyHash, KeyPurposes.CLAIM_SIGNER);
 
         // Verify carol no longer has CLAIM_SIGNER purpose
-        assertFalse(aliceIdentity.keyHasPurpose(carolKeyHash, KeyPurposes.CLAIM_SIGNER));
+        assertFalse(IERC734(address(aliceIdentity)).keyHasPurpose(carolKeyHash, KeyPurposes.CLAIM_SIGNER));
     }
 
     /// @notice Remove a key's only purpose — key should be fully deleted
@@ -204,7 +206,7 @@ contract KeysTest is OnchainIDSetup {
         bytes32 davidKeyHash = ClaimSignerHelper.addressToKey(david);
 
         // david has exactly one purpose (ACTION)
-        uint256[] memory purposes = aliceIdentity.getKeyPurposes(davidKeyHash);
+        uint256[] memory purposes = IERC734(address(aliceIdentity)).getKeyPurposes(davidKeyHash);
         assertEq(purposes.length, 1, "David should have exactly 1 purpose");
 
         // Remove ACTION purpose
@@ -212,7 +214,7 @@ contract KeysTest is OnchainIDSetup {
         aliceIdentity.removeKey(davidKeyHash, KeyPurposes.ACTION);
 
         // Key should be fully deleted
-        (, uint256 keyType2, bytes32 key2) = aliceIdentity.getKey(davidKeyHash);
+        (, uint256 keyType2, bytes32 key2) = IERC734(address(aliceIdentity)).getKey(davidKeyHash);
         assertEq(key2, bytes32(0), "Key should be deleted");
         assertEq(keyType2, 0, "Key type should be 0");
     }
@@ -237,7 +239,7 @@ contract KeysTest is OnchainIDSetup {
         vm.prank(alice);
         aliceIdentity.addKeyWithData(keyHash, KeyPurposes.ACTION, KeyTypes.ECDSA, signerData, "");
 
-        (, uint256 keyType, bytes32 storedKey) = aliceIdentity.getKey(keyHash);
+        (, uint256 keyType, bytes32 storedKey) = IERC734(address(aliceIdentity)).getKey(keyHash);
         assertEq(storedKey, keyHash);
         assertEq(keyType, KeyTypes.ECDSA);
     }

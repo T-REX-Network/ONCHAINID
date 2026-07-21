@@ -886,9 +886,16 @@ contract IdentityUtilitiesTest is Test {
         vm.prank(claimIssuerOwner);
         ci.addKey(ClaimSignerHelper.addressToKey(claimIssuerOwner), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
 
-        // Add CLAIM_SIGNER key to identity for claimSigner (uses addressToKey for modifier-based access)
+        // Add CLAIM_SIGNER key to identity for claimSigner (a new key, so register with its signer
+        // bytes via the data-carrying entry point).
         vm.prank(identityOwner);
-        identity.addKey(ClaimSignerHelper.addressToKey(claimSigner), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+        identity.addKeyWithData(
+            ClaimSignerHelper.addressToKey(claimSigner),
+            KeyPurposes.CLAIM_SIGNER,
+            KeyTypes.ECDSA,
+            abi.encodePacked(claimSigner),
+            ""
+        );
 
         // Build claims
         Structs.ClaimData memory claimData1 =

@@ -7,7 +7,7 @@ import { MockERC1271Wallet } from "../mocks/MockERC1271Wallet.sol";
 import { MockERC7786Gateway } from "../mocks/MockERC7786Gateway.sol";
 import { Constants } from "../utils/Constants.sol";
 import { AccessManager } from "@openzeppelin/contracts/access/manager/AccessManager.sol";
-import { MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import { MODULE_TYPE_FALLBACK, MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { UpgradeableBeacon } from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import { Errors as OZErrors } from "@openzeppelin/contracts/utils/Errors.sol";
 import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
@@ -15,6 +15,7 @@ import { InteroperableAddress } from "@openzeppelin/contracts/utils/draft-Intero
 import { Identity } from "contracts/Identity.sol";
 import { IIdentityFactory } from "contracts/factory/IIdentityFactory.sol";
 import { IdentityFactory } from "contracts/factory/IdentityFactory.sol";
+import { IERC734 } from "contracts/interface/IERC734.sol";
 import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
@@ -47,14 +48,38 @@ contract IdentityFactoryTest is OnchainIDSetup {
     }
 
     /// @dev Minimal module bundle that satisfies Identity.initialize's "needs a validator
-    ///      or an executor" invariant. Returns a fresh single-validator array each call so
-    ///      tests don't share calldata-aliased state.
+    ///      or an executor" invariant, plus the four ERC-734 getter fallbacks so the factory's
+    ///      post-deploy `getKeysByPurpose(MANAGEMENT)` check can be answered. The validator install
+    ///      carries empty initData: the MANAGEMENT key is seeded from the caller-supplied `keys`, so
+    ///      seeding it again in the validator's onInstall would collide (KeyAlreadyRegistered).
     function _defaultModules() internal view returns (Structs.ModuleInstall[] memory mods) {
-        mods = new Structs.ModuleInstall[](1);
-        mods[0] = Structs.ModuleInstall({
-            moduleType: MODULE_TYPE_VALIDATOR,
-            module: address(onchainidSetup.signatureValidator),
-            initData: "",
+        address validator = address(onchainidSetup.signatureValidator);
+        mods = new Structs.ModuleInstall[](5);
+        mods[0] =
+            Structs.ModuleInstall({ moduleType: MODULE_TYPE_VALIDATOR, module: validator, initData: "", purpose: 0 });
+        // ERC-734 getter fallbacks served by the merged validator module.
+        mods[1] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: validator,
+            initData: abi.encodePacked(IERC734.keyHasPurpose.selector),
+            purpose: 0
+        });
+        mods[2] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: validator,
+            initData: abi.encodePacked(IERC734.getKey.selector),
+            purpose: 0
+        });
+        mods[3] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: validator,
+            initData: abi.encodePacked(IERC734.getKeyPurposes.selector),
+            purpose: 0
+        });
+        mods[4] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: validator,
+            initData: abi.encodePacked(IERC734.getKeysByPurpose.selector),
             purpose: 0
         });
     }
@@ -115,7 +140,55 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
     function test_revertBecauseAuthorityIsZeroAddress() public {
         vm.expectRevert(Errors.ZeroAddress.selector);
-        new IdentityFactory(address(0), address(onchainidSetup.accessManager));
+        new IdentityFactory(address(0));
+    }
+
+    // ============ initializeBeacon ============
+
+    function test_initializeBeacon_deploysAtCommittedSlot() public view {
+        // The setup factory's beacon lives at the address committed in the constructor,
+        // points at the Identity implementation and is owned by the AccessManager.
+        UpgradeableBeacon b = UpgradeableBeacon(onchainidSetup.idFactory.beacon());
+        assertGt(address(b).code.length, 0, "beacon deployed at the committed slot");
+        assertEq(b.implementation(), address(onchainidSetup.identityImplementation), "beacon points at the impl");
+        assertEq(b.owner(), address(onchainidSetup.accessManager), "beacon owned by the AccessManager");
+    }
+
+    function test_initializeBeacon_revertWhenAlreadyInitialized() public {
+        vm.prank(deployer);
+        vm.expectRevert(Errors.BeaconAlreadyInitialized.selector);
+        onchainidSetup.idFactory.initializeBeacon(address(onchainidSetup.identityImplementation));
+    }
+
+    function test_initializeBeacon_revertForZeroImplementation() public {
+        AccessManager am = new AccessManager(deployer);
+        IdentityFactory freshFactory = new IdentityFactory(address(am));
+
+        vm.prank(deployer);
+        vm.expectRevert(Errors.ZeroAddress.selector);
+        freshFactory.initializeBeacon(address(0));
+    }
+
+    function test_initializeBeacon_revertForUnauthorizedCaller() public {
+        AccessManager am = new AccessManager(deployer);
+        IdentityFactory freshFactory = new IdentityFactory(address(am));
+
+        vm.prank(alice);
+        vm.expectRevert();
+        freshFactory.initializeBeacon(address(onchainidSetup.identityImplementation));
+    }
+
+    function test_createIdentity_revertWhenBeaconNotInitialized() public {
+        AccessManager am = new AccessManager(deployer);
+        IdentityFactory freshFactory = new IdentityFactory(address(am));
+        vm.prank(deployer);
+        freshFactory.setIdentityTypePolicy(IdentityTypes.INDIVIDUAL, type(uint64).max, true);
+
+        vm.prank(david);
+        vm.expectRevert(Errors.BeaconNotInitialized.selector);
+        freshFactory.createIdentity(
+            IdentityTypes.INDIVIDUAL, "noBeaconSalt", _makeSingleMgmtKeys(david), _defaultModules()
+        );
     }
 
     // ============ Per-identity-type gating ============
@@ -895,13 +968,10 @@ contract IdentityFactoryTest is OnchainIDSetup {
     // ============ createIdentityFor with module installation ============
 
     function test_createIdentity_withModules_shouldInstallValidator() public {
-        Structs.ModuleInstall[] memory modules = new Structs.ModuleInstall[](1);
-        modules[0] = Structs.ModuleInstall({
-            moduleType: 1, // MODULE_TYPE_VALIDATOR
-            module: address(onchainidSetup.signatureValidator),
-            initData: "",
-            purpose: 0
-        });
+        // The MANAGEMENT key is seeded from `keys` (_makeSingleMgmtKeys(david)); the validator
+        // install carries empty initData to avoid re-seeding david (KeyAlreadyRegistered). The
+        // ERC-734 getter fallbacks are needed for the factory's post-deploy management-key check.
+        Structs.ModuleInstall[] memory modules = _defaultModules();
         vm.prank(deployer);
         address identityAddr = onchainidSetup.idFactory
             .createIdentityFor(david, IdentityTypes.INDIVIDUAL, "saltWithModules", _makeSingleMgmtKeys(david), modules);
@@ -920,9 +990,10 @@ contract IdentityFactoryTest is OnchainIDSetup {
             );
         Identity identity = Identity(payable(identityAddr));
         assertFalse(
-            identity.keyHasPurpose(
-                ClaimSignerHelper.addressToKey(address(onchainidSetup.idFactory)), KeyPurposes.MANAGEMENT
-            )
+            IERC734(address(identity))
+                .keyHasPurpose(
+                    ClaimSignerHelper.addressToKey(address(onchainidSetup.idFactory)), KeyPurposes.MANAGEMENT
+                )
         );
     }
 
@@ -930,10 +1001,11 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
     function test_createIdentity_revertWhenCreate2Fails() public {
         RevertingIdentity revertingImpl = new RevertingIdentity();
-        UpgradeableBeacon badBeacon = new UpgradeableBeacon(address(revertingImpl), deployer);
 
         AccessManager am = new AccessManager(deployer);
-        IdentityFactory badFactory = new IdentityFactory(address(badBeacon), address(am));
+        IdentityFactory badFactory = new IdentityFactory(address(am));
+        vm.prank(deployer);
+        badFactory.initializeBeacon(address(revertingImpl));
 
         // deployer is AM admin — bypasses the `restricted` gate on createIdentityFor.
         vm.prank(deployer);

@@ -45,7 +45,7 @@ contract OnchainIDSetup is Test {
     // Deployed identities
     Identity public aliceIdentity;
     Identity public bobIdentity;
-    Identity public claimIssuer; // Identity with ClaimsModule installed (was a standalone ClaimIssuer)
+    Identity public claimIssuer; // Identity with the claim module installed (was a standalone ClaimIssuer)
 
     // Pre-built claim
     ClaimSignerHelper.Claim public aliceClaim666;
@@ -65,7 +65,7 @@ contract OnchainIDSetup is Test {
         onchainidSetup = IdentityHelper.deployFactory(deployer);
         vm.stopPrank();
 
-        // ClaimIssuer is now just an Identity with type CLAIM_ISSUER and the ClaimsModule installed.
+        // ClaimIssuer is now just an Identity with type CLAIM_ISSUER and the claim module installed.
         vm.prank(deployer);
         Structs.KeyParam[] memory issuerKeys = new Structs.KeyParam[](2);
         issuerKeys[0] = Structs.KeyParam({
@@ -89,12 +89,12 @@ contract OnchainIDSetup is Test {
                 "claimIssuer",
                 issuerKeys,
                 IdentityHelper.legacyQueueModules(
-                    address(onchainidSetup.keyApprovalModule), address(onchainidSetup.claimsModule)
+                    address(onchainidSetup.keyApprovalModule), address(onchainidSetup.signatureValidator)
                 )
             );
         claimIssuer = Identity(payable(claimIssuerAddr));
 
-        // No validator install on the issuer: `ClaimsModule._isClaimValid` verifies the
+        // No validator install on the issuer: the merged module's `isClaimValid` verifies the
         // claim signature directly via `SignatureChecker` (ERC-7913 dispatch). It does not
         // round-trip through any installed validator on the issuer.
 
@@ -115,23 +115,18 @@ contract OnchainIDSetup is Test {
                 "alice",
                 aliceKeys,
                 IdentityHelper.legacyQueueModules(
-                    address(onchainidSetup.keyApprovalModule), address(onchainidSetup.claimsModule)
+                    address(onchainidSetup.keyApprovalModule), address(onchainidSetup.signatureValidator)
                 )
             );
         aliceIdentity = Identity(payable(aliceIdentityAddr));
 
-        // Install the ERC-7579 signature validator on alice's account so the ERC-1271 / 4337
-        // dispatch through the account works. (Claim verification on the issuer does NOT
-        // need this — it goes straight through SignatureChecker.)
-        vm.prank(alice);
-        aliceIdentity.installModule(
-            1,
-            /* MODULE_TYPE_VALIDATOR */
-            address(onchainidSetup.signatureValidator),
-            ""
-        );
+        // The merged ERC734Validator is already installed as a validator by `legacyQueueModules`
+        // during `initialize`, and `alice` is seeded as its MANAGEMENT key from the `_keys` array.
+        // The registry (keys) now lives entirely in that one module, reached by the account via
+        // fallback for external reads and via a staticcall for its own auth gates.
 
-        // Add carol as CLAIM_SIGNER and david as ACTION key on alice's identity
+        // Add carol as CLAIM_SIGNER and david as ACTION key on alice's identity. These go through
+        // the account write path (`addKeyWithData`), which forwards into the enshrined module.
         vm.startPrank(alice);
         aliceIdentity.addKeyWithData(
             ClaimSignerHelper.addressToKey(carol), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA, abi.encodePacked(carol), ""
@@ -180,7 +175,7 @@ contract OnchainIDSetup is Test {
                 "bob",
                 bobKeys,
                 IdentityHelper.legacyQueueModules(
-                    address(onchainidSetup.keyApprovalModule), address(onchainidSetup.claimsModule)
+                    address(onchainidSetup.keyApprovalModule), address(onchainidSetup.signatureValidator)
                 )
             );
         bobIdentity = Identity(payable(bobIdentityAddr));
@@ -202,7 +197,7 @@ contract OnchainIDSetup is Test {
                 "tokenOwner",
                 tokenKeys,
                 IdentityHelper.legacyQueueModules(
-                    address(onchainidSetup.keyApprovalModule), address(onchainidSetup.claimsModule)
+                    address(onchainidSetup.keyApprovalModule), address(onchainidSetup.signatureValidator)
                 )
             );
     }

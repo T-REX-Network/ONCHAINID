@@ -166,26 +166,15 @@ contract KeyApprovalModule is IERC7579Module {
         return _state[account].executions[executionId];
     }
 
-    /// @notice External view of the auto-approval rule. Lets the calling account reuse this
-    ///         table see {SmartAccount._isKeyAuthorizedToCallTarget}.
-    /// @dev    `account` must equal `msg.sender`: only an identity can ask about its own rule.
-    function canAutoApprove(address account, bytes32 keyHash, address target, bytes calldata data)
-        external
-        view
-        returns (bool)
-    {
-        require(account == msg.sender, Errors.UnauthorizedPolicyQuery());
-        return _canAutoApprove(account, keyHash, target, data);
-    }
-
-    /// @dev Auto-approval policy. See contract NatSpec for the rule table.
+    /// @dev Auto-approval policy. See contract NatSpec for the rule table. Module targets are
+    ///      not special-cased here: the account itself refuses to dispatch into its own modules
+    ///      (see {SmartAccount}), so such a request just fails there and emits `ExecutionFailed`.
     function _canAutoApprove(address account, bytes32 keyHash, address to, bytes calldata data)
         internal
         view
         returns (bool)
     {
-        // OZ `ERC7579Utils._call` rewrites `to == address(0)` to the account before dispatch,
-        // so `to=0` will land as a self-call. Fold it in so the branches below agree.
+        // OZ rewrites to 0 to the account before dispatch, so treat it as a self-call.
         if (to == address(0)) to = account;
 
         // MANAGEMENT keys pass any check.
@@ -195,7 +184,7 @@ contract KeyApprovalModule is IERC7579Module {
 
         // Self-targeted calls: only claim-related selectors auto-approve for claim keys.
         if (to == account && data.length >= 4) {
-            bytes4 selector = bytes4(data[:4]);
+            bytes4 selector = bytes4(data);
             bool isAddClaim = selector == IERC735.addClaim.selector;
             bool isRemoveClaim = selector == IERC735.removeClaim.selector;
 
@@ -237,7 +226,7 @@ contract KeyApprovalModule is IERC7579Module {
         uint256 value = execution.value;
         bytes memory data = execution.data;
 
-        // CALLTYPE_SINGLE + EXECTYPE_DEFAULT — all-zero mode word.
+        // CALLTYPE_SINGLE + EXECTYPE_DEFAULT: all-zero mode word.
         bytes32 mode = bytes32(0);
         bytes memory executionCalldata = abi.encodePacked(to, value, data);
 
@@ -250,9 +239,10 @@ contract KeyApprovalModule is IERC7579Module {
         }
     }
 
-    /// @dev When the account reaches us through its ERC-7579 fallback, `msg.sender` is the
-    ///      account itself — not the user who called it. ERC-7579 mandates the account append
-    ///      the original caller (ERC-2771 style); we read it from the trailing 20 bytes.
+    /// @dev Reached via the account's fallback, `msg.sender` is the account, so the real caller is
+    ///      appended (ERC-2771 style) as the trailing 20 bytes; we read it from there.
+    /// @dev We can trust that tail because {SmartAccount} blocks the only path that could forge it
+    ///      (a direct call to this module, which arrives with no appended tail).
     function _msgSender() internal view returns (address sender) {
         if (msg.data.length >= 20) {
             // solhint-disable-next-line no-inline-assembly

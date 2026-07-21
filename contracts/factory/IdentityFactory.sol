@@ -10,11 +10,12 @@ import { SignatureChecker } from "@openzeppelin/contracts/utils/cryptography/Sig
 import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 import { BeaconProxy } from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
+import { UpgradeableBeacon } from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 
 import { InteroperableAddress } from "@openzeppelin/contracts/utils/draft-InteroperableAddress.sol";
 
 import { Identity } from "../Identity.sol";
-import { KeyManager } from "../KeyManager.sol";
+import { IERC734 } from "../interface/IERC734.sol";
 import { IIdentity } from "../interface/IIdentity.sol";
 import { Errors } from "../libraries/Errors.sol";
 import { IdentityTypes } from "../libraries/IdentityTypes.sol";
@@ -48,8 +49,16 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     bytes32 private constant _LINK_ACCOUNT_TYPEHASH =
         keccak256("LinkAccount(bytes account,address identity,uint256 nonce,uint256 expiry)");
 
-    /// @notice OZ UpgradeableBeacon that every BeaconProxy delegates to. Its owner
-    ///         should be the AccessManager so upgrades go through the same role gating.
+    /// @dev CREATE3 salt for the beacon's predetermined slot.
+    bytes32 private constant _BEACON_SALT = keccak256("onchainid.beacon.v1");
+
+    /// @notice OZ UpgradeableBeacon that every BeaconProxy delegates to. Owned by the
+    ///         AccessManager so upgrades go through the same role gating.
+    /// @dev The address is a CREATE3 slot committed at construction: it depends only on this
+    ///      factory's address and a fixed salt, so it can be an immutable even though the
+    ///      beacon itself can only exist after the factory (the beacon needs the Identity
+    ///      implementation, which needs the enshrined validator, which needs this factory).
+    ///      {initializeBeacon} deploys it there; identity deployment reverts until then.
     address public immutable beacon;
 
     /// @dev One slot per wallet, keyed by keccak256(signer bytes). identity stays set
@@ -110,16 +119,22 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         }
     }
 
-    /// @param beaconAddress OZ UpgradeableBeacon every deployed proxy delegates to.
     /// @param initialAuthority AccessManager that backs every `restricted` function here.
-    constructor(address beaconAddress, address initialAuthority)
-        AccessManaged(initialAuthority)
-        EIP712("IdentityFactory", "1")
-    {
-        require(beaconAddress != address(0), Errors.ZeroAddress());
+    constructor(address initialAuthority) AccessManaged(initialAuthority) EIP712("IdentityFactory", "1") {
         require(initialAuthority != address(0), Errors.ZeroAddress());
+        beacon = Create3.computeAddress(_BEACON_SALT);
+    }
 
-        beacon = beaconAddress;
+    /// @inheritdoc IIdentityFactory
+    function initializeBeacon(address implementation) external restricted {
+        require(implementation != address(0), Errors.ZeroAddress());
+        require(beacon.code.length == 0, Errors.BeaconAlreadyInitialized());
+        Create3.deploy(
+            0,
+            _BEACON_SALT,
+            abi.encodePacked(type(UpgradeableBeacon).creationCode, abi.encode(implementation, authority()))
+        );
+        emit BeaconInitialized(implementation);
     }
 
     /// @inheritdoc IIdentityFactory
@@ -413,9 +428,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
 
         // The identity must end up with at least one MANAGEMENT key. Without it nobody
         // can manage the identity, so deploy is treated as a programmer error and reverts.
-        require(
-            KeyManager(identity).getKeysByPurpose(KeyPurposes.MANAGEMENT).length >= 1, Errors.NoManagementKeyInKeys()
-        );
+        require(IERC734(identity).getKeysByPurpose(KeyPurposes.MANAGEMENT).length >= 1, Errors.NoManagementKeyInKeys());
 
         // Mark factory-deployed BEFORE linking so a re-entrant module can't pretend
         // to be a non-factory caller.
@@ -495,6 +508,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         Structs.KeyParam[] memory _keys,
         Structs.ModuleInstall[] memory _modules
     ) private returns (address) {
+        require(beacon.code.length != 0, Errors.BeaconNotInitialized());
         bytes memory initData = abi.encodeCall(Identity.initialize, (_identityType, _keys, _modules));
         bytes memory bytecode = abi.encodePacked(type(BeaconProxy).creationCode, abi.encode(beacon, initData));
 
