@@ -271,6 +271,37 @@ contract SmartAccountTest is OnchainIDSetup {
         aliceIdentity.addKey(newKey, KeyPurposes.MANAGEMENT, KeyTypes.ECDSA);
     }
 
+    /// @notice A MANAGEMENT-purpose module cannot use its onUninstall callback to grant itself a
+    ///         key. The account strips the module's purposes before running onUninstall, so by the
+    ///         time the callback re-enters addKey the module holds no MANAGEMENT and the grant fails.
+    ///         (The base runs onUninstall best-effort, so the uninstall itself still completes; the
+    ///         property that matters is that the evil key is never written.)
+    function test_uninstallModule_reentrantOnUninstall_cannotGrantKey() public {
+        ReentrantUninstaller evil = new ReentrantUninstaller();
+
+        // Install as an executor holding MANAGEMENT (the dangerous shape KAM has).
+        vm.startPrank(alice);
+        aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(evil), "");
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(evil))),
+            KeyPurposes.MANAGEMENT,
+            KeyTypes.MODULE,
+            abi.encodePacked(address(evil)),
+            ""
+        );
+
+        aliceIdentity.uninstallModule(MODULE_TYPE_EXECUTOR, address(evil), "");
+        vm.stopPrank();
+
+        // The attacker key was never granted: the re-entrant addKeyWithData ran without MANAGEMENT.
+        (,, bytes32 storedEvil) = IERC734(address(aliceIdentity)).getKey(evil.evilKey());
+        assertEq(storedEvil, bytes32(0), "re-entrant onUninstall must not grant a key");
+
+        // And the module's own MANAGEMENT key is gone.
+        (,, bytes32 storedModule) = IERC734(address(aliceIdentity)).getKey(keccak256(abi.encodePacked(address(evil))));
+        assertEq(storedModule, bytes32(0), "uninstalled module keeps no MANAGEMENT");
+    }
+
     /// How you upgrade a module with ERC 7579. Uninstall the old one, install the new one.
     function test_uninstallModule_then_reinstall_upgradePath() public {
         MockStockECDSAValidator v1 = new MockStockECDSAValidator();
@@ -817,6 +848,51 @@ contract Counter {
 
     function increment() external {
         count++;
+    }
+
+}
+
+/// @notice Interface fragment for the account's `addKeyWithData` (defined on KeyManager, not IERC734).
+interface IAddKeyWithData {
+
+    function addKeyWithData(
+        bytes32 key,
+        uint256 purpose,
+        uint256 keyType,
+        bytes memory signerData,
+        bytes memory clientData
+    ) external;
+
+}
+
+/// @notice Malicious executor that, during its own onUninstall, tries to register a fresh attacker
+///         key with MANAGEMENT. If the account still leaves this module holding MANAGEMENT when it
+///         runs onUninstall, the grant lands. Stripping the module's purposes first blocks it.
+contract ReentrantUninstaller is IERC7579Module {
+
+    address public constant ATTACKER = address(0xBADBEEF);
+
+    function evilKey() external pure returns (bytes32) {
+        return keccak256(abi.encodePacked(ATTACKER));
+    }
+
+    function isModuleType(uint256 moduleTypeId) external pure returns (bool) {
+        return moduleTypeId == MODULE_TYPE_EXECUTOR;
+    }
+
+    function onInstall(bytes calldata) external pure { }
+
+    function onUninstall(bytes calldata) external {
+        // msg.sender is the account. addKeyWithData carries the signer bytes, so it actually
+        // registers a usable key — gated by MANAGEMENT on the account (which this module held).
+        IAddKeyWithData(msg.sender)
+            .addKeyWithData(
+                keccak256(abi.encodePacked(ATTACKER)),
+                KeyPurposes.MANAGEMENT,
+                KeyTypes.ECDSA,
+                abi.encodePacked(ATTACKER),
+                ""
+            );
     }
 
 }

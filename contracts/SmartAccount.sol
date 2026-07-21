@@ -61,27 +61,26 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         _uninstallModule(moduleTypeId, module, deInitData);
     }
 
-    /// @dev Runs the base uninstall, then strips every ERC-734 purpose held by the
-    ///      module's address so a reinstall doesn't keep old rights. Purposes are read from,
-    ///      and removed on, the enshrined registry module (self-calls).
+    /// @dev Strips every ERC-734 purpose the module holds, then runs the base uninstall.
+    ///      Purposes are read from, and removed on, the enshrined registry module (self-calls).
     function _uninstallModule(uint256 moduleTypeId, address module, bytes memory deInitData) internal virtual override {
-        // Base uninstall (calls module's onUninstall).
-        super._uninstallModule(moduleTypeId, module, deInitData);
-
-        // Look up the module's key entry on the registry module.
+        // Take away the module's ERC-734 purposes first, then run the base uninstall (which calls
+        // the module's onUninstall). Order matters: a module that still holds MANAGEMENT could use
+        // its onUninstall callback to grant itself keys. Stripping first closes that window.
         bytes32 moduleKey = hashAddress(module);
         ERC734Validator registry = ERC734Validator(_registryModule());
 
-        // No key record for this module address → nothing to clean up.
+        // Drop each purpose the module holds. Snapshot first, since the set shrinks as we remove.
+        // At most the 6 ERC-734 purposes, so the loop is cheap. Skip if the module had no key.
         (bytes memory signerData,) = registry.getKeyData(address(this), moduleKey);
-        if (signerData.length == 0) return;
-
-        // Bounded to the 6 ERC-734 purposes, so this loop is cheap. Snapshot before iterating,
-        // since the set mutates during removal.
-        uint256[] memory purposes = registry.getKeyPurposes(address(this), moduleKey);
-        for (uint256 i = 0; i < purposes.length; i++) {
-            _removeKeyPurpose(moduleKey, purposes[i]);
+        if (signerData.length != 0) {
+            uint256[] memory purposes = registry.getKeyPurposes(address(this), moduleKey);
+            for (uint256 i = 0; i < purposes.length; i++) {
+                _removeKeyPurpose(moduleKey, purposes[i]);
+            }
         }
+
+        super._uninstallModule(moduleTypeId, module, deInitData);
     }
 
     /// @notice The one place every dispatched call is authorized. Both `execute` (user ops and
