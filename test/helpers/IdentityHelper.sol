@@ -51,25 +51,18 @@ library IdentityHelper {
     ///        AccessManager).
     /// @return setup Struct containing all deployed contracts
     function deployFactory(address managementKey) internal returns (OnchainIDSetup memory setup) {
-        // KeyApprovalModule depends on nothing else, so it can go first. The signature
-        // validator also holds the ERC-735 claim registry (keys and claims live in one
-        // module) and its constructor now takes the factory + reputation registry for the
-        // trusted-issuer addClaim path, so it is deployed after those exist (below).
+        // Linear order — each contract only needs addresses that already exist:
+        // KAM (no deps) -> AM -> factory (no beacon yet) -> reputation registry (needs the
+        // factory) -> validator (needs factory + registry) -> Identity impl (the validator is
+        // its enshrined registry immutable) -> beacon -> factory.setBeacon.
         setup.keyApprovalModule = new KeyApprovalModule();
-
-        // Identity implementation + beacon + AccessManager + factory. The factory needs
-        // the AccessManager; nothing later in this function reaches back into the factory
-        // for state, so this ordering is the minimum-coupling shape.
-        setup.identityImplementation = new Identity(false);
-        setup.beacon = new UpgradeableBeacon(address(setup.identityImplementation), managementKey);
         setup.accessManager = new AccessManager(managementKey);
-        setup.idFactory = new IdentityFactory(address(setup.beacon), address(setup.accessManager));
-
-        // Reputation registry needs the factory (for the lazy default-tier fallback
-        // factory-membership check). The merged ERC734Validator (the claims module) needs
-        // both the factory and registry for the trusted-issuer addClaim path.
+        setup.idFactory = new IdentityFactory(address(setup.accessManager));
         setup.reputationRegistry = new ReputationRegistry(address(setup.accessManager), address(setup.idFactory));
         setup.signatureValidator = new ERC734Validator(address(setup.idFactory), address(setup.reputationRegistry));
+        setup.identityImplementation = new Identity(address(setup.signatureValidator));
+        setup.beacon = new UpgradeableBeacon(address(setup.identityImplementation), managementKey);
+        setup.idFactory.setBeacon(address(setup.beacon));
 
         // Register every standard type with PUBLIC_ROLE and selfDeployable = true for
         // a permissive test default.
@@ -234,18 +227,19 @@ library IdentityHelper {
         internal
         returns (Identity identity, ERC734Validator signatureValidator)
     {
-        Identity impl = new Identity(false);
-        UpgradeableBeacon b = new UpgradeableBeacon(address(impl), initialManagementKey);
-
         // Minimal AccessManager + IdentityFactory + ReputationRegistry so the merged
         // ERC734Validator constructor has real addresses to bind to. These identities
         // do not exercise the trusted-issuer path, so the addresses can be local
         // throwaways. They are real contracts so the constructor's zero-address checks pass.
+        // The local factory never deploys proxies here (the proxy is deployed directly
+        // below), so its beacon is left unset.
         AccessManager am = new AccessManager(initialManagementKey);
-        IdentityFactory localFactory = new IdentityFactory(address(b), address(am));
+        IdentityFactory localFactory = new IdentityFactory(address(am));
         ReputationRegistry localRegistry = new ReputationRegistry(address(am), address(localFactory));
 
         signatureValidator = new ERC734Validator(address(localFactory), address(localRegistry));
+        Identity impl = new Identity(address(signatureValidator));
+        UpgradeableBeacon b = new UpgradeableBeacon(address(impl), initialManagementKey);
         // The validator also holds the claim registry, so the claim fallbacks point at it too.
         address claimsModule = address(signatureValidator);
 

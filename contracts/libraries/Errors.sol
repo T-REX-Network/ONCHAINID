@@ -157,9 +157,11 @@ library Errors {
 
     /* ----- Identity ----- */
 
-    /// @notice A key/registry entry point was called before the identity was initialized (for
-    ///         example, a direct call to the implementation contract).
-    error IdentityNotInitialized();
+    /// @notice {IdentityFactory.setBeacon} was called but the beacon is already wired.
+    error BeaconAlreadySet();
+
+    /// @notice Identity deployment was attempted before {IdentityFactory.setBeacon} wired the beacon.
+    error BeaconNotSet();
 
     /// @notice The sender does not have the management key.
     error SenderDoesNotHaveManagementKey();

@@ -17,9 +17,9 @@ contract InitTest is OnchainIDSetup {
     }
 
     function test_revert_whenInitializingLibraryDirectly() public {
-        // The library implementation is constructed with `_disableInitializers()`, so any
-        // call to `initialize` on it reverts via OZ's `Initializable` slot.
-        Identity libraryImpl = new Identity(true);
+        // Every implementation locks its own `Initializable` slot in the constructor, so any
+        // call to `initialize` on it (rather than on a proxy) reverts.
+        Identity libraryImpl = new Identity(address(onchainidSetup.signatureValidator));
         vm.expectRevert(Initializable.InvalidInitialization.selector);
         libraryImpl.initialize(IdentityTypes.INDIVIDUAL, new Structs.KeyParam[](0), new Structs.ModuleInstall[](0));
     }
@@ -30,12 +30,12 @@ contract InitTest is OnchainIDSetup {
     }
 
     function test_revert_whenCallingLibraryImplementationDirectly() public {
-        Identity libraryImpl = new Identity(true);
+        Identity libraryImpl = new Identity(address(onchainidSetup.signatureValidator));
 
-        // The implementation is never initialized, so its registry module is unset and the write
-        // entry points revert as not-initialized.
+        // The implementation's registry (keyed by its own address in the validator) holds no
+        // keys, so nobody passes the MANAGEMENT gate on the write entry points.
         vm.prank(deployer);
-        vm.expectRevert(Errors.IdentityNotInitialized.selector);
+        vm.expectRevert(Errors.SenderDoesNotHaveManagementKey.selector);
         libraryImpl.addKey(keccak256(abi.encodePacked(alice)), 1, 1);
     }
 

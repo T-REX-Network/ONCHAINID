@@ -21,8 +21,10 @@ import { ERC165 } from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
  *      module (which holds both the key and claim registries) reached through this account's
  *      ERC-7579 fallback handler.
  *
+ *      The key registry lives in the enshrined {ERC734Validator}, whose address is an immutable
+ *      set at implementation deploy time — every identity behind the beacon shares it.
+ *
  *      Storage layout uses ERC-7201 namespaced slots:
- *        - `onchainid.keymanager.storage`     — keys (from KeyManager)
  *        - `onchainid.identity.metadata`      — `identityType`, queried by anyone via {getIdentityType}
  *        - `onchainid.accountERC7579.storage` — installed modules (from OZ)
  *
@@ -63,17 +65,21 @@ contract Identity is Initializable, SmartAccount, ERC165 {
     bytes32 internal constant _IDENTITY_METADATA_SLOT =
         keccak256(abi.encode(uint256(keccak256(bytes("onchainid.identity.metadata"))) - 1)) & ~bytes32(uint256(0xff));
 
+    /// @notice The enshrined ERC-734 registry module (the merged {ERC734Validator}). Fixed at
+    ///         implementation deploy time; every identity behind the beacon shares it. Changing
+    ///         the registry means deploying a new implementation and upgrading the beacon.
+    address public immutable registryModule;
+
     /**
      * @notice Constructor of the Identity contract.
-     * @param _isLibrary True when deploying the implementation contract behind a proxy. In that
-     *        case we lock the OZ `Initializable` slot via `_disableInitializers()` so the
-     *        implementation can never be initialized directly; only proxies (which run the
-     *        constructor in their own context with `_isLibrary == false`) can initialize.
+     * @param registryModuleAddress The {ERC734Validator} that holds the key and claim registries.
+     * @dev The implementation is only ever used behind a BeaconProxy, so its own `Initializable`
+     *      slot is locked here; proxies keep their storage untouched and can initialize.
      */
-    constructor(bool _isLibrary) EIP712("OnchainID", "1") {
-        if (_isLibrary) {
-            _disableInitializers();
-        }
+    constructor(address registryModuleAddress) EIP712("OnchainID", "1") {
+        require(registryModuleAddress != address(0), Errors.ZeroAddress());
+        registryModule = registryModuleAddress;
+        _disableInitializers();
     }
 
     /**
@@ -96,26 +102,15 @@ contract Identity is Initializable, SmartAccount, ERC165 {
         _getIdentityMetadata().identityType = _identityType;
         __AccountERC7579_init();
 
-        // Install modules FIRST. The validator that holds the key registry must be installed and
-        // enshrined before any key is seeded, because keys now live in that module (a self-call).
-        // The validator's `onInstall(initData)` seeds the first MANAGEMENT key, so the registry is
-        // usable the moment it is enshrined. Module install entries with a non-zero purpose grant
-        // the module address a MODULE-type key with that purpose (e.g. the KeyApprovalModule
-        // executor gets MANAGEMENT so it can dispatch self-targeted calls).
+        // Install the supplied modules. The enshrined registry module is an immutable, so keys
+        // can be written in any order relative to the installs. Module install entries with a
+        // non-zero purpose grant the module address a MODULE-type key with that purpose (e.g.
+        // the KeyApprovalModule executor gets MANAGEMENT so it can dispatch self-targeted calls).
         for (uint256 i = 0; i < _modules.length; i++) {
             _installModule(_modules[i].moduleType, _modules[i].module, _modules[i].initData);
 
-            if (_modules[i].moduleType == MODULE_TYPE_VALIDATOR) {
-                // Enshrine the first validator seen as the account's registry module (set-once).
-                _enshrineRegistryModule(_modules[i].module);
-            }
-        }
-
-        // Grant module-purpose keys through the enshrined module, after it exists. Kept in a second
-        // pass so the registry module is already set when the first grant runs.
-        for (uint256 i = 0; i < _modules.length; i++) {
             if (_modules[i].purpose != 0) {
-                ERC734Validator(_registryModule())
+                ERC734Validator(registryModule)
                     .addKey(abi.encodePacked(_modules[i].module), "", _modules[i].purpose, KeyTypes.MODULE);
             }
         }
@@ -123,10 +118,16 @@ contract Identity is Initializable, SmartAccount, ERC165 {
         // Seed the caller-supplied keys into the enshrined registry module.
         for (uint256 i = 0; i < _keys.length; i++) {
             Structs.KeyParam calldata key = _keys[i];
-            ERC734Validator(_registryModule()).addKey(key.signerData, key.clientData, key.purpose, key.keyType);
+            ERC734Validator(registryModule).addKey(key.signerData, key.clientData, key.purpose, key.keyType);
         }
 
         emit IdentityInitialized(_identityType);
+    }
+
+    /// @dev Backs every registry read and write in {KeyManager} / {SmartAccount} with the
+    ///      immutable, so the auth hot path costs no storage access.
+    function _registryModule() internal view override returns (address) {
+        return registryModule;
     }
 
     /// @dev True when `modules` contains at least one validator or executor entry.

@@ -9,39 +9,21 @@ import { ERC734Validator } from "./modules/validators/ERC734Validator.sol";
 /**
  * @title KeyManager
  * @notice Thin ERC-734 bootstrap facade for an identity. It keeps the `onlyManagerOrSelf` gate and
- *         the ERC-734 write entry points, but no longer owns any local key storage.
+ *         the ERC-734 write entry points, but owns no storage at all.
  *
  * @dev The canonical key registry lives in the enshrined {ERC734Validator} module. This contract:
  *      - reads MANAGEMENT membership for {onlyManagerOrSelf} via a staticcall to the enshrined module;
  *      - forwards ERC-734 key writes (`addKey`, `addKeyWithData`, `removeKey`) to the module as
- *        self-calls;
- *      - keeps its ERC-7201 storage slot only for the enshrined `registryModule` address.
+ *        self-calls.
+ *
+ *      The module address comes from {_registryModule}, implemented by the concrete account
+ *      ({Identity}) as an immutable fixed at implementation deploy time.
  *
  *      The ERC-734 *getter* selectors (`getKey`, `getKeyPurposes`, `getKeysByPurpose`,
  *      `keyHasPurpose`) are served by the account's ERC-7579 fallback, which routes them to the
  *      enshrined module. They are intentionally not implemented here.
- *
- * @custom:security This contract uses ERC-7201 storage slots to prevent storage collision
- *                  attacks in upgradeable contracts.
  */
-contract KeyManager {
-
-    /**
-     * @dev Storage struct for the key-manager bootstrap facade.
-     * @custom:storage-location erc7201:onchainid.keymanager.storage
-     */
-    struct KeyStorage {
-        /// @dev The enshrined ERC-734 registry module (the merged {ERC734Validator}). Set once,
-        ///      during {Identity.initialize}, and read by every `onlyManagerOrSelf`-gated call and by
-        ///      the ERC-734 write forwarders. Zero until the identity is initialized.
-        address registryModule;
-    }
-
-    /// @dev ERC-7201 storage slot. Kept identical to the pre-refactor slot to avoid
-    ///      reshuffling storage on existing deployments.
-    bytes32 internal constant _KEY_STORAGE_SLOT = keccak256(
-        abi.encode(uint256(keccak256(bytes("onchainid.keymanager.storage"))) - 1)
-    ) & ~bytes32(uint256(0xff));
+abstract contract KeyManager {
 
     /// @notice Requires a MANAGEMENT key, or an internal self-call (`msg.sender == address(this)`).
     modifier onlyManagerOrSelf() {
@@ -127,34 +109,13 @@ contract KeyManager {
         ERC734Validator(_registryModule()).addKey(_signerData, _clientData, _purpose, _type);
     }
 
-    /// @dev The enshrined registry module. Reverts if the identity has not been initialized yet
-    ///      (e.g. a direct call to the implementation), which also guards the write entry points.
-    function _registryModule() internal view returns (address module) {
-        module = _getKeyStorage().registryModule;
-        require(module != address(0), Errors.IdentityNotInitialized());
-    }
-
-    /// @dev Set-once enshrine of the registry module. Called from {Identity.initialize} once the
-    ///      validator that holds the registry has been installed (its `onInstall` seeded the first
-    ///      MANAGEMENT key). Reverts if already set, or if `module` is the zero address.
-    function _enshrineRegistryModule(address module) internal {
-        KeyStorage storage ks = _getKeyStorage();
-        require(module != address(0), Errors.ZeroAddress());
-        require(ks.registryModule == address(0), Errors.IdentityNoValidatorOrExecutor());
-        ks.registryModule = module;
-    }
+    /// @dev The enshrined registry module. Implemented by the concrete account ({Identity}) as an
+    ///      immutable, so reading it costs no storage access.
+    function _registryModule() internal view virtual returns (address);
 
     /// @dev MANAGEMENT / purpose read for the account itself, backed by the enshrined module.
     function _moduleKeyHasPurpose(bytes32 keyHash, uint256 purpose) internal view returns (bool) {
         return ERC734Validator(_registryModule()).keyHasPurpose(address(this), keyHash, purpose);
-    }
-
-    function _getKeyStorage() internal pure returns (KeyStorage storage s) {
-        bytes32 slot = _KEY_STORAGE_SLOT;
-        // solhint-disable-next-line no-inline-assembly
-        assembly ("memory-safe") {
-            s.slot := slot
-        }
     }
 
 }

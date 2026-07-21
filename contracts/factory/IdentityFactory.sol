@@ -50,7 +50,11 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
 
     /// @notice OZ UpgradeableBeacon that every BeaconProxy delegates to. Its owner
     ///         should be the AccessManager so upgrades go through the same role gating.
-    address public immutable beacon;
+    /// @dev Wired once via {setBeacon} after deployment, because the beacon can only exist
+    ///      after this factory does: the beacon needs the Identity implementation, which
+    ///      needs the enshrined {ERC734Validator}, which needs this factory's address.
+    ///      Identity deployment reverts until the beacon is set.
+    address public beacon;
 
     /// @dev One slot per wallet, keyed by keccak256(signer bytes). identity stays set
     ///      after revoke (sticky binding). record is written once for getAccounts()
@@ -110,16 +114,17 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         }
     }
 
-    /// @param beaconAddress OZ UpgradeableBeacon every deployed proxy delegates to.
     /// @param initialAuthority AccessManager that backs every `restricted` function here.
-    constructor(address beaconAddress, address initialAuthority)
-        AccessManaged(initialAuthority)
-        EIP712("IdentityFactory", "1")
-    {
-        require(beaconAddress != address(0), Errors.ZeroAddress());
+    constructor(address initialAuthority) AccessManaged(initialAuthority) EIP712("IdentityFactory", "1") {
         require(initialAuthority != address(0), Errors.ZeroAddress());
+    }
 
+    /// @inheritdoc IIdentityFactory
+    function setBeacon(address beaconAddress) external restricted {
+        require(beaconAddress != address(0), Errors.ZeroAddress());
+        require(beacon == address(0), Errors.BeaconAlreadySet());
         beacon = beaconAddress;
+        emit BeaconSet(beaconAddress);
     }
 
     /// @inheritdoc IIdentityFactory
@@ -493,6 +498,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         Structs.KeyParam[] memory _keys,
         Structs.ModuleInstall[] memory _modules
     ) private returns (address) {
+        require(beacon != address(0), Errors.BeaconNotSet());
         bytes memory initData = abi.encodeCall(Identity.initialize, (_identityType, _keys, _modules));
         bytes memory bytecode = abi.encodePacked(type(BeaconProxy).creationCode, abi.encode(beacon, initData));
 

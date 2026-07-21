@@ -140,7 +140,46 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
     function test_revertBecauseAuthorityIsZeroAddress() public {
         vm.expectRevert(Errors.ZeroAddress.selector);
-        new IdentityFactory(address(0), address(onchainidSetup.accessManager));
+        new IdentityFactory(address(0));
+    }
+
+    // ============ setBeacon ============
+
+    function test_setBeacon_revertWhenAlreadySet() public {
+        vm.prank(deployer);
+        vm.expectRevert(Errors.BeaconAlreadySet.selector);
+        onchainidSetup.idFactory.setBeacon(address(onchainidSetup.beacon));
+    }
+
+    function test_setBeacon_revertForZeroAddress() public {
+        AccessManager am = new AccessManager(deployer);
+        IdentityFactory freshFactory = new IdentityFactory(address(am));
+
+        vm.prank(deployer);
+        vm.expectRevert(Errors.ZeroAddress.selector);
+        freshFactory.setBeacon(address(0));
+    }
+
+    function test_setBeacon_revertForUnauthorizedCaller() public {
+        AccessManager am = new AccessManager(deployer);
+        IdentityFactory freshFactory = new IdentityFactory(address(am));
+
+        vm.prank(alice);
+        vm.expectRevert();
+        freshFactory.setBeacon(address(onchainidSetup.beacon));
+    }
+
+    function test_createIdentity_revertWhenBeaconNotSet() public {
+        AccessManager am = new AccessManager(deployer);
+        IdentityFactory freshFactory = new IdentityFactory(address(am));
+        vm.prank(deployer);
+        freshFactory.setIdentityTypePolicy(IdentityTypes.INDIVIDUAL, type(uint64).max, true);
+
+        vm.prank(david);
+        vm.expectRevert(Errors.BeaconNotSet.selector);
+        freshFactory.createIdentity(
+            IdentityTypes.INDIVIDUAL, "noBeaconSalt", _makeSingleMgmtKeys(david), _defaultModules()
+        );
     }
 
     // ============ Per-identity-type gating ============
@@ -956,7 +995,9 @@ contract IdentityFactoryTest is OnchainIDSetup {
         UpgradeableBeacon badBeacon = new UpgradeableBeacon(address(revertingImpl), deployer);
 
         AccessManager am = new AccessManager(deployer);
-        IdentityFactory badFactory = new IdentityFactory(address(badBeacon), address(am));
+        IdentityFactory badFactory = new IdentityFactory(address(am));
+        vm.prank(deployer);
+        badFactory.setBeacon(address(badBeacon));
 
         // deployer is AM admin — bypasses the `restricted` gate on createIdentityFor.
         vm.prank(deployer);

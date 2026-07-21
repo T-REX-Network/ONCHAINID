@@ -78,6 +78,15 @@ interface IIdentityFactory {
     /// @notice Emitted when admin adds or removes an authorized ERC-7786 gateway.
     event TrustedGatewaySet(address indexed gateway, bool trusted);
 
+    /// @notice Emitted when the beacon is wired via {setBeacon}.
+    event BeaconSet(address indexed beacon);
+
+    /// @notice Wires the UpgradeableBeacon every deployed proxy delegates to. Set-once:
+    ///         the beacon can only exist after this factory does (it needs the Identity
+    ///         implementation, which needs the enshrined validator, which needs this
+    ///         factory's address), so it is wired right after deployment. Restricted.
+    function setBeacon(address beaconAddress) external;
+
     /// @notice Self-deploy. Caller is the account being deployed for and is auto-linked
     ///         as the new identity's first wallet. Gated per type by `selfDeployable`:
     ///         contract-shaped types like ASSET / SMART_CONTRACT opt out because the
