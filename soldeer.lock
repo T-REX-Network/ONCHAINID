@@ -1,16 +1,14 @@
 [[dependencies]]
 name = "@openzeppelin-contracts"
-version = "5.6.0"
-url = "https://soldeer-revisions.s3.amazonaws.com/@openzeppelin-contracts/5_6_0_27-02-2026_07:51:53_contracts.zip"
-checksum = "abed7c3e54d86ad85fb4b349498b80d282ad52c085ec6ae970bd3f5fc54ed4f2"
-integrity = "64d33d721fa88f564c134f9049cccbd4996aec6a109e4b33a415cc0fece75d83"
+version = "5.7.0-rc.0"
+git = "https://github.com/OpenZeppelin/openzeppelin-contracts.git"
+rev = "2d59c17d9f9ffac7ae721f8eb29aa9544daf558f"
 
 [[dependencies]]
 name = "@openzeppelin-contracts-upgradeable"
-version = "5.6.0"
-url = "https://soldeer-revisions.s3.amazonaws.com/@openzeppelin-contracts-upgradeable/5_6_0_27-02-2026_07:52:01_contracts-upgradeable.zip"
-checksum = "9cb4f3f6d82682588f793dd32e43962d3e2f1c017f9291f11236567364bcf7f8"
-integrity = "2f539b6241258fc3c127c97225b3cb1b5e9225e422d2c1cb233c52a6f5c29002"
+version = "5.7.0-rc.0"
+git = "https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable.git"
+rev = "c2462606bc1322a80d742159b2ff2728b5f76ecd"
 
 [[dependencies]]
 name = "forge-std"
