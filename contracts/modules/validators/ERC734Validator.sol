@@ -29,6 +29,7 @@ import { Errors } from "../../libraries/Errors.sol";
 import { hashAddress } from "../../libraries/Hashing.sol";
 import { IdentityTypes } from "../../libraries/IdentityTypes.sol";
 import { KeyPurposes } from "../../libraries/KeyPurposes.sol";
+import { KeyTypes } from "../../libraries/KeyTypes.sol";
 import { IReputationRegistry } from "../../reputation/IReputationRegistry.sol";
 import { Structs } from "../../storage/Structs.sol";
 import { ERC7579Validator } from "./ERC7579Validator.sol";
@@ -346,8 +347,14 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         returns (bool)
     {
         (bytes memory signer, bytes memory signature) = abi.decode(moduleSignature, (bytes, bytes));
-        // A too-short signer can't be in `allKeys`, so membership alone rejects it.
-        return _store().registries[account].allKeys.contains(keccak256(signer)) && _verify(signer, hash, signature);
+        bytes32 keyHash = keccak256(signer);
+        AccountRegistry storage registry = _store().registries[account];
+
+        // The signer must be a registered key (a too-short signer can't be in `allKeys`), and it
+        // must not be a MODULE key: those belong to installed modules (like KAM) and only gate what
+        // a module can do, so they must never sign a user op or a 1271 signature. Then verify.
+        return registry.allKeys.contains(keyHash) && registry.keys[keyHash].keyType != KeyTypes.MODULE
+            && _verify(signer, hash, signature);
     }
 
     /// @dev ERC-1271. Only a key that can act for the account may sign as the account. We require
@@ -596,6 +603,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         Structs.ClaimData memory data,
         string memory uri
     ) internal returns (bytes32 claimId) {
+        // removeClaim reads a claim's topic and treats 0 as "no such claim". So a claim stored
+        // under topic 0 could never be removed. Reject it up front.
+        require(topic != 0, Errors.InvalidClaimTopic());
         require(IClaimIssuer(issuer).isClaimValid(IIdentity(account), topic, signature, data), Errors.InvalidClaim());
 
         AccountRegistry storage s = _store().registries[account];
