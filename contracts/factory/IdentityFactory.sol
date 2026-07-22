@@ -20,8 +20,9 @@ import { IIdentity } from "../interface/IIdentity.sol";
 import { Errors } from "../libraries/Errors.sol";
 import { IdentityTypes } from "../libraries/IdentityTypes.sol";
 import { KeyPurposes } from "../libraries/KeyPurposes.sol";
+import { Create3 } from "@openzeppelin/contracts/utils/Create3.sol";
+
 import { Structs } from "../storage/Structs.sol";
-import { Create3 } from "../vendor/utils/Create3.sol";
 import { IIdentityFactory } from "./IIdentityFactory.sol";
 
 /// @title IdentityFactory
