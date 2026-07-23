@@ -330,9 +330,9 @@ contract SmartAccountTest is OnchainIDSetup {
     // -----------------------------------------------------------------------
 
     /// @notice An executor whose key holds CLAIM_SIGNER CANNOT dispatch `addClaim` on self.
-    ///         The self-call exemption in `_requireClaimKey` was removed (H-04), so the module
-    ///         enforces purpose checks against the calldata-tail caller — which is the account
-    ///         itself in the executor flow, and the account does not hold a CLAIM_SIGNER key.
+    ///         There is no self-call exemption in `_requireClaimKey`, so the module enforces the
+    ///         purpose check against the calldata-tail caller — which is the account itself in the
+    ///         executor flow, and the account does not hold a CLAIM_SIGNER key.
     function test_executeFromExecutor_claimSignerExecutor_cannotAddClaimOnSelf() public {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
@@ -411,8 +411,8 @@ contract SmartAccountTest is OnchainIDSetup {
     }
 
     /// @notice An executor whose key holds CLAIM_ADDER CANNOT dispatch `addClaim` on self.
-    ///         Same reason as the CLAIM_SIGNER variants — H-04 removed the self-call exemption,
-    ///         so the account being the calldata-tail caller no longer skips the purpose check.
+    ///         Same reason as the CLAIM_SIGNER variants — there is no self-call exemption, so the
+    ///         account being the calldata-tail caller does not skip the purpose check.
     function test_executeFromExecutor_claimAdderExecutor_cannotAddClaimOnSelf() public {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);

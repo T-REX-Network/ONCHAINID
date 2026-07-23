@@ -12,6 +12,7 @@ import {
     MODULE_TYPE_VALIDATOR
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { IERC734 } from "contracts/interface/IERC734.sol";
+import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
@@ -123,6 +124,30 @@ contract PrivilegedReentryGuardTest is OnchainIDSetup {
         assertFalse(
             validator.keyHasPurpose(address(aliceIdentity), _davidKey(), KeyPurposes.MANAGEMENT),
             "forged-tail escalation must be blocked"
+        );
+    }
+
+    /// @notice An ACTION key routes the queue module's legacy `IKeyExecutor.execute` at the
+    ///         registry module to run `addKey(david, MANAGEMENT)`. KAM auto-approves it (external
+    ///         target + ACTION) and dispatches through `executeFromExecutor`, but the account's
+    ///         own-module guard rejects the registry (an installed executor) as a target, so no
+    ///         MANAGEMENT key is granted.
+    function test_actionKey_cannotEscalate_viaLegacyExecuteAtRegistry() public {
+        assertTrue(validator.keyHasPurpose(address(aliceIdentity), _davidKey(), KeyPurposes.ACTION), "david is ACTION");
+
+        bytes memory addMgmt = abi.encodeCall(
+            ERC734Validator.addKey, (abi.encodePacked(david), "", KeyPurposes.MANAGEMENT, KeyTypes.ECDSA)
+        );
+
+        // david calls the identity's legacy execute (served by KAM via fallback), targeting the
+        // registry module directly. KAM queues and auto-approves; the dispatch reverts inside the
+        // account, so the try/catch in KAM marks it failed and no key is written.
+        vm.prank(david);
+        IKeyExecutor(address(aliceIdentity)).execute(address(validator), 0, addMgmt);
+
+        assertFalse(
+            validator.keyHasPurpose(address(aliceIdentity), _davidKey(), KeyPurposes.MANAGEMENT),
+            "david must not have escalated to MANAGEMENT via the legacy execute path"
         );
     }
 
