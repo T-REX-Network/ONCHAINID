@@ -100,8 +100,8 @@ contract DeployOnchainID is Script {
 
         // 8. UpgradeableBeacon for identity proxies, deployed by the factory at its
         //    predetermined CREATE3 slot (already committed as the factory's `beacon`
-        //    immutable) and owned by the AccessManager so upgrades go through role
-        //    gating. Deployer is still the AM admin at this point.
+        //    immutable) and owned by the factory itself. Upgrades run through
+        //    `idFactory.upgradeBeacon`, gated by the factory's current authority.
         idFactory.initializeBeacon(address(identityImpl));
         console.log("Beacon:", idFactory.beacon());
 

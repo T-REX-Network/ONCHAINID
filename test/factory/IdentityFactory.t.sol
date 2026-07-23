@@ -147,11 +147,58 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
     function test_initializeBeacon_deploysAtCommittedSlot() public view {
         // The setup factory's beacon lives at the address committed in the constructor,
-        // points at the Identity implementation and is owned by the AccessManager.
+        // points at the Identity implementation and is owned by the factory itself.
         UpgradeableBeacon b = UpgradeableBeacon(onchainidSetup.idFactory.beacon());
         assertGt(address(b).code.length, 0, "beacon deployed at the committed slot");
         assertEq(b.implementation(), address(onchainidSetup.identityImplementation), "beacon points at the impl");
-        assertEq(b.owner(), address(onchainidSetup.accessManager), "beacon owned by the AccessManager");
+        assertEq(b.owner(), address(onchainidSetup.idFactory), "beacon owned by the factory");
+    }
+
+    // ============ upgradeBeacon ============
+
+    function test_upgradeBeacon_byAuthorizedCaller() public {
+        Identity newImpl = new Identity(address(onchainidSetup.signatureValidator));
+        vm.prank(deployer);
+        onchainidSetup.idFactory.upgradeBeacon(address(newImpl));
+        assertEq(
+            UpgradeableBeacon(onchainidSetup.idFactory.beacon()).implementation(),
+            address(newImpl),
+            "beacon points at the new impl"
+        );
+    }
+
+    function test_upgradeBeacon_revertForUnauthorizedCaller() public {
+        Identity newImpl = new Identity(address(onchainidSetup.signatureValidator));
+        vm.prank(alice);
+        vm.expectRevert();
+        onchainidSetup.idFactory.upgradeBeacon(address(newImpl));
+    }
+
+    function test_upgradeBeacon_revertForZeroImplementation() public {
+        vm.prank(deployer);
+        vm.expectRevert(Errors.ZeroAddress.selector);
+        onchainidSetup.idFactory.upgradeBeacon(address(0));
+    }
+
+    /// @notice Upgrade rights follow the factory's current authority. After rotating the factory
+    ///         to a new AccessManager, the deployer (admin of the OLD one only) can no longer
+    ///         upgrade. The beacon owner (the factory) never moves, so nothing drifts out of sync.
+    function test_upgradeBeacon_rotatedOutAuthorityCannotUpgrade() public {
+        AccessManager oldAm = onchainidSetup.accessManager;
+        AccessManager newAm = new AccessManager(makeAddr("newAdmin"));
+
+        // Rotate the factory's authority. setAuthority must come from the current authority, so
+        // the old AM admin drives it through the AM (this is the production rotation path).
+        vm.prank(deployer);
+        oldAm.execute(
+            address(onchainidSetup.idFactory), abi.encodeCall(onchainidSetup.idFactory.setAuthority, (address(newAm)))
+        );
+
+        // The deployer no longer governs the factory, so it can't upgrade the beacon anymore.
+        Identity newImpl = new Identity(address(onchainidSetup.signatureValidator));
+        vm.prank(deployer);
+        vm.expectRevert();
+        onchainidSetup.idFactory.upgradeBeacon(address(newImpl));
     }
 
     function test_initializeBeacon_revertWhenAlreadyInitialized() public {

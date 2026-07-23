@@ -81,12 +81,20 @@ interface IIdentityFactory {
     /// @notice Emitted when the beacon is deployed via {initializeBeacon}.
     event BeaconInitialized(address indexed implementation);
 
+    /// @notice Emitted when the beacon implementation is upgraded via {upgradeBeacon}.
+    event BeaconUpgraded(address indexed implementation);
+
     /// @notice One-shot bootstrap: deploys the OZ UpgradeableBeacon at the factory's
     ///         predetermined CREATE3 slot ({beacon}), pointing at `implementation` and
-    ///         owned by the factory's authority. Needed because the beacon can only exist
+    ///         owned by the factory itself. Needed because the beacon can only exist
     ///         after this factory does (it needs the Identity implementation, which needs
     ///         the enshrined validator, which needs this factory's address). Restricted.
     function initializeBeacon(address implementation) external;
+
+    /// @notice Upgrade the implementation every deployed identity delegates to. The factory
+    ///         owns the beacon, so this is the only upgrade path, and it is gated by the
+    ///         factory's current authority. Restricted.
+    function upgradeBeacon(address newImplementation) external;
 
     /// @notice Self-deploy. Caller is the account being deployed for and is auto-linked
     ///         as the new identity's first wallet. Gated per type by `selfDeployable`:
