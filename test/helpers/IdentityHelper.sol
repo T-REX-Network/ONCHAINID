@@ -60,7 +60,7 @@ library IdentityHelper {
         setup.idFactory = new IdentityFactory(address(setup.accessManager));
         setup.reputationRegistry = new ReputationRegistry(address(setup.accessManager), address(setup.idFactory));
         setup.signatureValidator = new ERC734Validator(address(setup.idFactory), address(setup.reputationRegistry));
-        setup.identityImplementation = new Identity(address(setup.signatureValidator));
+        setup.identityImplementation = new Identity(address(setup.signatureValidator), address(setup.idFactory));
         // The factory deploys the beacon at its predetermined CREATE3 slot; its owner is
         // the AccessManager, so upgrades in tests route through `accessManager.execute`.
         setup.idFactory.initializeBeacon(address(setup.identityImplementation));
@@ -240,7 +240,7 @@ library IdentityHelper {
         ReputationRegistry localRegistry = new ReputationRegistry(address(am), address(localFactory));
 
         signatureValidator = new ERC734Validator(address(localFactory), address(localRegistry));
-        Identity impl = new Identity(address(signatureValidator));
+        Identity impl = new Identity(address(signatureValidator), address(localFactory));
         UpgradeableBeacon b = new UpgradeableBeacon(address(impl), initialManagementKey);
         // The validator also holds the claim registry, so the claim fallbacks point at it too.
         address claimsModule = address(signatureValidator);

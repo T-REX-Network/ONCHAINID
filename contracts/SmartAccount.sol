@@ -68,7 +68,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         // the module's onUninstall). Order matters: a module that still holds MANAGEMENT could use
         // its onUninstall callback to grant itself keys. Stripping first closes that window.
         bytes32 moduleKey = hashAddress(module);
-        ERC734Validator registry = ERC734Validator(_registryModule());
+        ERC734Validator registry = ERC734Validator(registryModule());
 
         // Drop each purpose the module holds. Snapshot first, since the set shrinks as we remove.
         // At most the 6 ERC-734 purposes, so the loop is cheap. Skip if the module had no key.
@@ -139,11 +139,18 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         }
     }
 
-    /// @dev The purpose an executor's key needs for a target: self-target needs MANAGEMENT,
-    ///      any other target needs ACTION. MANAGEMENT satisfies every purpose check.
+    /// @dev The purpose an executor's key needs for a target. Self-target and the factory both need
+    ///      MANAGEMENT; any other target needs ACTION. MANAGEMENT satisfies every purpose check.
+    ///      The factory is management-grade because its wallet-binding calls (linkAccount,
+    ///      revokeAccount, confirmCrossChainLink) change the identity's own bindings.
     function _isKeyAuthorizedToCallTarget(bytes32 keyHash, address target) private view returns (bool) {
-        uint256 requiredPurpose = target == address(this) ? KeyPurposes.MANAGEMENT : KeyPurposes.ACTION;
+        bool managementTarget = target == address(this) || target == identityFactory();
+        uint256 requiredPurpose = managementTarget ? KeyPurposes.MANAGEMENT : KeyPurposes.ACTION;
         return _moduleKeyHasPurpose(keyHash, requiredPurpose);
     }
+
+    /// @notice The factory that deployed this identity. Implemented by the concrete account
+    ///         ({Identity}) as an immutable, so it costs no storage access and no module hop.
+    function identityFactory() public view virtual returns (address);
 
 }
