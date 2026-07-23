@@ -3,6 +3,7 @@ pragma solidity ^0.8.27;
 
 import { OnchainIDSetup } from "../../helpers/OnchainIDSetup.sol";
 import { Identity } from "contracts/Identity.sol";
+import { IERC734 } from "contracts/interface/IERC734.sol";
 import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
@@ -140,7 +141,9 @@ contract RecoveryModuleTest is OnchainIDSetup {
         recovery.executeRecovery(address(aliceIdentity), salt, mode, recoveryData);
 
         // Sanity check: the new MANAGEMENT key actually landed.
-        assertTrue(aliceIdentity.keyHasPurpose(keccak256(abi.encodePacked(newOwner)), KeyPurposes.MANAGEMENT));
+        assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(keccak256(abi.encodePacked(newOwner)), KeyPurposes.MANAGEMENT)
+        );
 
         // Everything below this point runs as newOwner. If any of these revert,
         // the "recovered key" isn't actually a full-authority MANAGEMENT key.
@@ -165,7 +168,9 @@ contract RecoveryModuleTest is OnchainIDSetup {
 
         // 3. removeKey on alice's old MANAGEMENT key, the one we're modelling as lost.
         aliceIdentity.removeKey(keccak256(abi.encodePacked(alice)), KeyPurposes.MANAGEMENT);
-        assertFalse(aliceIdentity.keyHasPurpose(keccak256(abi.encodePacked(alice)), KeyPurposes.MANAGEMENT));
+        assertFalse(
+            IERC734(address(aliceIdentity)).keyHasPurpose(keccak256(abi.encodePacked(alice)), KeyPurposes.MANAGEMENT)
+        );
 
         vm.stopPrank();
 
@@ -187,7 +192,10 @@ contract RecoveryModuleTest is OnchainIDSetup {
                     ""
                 )
             );
-        assertTrue(aliceIdentity.keyHasPurpose(keccak256(abi.encodePacked(queuedActionKey)), KeyPurposes.ACTION));
+        assertTrue(
+            IERC734(address(aliceIdentity))
+                .keyHasPurpose(keccak256(abi.encodePacked(queuedActionKey)), KeyPurposes.ACTION)
+        );
     }
 
     /// @notice One signature shouldn't be enough when threshold is 2. Pins this
@@ -397,7 +405,9 @@ contract RecoveryModuleTest is OnchainIDSetup {
         vm.warp(block.timestamp + DELAY);
         heavyRecovery.executeRecovery(address(bobIdentity), salt, mode, recoveryData);
 
-        assertTrue(bobIdentity.keyHasPurpose(keccak256(abi.encodePacked(newOwner)), KeyPurposes.MANAGEMENT));
+        assertTrue(
+            IERC734(address(bobIdentity)).keyHasPurpose(keccak256(abi.encodePacked(newOwner)), KeyPurposes.MANAGEMENT)
+        );
     }
 
     /// @notice The account can cancel a pending recovery on its own, without a

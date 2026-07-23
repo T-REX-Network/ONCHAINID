@@ -10,6 +10,8 @@ optimizer = true
 optimizer_runs = 200
 evm_version = "cancun"
 
+fs_permissions = [{ access = "read", path = "test/vendored" }]
+
 [profile.default.fmt]
 sort_imports = true
 contract_new_lines = true
@@ -27,6 +29,6 @@ remappings_regenerate = false
 
 [dependencies]
 forge-std = { version = "v1.14.0", git = "https://github.com/foundry-rs/forge-std.git", tag = "v1.14.0" }
-"@openzeppelin-contracts" = "5.6.0"
-"@openzeppelin-contracts-upgradeable" = "5.6.0"
+"@openzeppelin-contracts" = { version = "5.7.0-rc.0", git = "https://github.com/OpenZeppelin/openzeppelin-contracts.git", tag = "v5.7.0-rc.0" }
+"@openzeppelin-contracts-upgradeable" = { version = "5.7.0-rc.0", git = "https://github.com/OpenZeppelin/openzeppelin-contracts-upgradeable.git", tag = "v5.7.0-rc.0" }
 "@openzeppelin-accounts" = { version = "0.0.0-e4c2a32a", git = "https://github.com/OpenZeppelin/openzeppelin-accounts.git", rev = "e4c2a32ad7378741a3cc4f2030f7d21d5ac53d28" }

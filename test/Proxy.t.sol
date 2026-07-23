@@ -2,13 +2,14 @@
 pragma solidity ^0.8.27;
 
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
-import { MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import { MODULE_TYPE_FALLBACK, MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { ERC1967Utils } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Utils.sol";
 import { BeaconProxy } from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
 import { UpgradeableBeacon } from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import { Errors as OZErrors } from "@openzeppelin/contracts/utils/Errors.sol";
 
 import { Identity } from "contracts/Identity.sol";
+import { IERC734 } from "contracts/interface/IERC734.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
@@ -33,11 +34,34 @@ contract ProxyTest is OnchainIDSetup {
             clientData: ""
         });
 
-        Structs.ModuleInstall[] memory modules = new Structs.ModuleInstall[](1);
-        modules[0] = Structs.ModuleInstall({
-            moduleType: MODULE_TYPE_VALIDATOR,
-            module: address(onchainidSetup.signatureValidator),
-            initData: "",
+        address validator = address(onchainidSetup.signatureValidator);
+        Structs.ModuleInstall[] memory modules = new Structs.ModuleInstall[](5);
+        // Empty initData: the MANAGEMENT key is seeded from `keys` above, so seeding it again in
+        // the validator's onInstall would collide (KeyAlreadyRegistered).
+        modules[0] =
+            Structs.ModuleInstall({ moduleType: MODULE_TYPE_VALIDATOR, module: validator, initData: "", purpose: 0 });
+        modules[1] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: validator,
+            initData: abi.encodePacked(IERC734.keyHasPurpose.selector),
+            purpose: 0
+        });
+        modules[2] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: validator,
+            initData: abi.encodePacked(IERC734.getKey.selector),
+            purpose: 0
+        });
+        modules[3] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: validator,
+            initData: abi.encodePacked(IERC734.getKeyPurposes.selector),
+            purpose: 0
+        });
+        modules[4] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: validator,
+            initData: abi.encodePacked(IERC734.getKeysByPurpose.selector),
             purpose: 0
         });
 
@@ -63,9 +87,12 @@ contract ProxyTest is OnchainIDSetup {
     }
 
     function test_preventUpdatingToZeroAddress() public {
+        // The beacon is owned by the AccessManager, so the AM admin routes the upgrade
+        // through it; the inner revert bubbles up unchanged.
         vm.prank(deployer);
         vm.expectRevert(abi.encode(UpgradeableBeacon.BeaconInvalidImplementation.selector, address(0)));
-        onchainidSetup.beacon.upgradeTo(address(0));
+        onchainidSetup.accessManager
+            .execute(address(onchainidSetup.beacon), abi.encodeCall(UpgradeableBeacon.upgradeTo, (address(0))));
     }
 
     function test_preventUpdatingWhenNotOwner() public {
@@ -75,7 +102,7 @@ contract ProxyTest is OnchainIDSetup {
     }
 
     function test_beacon_shouldReturnCorrectAddress() public {
-        Identity impl = new Identity(false);
+        Identity impl = new Identity(address(onchainidSetup.signatureValidator));
         UpgradeableBeacon b = new UpgradeableBeacon(address(impl), address(this));
         BeaconProxy proxy = new BeaconProxy(address(b), _initData(IdentityTypes.INDIVIDUAL));
 
@@ -86,7 +113,7 @@ contract ProxyTest is OnchainIDSetup {
     }
 
     function test_updateImplementationAddress() public {
-        Identity impl = new Identity(false);
+        Identity impl = new Identity(address(onchainidSetup.signatureValidator));
         UpgradeableBeacon b = new UpgradeableBeacon(address(impl), address(this));
         new BeaconProxy(address(b), _initData(IdentityTypes.INDIVIDUAL));
 

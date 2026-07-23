@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
-import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/draft-ERC4337Utils.sol";
-import { PackedUserOperation } from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
-import { IAccount } from "@openzeppelin/contracts/interfaces/draft-IERC4337.sol";
+import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/ERC4337Utils.sol";
+import { IERC1271 } from "@openzeppelin/contracts/interfaces/IERC1271.sol";
+import { PackedUserOperation } from "@openzeppelin/contracts/interfaces/IERC4337.sol";
+import { IAccount } from "@openzeppelin/contracts/interfaces/IERC4337.sol";
 import {
     Execution,
     IERC7579Execution,
@@ -14,17 +15,17 @@ import {
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { Identity } from "contracts/Identity.sol";
 import { SmartAccount } from "contracts/SmartAccount.sol";
+import { IERC734 } from "contracts/interface/IERC734.sol";
 import { IERC735 } from "contracts/interface/IERC735.sol";
 import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
-import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
-import { ERC7579Signature } from "contracts/modules/validators/ERC7579Signature.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 
 import { ClaimSignerHelper } from "./helpers/ClaimSignerHelper.sol";
 import { OnchainIDSetup } from "./helpers/OnchainIDSetup.sol";
+import { MockStockECDSAValidator } from "./mocks/MockStockECDSAValidator.sol";
 
 /// @notice Coverage for the SmartAccount execution surface and ERC-734 purpose invariants.
 contract SmartAccountTest is OnchainIDSetup {
@@ -52,7 +53,7 @@ contract SmartAccountTest is OnchainIDSetup {
         vm.prank(carol);
         IKeyExecutor(address(aliceIdentity)).execute(address(aliceIdentity), 0, addKeyData);
 
-        (,, bytes32 storedKey) = aliceIdentity.getKey(evilKey);
+        (,, bytes32 storedKey) = IERC734(address(aliceIdentity)).getKey(evilKey);
         assertEq(storedKey, bytes32(0), "CLAIM_SIGNER must not escalate to MANAGEMENT via execute/addKey");
     }
 
@@ -103,7 +104,13 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.ACTION, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.ACTION,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         Counter counter = new Counter();
@@ -120,7 +127,13 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.ACTION, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.ACTION,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         bytes32 evilKey = keccak256("evil-management-key");
@@ -138,17 +151,33 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.MANAGEMENT, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.MANAGEMENT,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
-        bytes32 newKey = keccak256("new-action-key");
-        bytes memory addKeyData =
-            abi.encodeWithSignature("addKey(bytes32,uint256,uint256)", newKey, KeyPurposes.ACTION, KeyTypes.ECDSA);
+        // Register a brand-new key. The keyHash must commit to its signer bytes, so derive it
+        // from a signer address and register via the data-carrying addKeyWithData entry point.
+        address newSigner = makeAddr("new-action-signer");
+        bytes memory newSignerData = abi.encodePacked(newSigner);
+        bytes32 newKey = keccak256(newSignerData);
+        bytes memory addKeyData = abi.encodeWithSignature(
+            "addKeyWithData(bytes32,uint256,uint256,bytes,bytes)",
+            newKey,
+            KeyPurposes.ACTION,
+            KeyTypes.ECDSA,
+            newSignerData,
+            bytes("")
+        );
         bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity), uint256(0), addKeyData);
 
         testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
 
-        (,, bytes32 storedKey) = aliceIdentity.getKey(newKey);
+        (,, bytes32 storedKey) = IERC734(address(aliceIdentity)).getKey(newKey);
         assertEq(storedKey, newKey, "MANAGEMENT executor should register a new key");
     }
 
@@ -161,12 +190,18 @@ contract SmartAccountTest is OnchainIDSetup {
     function test_uninstallModule_byManagement_succeeds() public {
         // The fixture only installs the queue module, so we add a fresh validator here
         // and own its lifecycle for this test.
-        ERC7579Signature validator = new ERC7579Signature();
+        MockStockECDSAValidator validator = new MockStockECDSAValidator();
         vm.startPrank(alice);
-        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), "");
+        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), abi.encodePacked(alice));
         // Validators don't need an ERC 734 purpose. We add one anyway so we can check
         // that uninstall cleans it up.
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(validator))), KeyPurposes.ACTION, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(validator))),
+            KeyPurposes.ACTION,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(validator)),
+            ""
+        );
         vm.stopPrank();
 
         assertTrue(
@@ -181,15 +216,15 @@ contract SmartAccountTest is OnchainIDSetup {
             aliceIdentity.isModuleInstalled(MODULE_TYPE_VALIDATOR, address(validator), ""),
             "validator should be uninstalled"
         );
-        (,, bytes32 storedKey) = aliceIdentity.getKey(keccak256(abi.encodePacked(address(validator))));
+        (,, bytes32 storedKey) = IERC734(address(aliceIdentity)).getKey(keccak256(abi.encodePacked(address(validator))));
         assertEq(storedKey, bytes32(0), "auto revoke should clear the module's key entry");
     }
 
     /// An ACTION key shouldn't be able to uninstall a module — uninstall is MANAGEMENT only.
     function test_uninstallModule_byActionKey_reverts() public {
-        ERC7579Signature validator = new ERC7579Signature();
+        MockStockECDSAValidator validator = new MockStockECDSAValidator();
         vm.prank(alice);
-        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), "");
+        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), abi.encodePacked(alice));
 
         // david is ACTION on alice's identity (set up in OnchainIDSetup), not MANAGEMENT.
         vm.prank(david);
@@ -215,7 +250,7 @@ contract SmartAccountTest is OnchainIDSetup {
         vm.stopPrank();
 
         // The MANAGEMENT entry that was registered against the module's address is gone.
-        (,, bytes32 moduleStoredKey) = aliceIdentity.getKey(keccak256(abi.encodePacked(kam)));
+        (,, bytes32 moduleStoredKey) = IERC734(address(aliceIdentity)).getKey(keccak256(abi.encodePacked(kam)));
         assertEq(moduleStoredKey, bytes32(0), "queue module's MANAGEMENT key should be revoked");
 
         // Calling the legacy ABI on the identity now reverts. No fallback handler is wired up.
@@ -236,15 +271,46 @@ contract SmartAccountTest is OnchainIDSetup {
         aliceIdentity.addKey(newKey, KeyPurposes.MANAGEMENT, KeyTypes.ECDSA);
     }
 
+    /// @notice A MANAGEMENT-purpose module cannot use its onUninstall callback to grant itself a
+    ///         key. The account strips the module's purposes before running onUninstall, so by the
+    ///         time the callback re-enters addKey the module holds no MANAGEMENT and the grant fails.
+    ///         (The base runs onUninstall best-effort, so the uninstall itself still completes; the
+    ///         property that matters is that the evil key is never written.)
+    function test_uninstallModule_reentrantOnUninstall_cannotGrantKey() public {
+        ReentrantUninstaller evil = new ReentrantUninstaller();
+
+        // Install as an executor holding MANAGEMENT (the dangerous shape KAM has).
+        vm.startPrank(alice);
+        aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(evil), "");
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(evil))),
+            KeyPurposes.MANAGEMENT,
+            KeyTypes.MODULE,
+            abi.encodePacked(address(evil)),
+            ""
+        );
+
+        aliceIdentity.uninstallModule(MODULE_TYPE_EXECUTOR, address(evil), "");
+        vm.stopPrank();
+
+        // The attacker key was never granted: the re-entrant addKeyWithData ran without MANAGEMENT.
+        (,, bytes32 storedEvil) = IERC734(address(aliceIdentity)).getKey(evil.evilKey());
+        assertEq(storedEvil, bytes32(0), "re-entrant onUninstall must not grant a key");
+
+        // And the module's own MANAGEMENT key is gone.
+        (,, bytes32 storedModule) = IERC734(address(aliceIdentity)).getKey(keccak256(abi.encodePacked(address(evil))));
+        assertEq(storedModule, bytes32(0), "uninstalled module keeps no MANAGEMENT");
+    }
+
     /// How you upgrade a module with ERC 7579. Uninstall the old one, install the new one.
     function test_uninstallModule_then_reinstall_upgradePath() public {
-        ERC7579Signature v1 = new ERC7579Signature();
-        ERC7579Signature v2 = new ERC7579Signature();
+        MockStockECDSAValidator v1 = new MockStockECDSAValidator();
+        MockStockECDSAValidator v2 = new MockStockECDSAValidator();
 
         vm.startPrank(alice);
-        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(v1), "");
+        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(v1), abi.encodePacked(alice));
         aliceIdentity.uninstallModule(MODULE_TYPE_VALIDATOR, address(v1), "");
-        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(v2), "");
+        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(v2), abi.encodePacked(alice));
         vm.stopPrank();
 
         assertFalse(
@@ -257,13 +323,10 @@ contract SmartAccountTest is OnchainIDSetup {
     }
 
     // -----------------------------------------------------------------------
-    // Selector-aware authorization — `_isKeyAuthorizedToCallTarget`.
-    //
-    // The helper is shared by `_validateUserOp` (AA path) and `executeFromExecutor`
-    // (executor path), so every executor-as-key test below also covers the AA-path
-    // rule for the same caller. The rule table mirrors `KeyApprovalModule._canAutoApprove`:
-    //   MANAGEMENT: anything; ACTION: external only; CLAIM_SIGNER on self: addClaim
-    //   / removeClaim; CLAIM_ADDER on self: addClaim.
+    // Executor authorization — `_execute` purpose-checks executor callers with
+    // one built-in rule: self-target needs MANAGEMENT, any other target needs
+    // ACTION, and no dispatched call may land on one of the account's own
+    // modules. No policy module is consulted.
     // -----------------------------------------------------------------------
 
     /// @notice An executor whose key holds CLAIM_SIGNER CANNOT dispatch `addClaim` on self.
@@ -274,7 +337,13 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.CLAIM_SIGNER,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         // Self-issued claims now require a valid signature from one of the identity's CLAIM_SIGNER keys.
@@ -299,7 +368,13 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.CLAIM_SIGNER,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         // aliceClaim666 already exists in the fixture. Use its claimId.
@@ -316,7 +391,13 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.CLAIM_SIGNER,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         bytes32 evilKey = keccak256("evil-mgmt-key");
@@ -336,7 +417,13 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_ADDER, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.CLAIM_ADDER,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         // Self-issued claims now require a valid signature from one of the identity's CLAIM_SIGNER keys.
@@ -359,7 +446,13 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_ADDER, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.CLAIM_ADDER,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         bytes32 claimId = keccak256(abi.encode(address(claimIssuer), aliceClaim666.topic));
@@ -377,7 +470,13 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_ADDER, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.CLAIM_ADDER,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         Counter counter = new Counter();
@@ -393,21 +492,29 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.CLAIM_SIGNER,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         Execution[] memory batch = new Execution[](2);
         batch[0] = Execution({
             target: address(aliceIdentity),
             value: 0,
-            callData: abi.encodeWithSignature(
-                "addClaim(uint256,uint256,address,bytes,bytes,string)",
-                uint256(100),
-                uint256(1),
-                address(aliceIdentity),
-                bytes(""),
-                bytes("payload"),
-                string("")
+            callData: abi.encodeCall(
+                IERC735.addClaim,
+                (
+                    uint256(100),
+                    uint256(1),
+                    address(aliceIdentity),
+                    bytes(""),
+                    Structs.ClaimData({ issuedAt: 0, validUntil: 0, payload: bytes("payload") }),
+                    string("")
+                )
             )
         });
         batch[1] = Execution({
@@ -428,7 +535,13 @@ contract SmartAccountTest is OnchainIDSetup {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.CLAIM_SIGNER,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         // SINGLE layout: target(20) + value(32) — exactly 52 bytes, no inner data at all.
@@ -438,44 +551,39 @@ contract SmartAccountTest is OnchainIDSetup {
         testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
     }
 
-    /// @notice Malformed SINGLE payload (length < 52) is rejected at the layout guard.
+    /// @notice A malformed SINGLE payload (length < 52) is rejected. The account's per-call guard
+    ///         skips a payload too short to carry a target+value and lets the base ERC-7579
+    ///         dispatcher reject the malformed layout, so the call still reverts.
     function test_executeFromExecutor_singleCalldata_lengthBelow52_reverts() public {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.MANAGEMENT, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.MANAGEMENT,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         // Truncated payload — only the 20-byte target, no value field.
         bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity));
 
-        vm.expectRevert(Errors.ExecutorPurposeNotAuthorized.selector);
+        vm.expectRevert();
         testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
     }
 
     // -----------------------------------------------------------------------
-    // Rule-consolidation tests — `KeyApprovalModule` is the single source of
-    // truth for the authorization table. `SmartAccount._isKeyAuthorizedToCallTarget`
-    // delegates to the module via STATICCALL and falls back to the conservative
-    // pre-consolidation rule (self → MANAGEMENT, else → ACTION) when no policy
-    // module is installed or its call reverts.
+    // Strict-rule tests — the account applies its built-in rule to executor
+    // callers (self → MANAGEMENT, else → ACTION) and consults no policy module.
     // -----------------------------------------------------------------------
 
-    /// @notice The module's external `canAutoApprove` rejects queries for any account
-    ///         other than `msg.sender`. Prevents one identity from reading another's rule.
-    function test_canAutoApprove_externalAccount_mismatch_reverts() public {
-        KeyApprovalModule kam = onchainidSetup.keyApprovalModule;
-        // Query under an arbitrary EOA — `msg.sender` is that EOA, not aliceIdentity.
-        vm.expectRevert(Errors.UnauthorizedPolicyQuery.selector);
-        kam.canAutoApprove(address(aliceIdentity), keccak256(abi.encodePacked(alice)), address(0), "");
-    }
-
-    /// @notice Proves that `executeFromExecutor` actually asks the policy module before
-    ///         dispatching. We swap the real policy for one that always says yes, then use
-    ///         an executor with no key purpose. The built-in fallback rule would reject
-    ///         this call, so it can only go through if the policy was consulted.
-    function test_executeFromExecutor_path_consultsKeyApprovalModule() public {
-        // Replace the real policy with one that approves everything.
+    /// @notice The account consults no policy module: the built-in rule is the only rule.
+    ///         Even with an always-approve policy wired as the `execute` fallback handler,
+    ///         a keyless executor stays unauthorized.
+    function test_executeFromExecutor_policyModuleIsNotConsulted() public {
+        // Replace the real handler with one that would approve everything, if asked.
         address kam = address(onchainidSetup.keyApprovalModule);
         vm.startPrank(alice);
         aliceIdentity.uninstallModule(MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.execute.selector));
@@ -485,8 +593,8 @@ contract SmartAccountTest is OnchainIDSetup {
             MODULE_TYPE_FALLBACK, address(approveAll), abi.encodePacked(IKeyExecutor.execute.selector)
         );
 
-        // Install the executor but do not give it any key. Without a key, only the
-        // policy can authorize the call. If the policy is skipped, the test fails.
+        // Install the executor but do not give it any key. If the account asked the policy,
+        // this call would go through; the built-in rule rejects it.
         TestExecutor testExec = new TestExecutor();
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
         vm.stopPrank();
@@ -495,18 +603,23 @@ contract SmartAccountTest is OnchainIDSetup {
         bytes memory call = abi.encodeCall(Counter.increment, ());
         bytes memory executionCalldata = abi.encodePacked(address(counter), uint256(0), call);
 
+        vm.expectRevert(Errors.ExecutorPurposeNotAuthorized.selector);
         testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
-        assertEq(counter.count(), 1, "executor without a key should only dispatch if the policy was consulted");
     }
 
     /// @notice Ernest's r3421876946 happy path: an ACTION executor targeting an external
-    ///         contract that KAM auto-approves. The simple positive case that the original
-    ///         deleted test covered, restored on a scenario that still passes after H-04.
-    function test_executeFromExecutor_path_actionOnExternal_kamAutoApproves() public {
+    ///         contract. The built-in rule authorizes it.
+    function test_executeFromExecutor_path_actionOnExternal_succeeds() public {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.ACTION, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.ACTION,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
         Counter counter = new Counter();
@@ -514,116 +627,39 @@ contract SmartAccountTest is OnchainIDSetup {
         bytes memory executionCalldata = abi.encodePacked(address(counter), uint256(0), call);
 
         testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
-        assertEq(counter.count(), 1, "ACTION executor on external target should be auto-approved by KAM");
+        assertEq(counter.count(), 1, "ACTION executor on external target should be authorized");
     }
 
-    /// @notice No-policy strict fallback: with `KeyApprovalModule` uninstalled, an ACTION
-    ///         executor can still dispatch external calls. The pre-PR rule applies.
-    function test_executeFromExecutor_path_noPolicyInstalled_strictFallback_actionExternal() public {
-        address kam = address(onchainidSetup.keyApprovalModule);
-        // Uninstall the fallback handler for `execute` so policy discovery returns address(0).
-        vm.prank(alice);
-        aliceIdentity.uninstallModule(MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.execute.selector));
-
+    /// @notice A CLAIM_SIGNER-only executor CANNOT dispatch `addClaim` on self: the built-in
+    ///         rule requires MANAGEMENT for self-targets, with no claim-selector exception.
+    function test_executeFromExecutor_strictRule_claimSignerSelfFails() public {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
         aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.ACTION, KeyTypes.ECDSA);
+        aliceIdentity.addKeyWithData(
+            keccak256(abi.encodePacked(address(testExec))),
+            KeyPurposes.CLAIM_SIGNER,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(testExec)),
+            ""
+        );
         vm.stopPrank();
 
-        Counter counter = new Counter();
-        bytes memory call = abi.encodeCall(Counter.increment, ());
-        bytes memory executionCalldata = abi.encodePacked(address(counter), uint256(0), call);
-
-        testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
-        assertEq(counter.count(), 1, "ACTION executor + no policy must still hit external target");
-    }
-
-    /// @notice No-policy strict fallback: a CLAIM_SIGNER-only executor CANNOT dispatch
-    ///         `addClaim` on self without the policy module — the conservative rule applies.
-    function test_executeFromExecutor_path_noPolicyInstalled_strictFallback_claimSignerSelfFails() public {
-        address kam = address(onchainidSetup.keyApprovalModule);
-        vm.prank(alice);
-        aliceIdentity.uninstallModule(MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.execute.selector));
-
-        TestExecutor testExec = new TestExecutor();
-        vm.startPrank(alice);
-        aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
-        vm.stopPrank();
-
-        bytes memory addClaimData = abi.encodeWithSignature(
-            "addClaim(uint256,uint256,address,bytes,bytes,string)",
-            uint256(202),
-            uint256(1),
-            address(aliceIdentity),
-            bytes(""),
-            bytes("payload"),
-            string("")
+        bytes memory addClaimData = abi.encodeCall(
+            IERC735.addClaim,
+            (
+                uint256(202),
+                uint256(1),
+                address(aliceIdentity),
+                bytes(""),
+                Structs.ClaimData({ issuedAt: 0, validUntil: 0, payload: bytes("payload") }),
+                string("")
+            )
         );
         bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity), uint256(0), addClaimData);
 
         vm.expectRevert(Errors.ExecutorPurposeNotAuthorized.selector);
         testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
-    }
-
-    /// @notice If the installed policy reverts in `canAutoApprove`, the account falls through
-    ///         to the conservative rule. A CLAIM_SIGNER-only executor calling `addClaim` self
-    ///         must be rejected (the strict fallback does not honor the claim selectors).
-    function test_executeFromExecutor_path_brokenPolicy_fallsBackToStrictRule() public {
-        // Replace the real fallback handler with a deliberately-reverting one.
-        address kam = address(onchainidSetup.keyApprovalModule);
-        vm.startPrank(alice);
-        aliceIdentity.uninstallModule(MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.execute.selector));
-
-        BrokenPolicy broken = new BrokenPolicy();
-        aliceIdentity.installModule(
-            MODULE_TYPE_FALLBACK, address(broken), abi.encodePacked(IKeyExecutor.execute.selector)
-        );
-
-        TestExecutor testExec = new TestExecutor();
-        aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
-        vm.stopPrank();
-
-        bytes memory addClaimData = abi.encodeWithSignature(
-            "addClaim(uint256,uint256,address,bytes,bytes,string)",
-            uint256(203),
-            uint256(1),
-            address(aliceIdentity),
-            bytes(""),
-            bytes("payload"),
-            string("")
-        );
-        bytes memory executionCalldata = abi.encodePacked(address(aliceIdentity), uint256(0), addClaimData);
-
-        vm.expectRevert(Errors.ExecutorPurposeNotAuthorized.selector);
-        testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
-    }
-
-    /// @notice With a broken policy installed, the strict fallback still authorizes ACTION
-    ///         on external targets — proving the try/catch never leaves the gate stuck-true.
-    function test_executeFromExecutor_path_brokenPolicy_strictRuleStillAllowsAction() public {
-        address kam = address(onchainidSetup.keyApprovalModule);
-        vm.startPrank(alice);
-        aliceIdentity.uninstallModule(MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.execute.selector));
-
-        BrokenPolicy broken = new BrokenPolicy();
-        aliceIdentity.installModule(
-            MODULE_TYPE_FALLBACK, address(broken), abi.encodePacked(IKeyExecutor.execute.selector)
-        );
-
-        TestExecutor testExec = new TestExecutor();
-        aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, address(testExec), "");
-        aliceIdentity.addKey(keccak256(abi.encodePacked(address(testExec))), KeyPurposes.ACTION, KeyTypes.ECDSA);
-        vm.stopPrank();
-
-        Counter counter = new Counter();
-        bytes memory call = abi.encodeCall(Counter.increment, ());
-        bytes memory executionCalldata = abi.encodePacked(address(counter), uint256(0), call);
-
-        testExec.callExecuteFromExecutor(address(aliceIdentity), bytes32(0), executionCalldata);
-        assertEq(counter.count(), 1, "broken policy must not lock out ACTION on external targets");
     }
 
     // -----------------------------------------------------------------------
@@ -697,7 +733,10 @@ contract SmartAccountTest is OnchainIDSetup {
     /// @notice The per-target rule fires: an ACTION-only key cannot self-target
     ///         a privileged selector like addKey. The signature is cryptographically
     ///         valid, but step 2 of _validateUserOp rejects it.
-    function test_validateUserOp_actionKey_selfTarget_fails() public {
+    /// @notice The fixture installs `ERC734Validator`, which scopes by target/selector. `david`
+    ///         holds ACTION inside it, so a self-target `addKey` (MANAGEMENT-grade) is rejected
+    ///         at the validator. Scoping lives in the validator, not the account.
+    function test_validateUserOp_actionSigner_selfTargetAddKey_rejectedByValidator() public {
         bytes memory innerCall = abi.encodeWithSignature(
             "addKey(bytes32,uint256,uint256)", keccak256("evil"), KeyPurposes.MANAGEMENT, KeyTypes.ECDSA
         );
@@ -706,23 +745,39 @@ contract SmartAccountTest is OnchainIDSetup {
 
         vm.prank(ENTRY_POINT);
         uint256 result = IAccount(address(aliceIdentity)).validateUserOp(userOp, userOpHash, 0);
-        assertEq(result, ERC4337Utils.SIG_VALIDATION_FAILED, "ACTION must not be able to self-target addKey");
+        assertEq(
+            result,
+            ERC4337Utils.SIG_VALIDATION_FAILED,
+            "ACTION signer must not self-target addKey; the scoping validator blocks it"
+        );
     }
 
-    /// @notice A signer not registered as a key on the identity fails at the validator's
-    ///         purpose check (signature is valid, but the signer has no ACTION).
-    function test_validateUserOp_unregisteredSigner_fails() public {
-        (address stranger, uint256 strangerPk) = makeAddrAndKey("stranger");
+    /// @notice A validator that is installed but NOT granted ACTION cannot authorize
+    ///         a userOp against an external target. Under "validators-as-keys" the
+    ///         per-target rule is checked against `hashAddress(validator)`, not
+    ///         against the recovered signer, so an unauthorized validator fails
+    ///         even when its signature is cryptographically valid.
+    /// @dev Documents the same trade-off from the validator-authorization angle. Previously
+    ///      the account required the installed validator to hold an ACTION purpose to act.
+    ///      That check moved out of the account: the OZ base only dispatches to an installed
+    ///      validator, and the validator itself decides authorization. So an installed stock
+    ///      validator with a signer it accepts now validates a plain external call without the
+    ///      account granting it any purpose. Scoping validators still gate this internally.
+    function test_validateUserOp_installedStockValidator_noAccountPurpose_nowPasses() public {
+        // Install a fresh stock validator without granting it any purpose. Seed its signer
+        // registry with `david` so the signature passes the validator's own check.
+        MockStockECDSAValidator rogue = new MockStockECDSAValidator();
+        vm.prank(alice);
+        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(rogue), abi.encodePacked(david));
+
         Counter counter = new Counter();
         bytes memory innerCall = abi.encodeCall(Counter.increment, ());
-
-        // Build the UserOp shell, then sign with the stranger instead of david.
         bytes memory executionCalldata = abi.encodePacked(address(counter), uint256(0), innerCall);
         bytes memory callData =
             abi.encodeWithSelector(bytes4(keccak256("execute(bytes32,bytes)")), bytes32(0), executionCalldata);
         PackedUserOperation memory userOp = PackedUserOperation({
             sender: address(aliceIdentity),
-            nonce: _packNonce(address(onchainidSetup.signatureValidator), 0),
+            nonce: _packNonce(address(rogue), 0),
             initCode: "",
             callData: callData,
             accountGasLimits: bytes32(0),
@@ -732,12 +787,37 @@ contract SmartAccountTest is OnchainIDSetup {
             signature: ""
         });
         bytes32 userOpHash = keccak256(abi.encode(userOp.sender, userOp.nonce, userOp.callData));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(strangerPk, userOpHash);
-        userOp.signature = abi.encode(abi.encodePacked(stranger), abi.encodePacked(r, s, v));
+        // MockStockECDSAValidator takes a raw 65-byte ECDSA signature (no signer wrapper).
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(davidPk, userOpHash);
+        userOp.signature = abi.encodePacked(r, s, v);
 
         vm.prank(ENTRY_POINT);
         uint256 result = IAccount(address(aliceIdentity)).validateUserOp(userOp, userOpHash, 0);
-        assertEq(result, ERC4337Utils.SIG_VALIDATION_FAILED, "unregistered signer must fail at ACTION check");
+        assertEq(
+            result,
+            ERC4337Utils.SIG_VALIDATION_SUCCESS,
+            "account no longer requires a purpose grant: the installed validator decides"
+        );
+    }
+
+    /// @notice ERC-1271 dispatch. The account routes `isValidSignature` to the validator named
+    ///         by the first 20 bytes of the outer signature (OZ `_extractSignatureValidator`),
+    ///         then returns whatever magic value the validator produces.
+    function test_isValidSignature_routesToValidatorByModulePrefix() public {
+        (address signer, uint256 signerPk) = makeAddrAndKey("erc1271-signer");
+        MockStockECDSAValidator validator = new MockStockECDSAValidator();
+        vm.prank(alice);
+        aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), abi.encodePacked(signer));
+
+        bytes32 digest = keccak256("erc1271-dispatch");
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerPk, digest);
+        bytes memory outerSig = abi.encodePacked(address(validator), abi.encodePacked(r, s, v));
+
+        assertEq(
+            IERC1271(address(aliceIdentity)).isValidSignature(digest, outerSig),
+            IERC1271.isValidSignature.selector,
+            "account must route isValidSignature to the prefixed validator"
+        );
     }
 
 }
@@ -772,28 +852,54 @@ contract Counter {
 
 }
 
-/// @notice ERC-7579 FALLBACK module whose `canAutoApprove` always reverts. Used to verify
-///         that `SmartAccount._isKeyAuthorizedToCallTarget` recovers via try/catch and applies
-///         the conservative pre-consolidation rule instead of bricking the account.
-contract BrokenPolicy is IERC7579Module {
+/// @notice Interface fragment for the account's `addKeyWithData` (defined on KeyManager, not IERC734).
+interface IAddKeyWithData {
+
+    function addKeyWithData(
+        bytes32 key,
+        uint256 purpose,
+        uint256 keyType,
+        bytes memory signerData,
+        bytes memory clientData
+    ) external;
+
+}
+
+/// @notice Malicious executor that, during its own onUninstall, tries to register a fresh attacker
+///         key with MANAGEMENT. If the account still leaves this module holding MANAGEMENT when it
+///         runs onUninstall, the grant lands. Stripping the module's purposes first blocks it.
+contract ReentrantUninstaller is IERC7579Module {
+
+    address public constant ATTACKER = address(0xBADBEEF);
+
+    function evilKey() external pure returns (bytes32) {
+        return keccak256(abi.encodePacked(ATTACKER));
+    }
 
     function isModuleType(uint256 moduleTypeId) external pure returns (bool) {
-        return moduleTypeId == MODULE_TYPE_FALLBACK;
+        return moduleTypeId == MODULE_TYPE_EXECUTOR;
     }
 
     function onInstall(bytes calldata) external pure { }
-    function onUninstall(bytes calldata) external pure { }
 
-    function canAutoApprove(address, bytes32, address, bytes calldata) external pure returns (bool) {
-        revert("nope");
+    function onUninstall(bytes calldata) external {
+        // msg.sender is the account. addKeyWithData carries the signer bytes, so it actually
+        // registers a usable key — gated by MANAGEMENT on the account (which this module held).
+        IAddKeyWithData(msg.sender)
+            .addKeyWithData(
+                keccak256(abi.encodePacked(ATTACKER)),
+                KeyPurposes.MANAGEMENT,
+                KeyTypes.ECDSA,
+                abi.encodePacked(ATTACKER),
+                ""
+            );
     }
 
 }
 
 /// @notice ERC-7579 FALLBACK module whose `canAutoApprove` returns true for any input.
-///         Used to prove that `SmartAccount._isKeyAuthorizedToCallTarget` actually consults
-///         the wired policy module. Outcomes that disagree with the strict default
-///         (e.g. authorizing a keyless executor) can only come from the policy staticcall.
+///         Used to prove that the account does NOT consult a policy module: wiring this
+///         handler must not authorize a keyless executor.
 contract AlwaysApprovePolicy is IERC7579Module {
 
     function isModuleType(uint256 moduleTypeId) external pure returns (bool) {

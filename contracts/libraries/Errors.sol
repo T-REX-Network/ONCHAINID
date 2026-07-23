@@ -87,6 +87,26 @@ library Errors {
     ///         is not currently part of the calling identity's active set.
     error WalletNotLinkedToIdentity(bytes wallet);
 
+    /// @notice Reverts when the caller of {confirmCrossChainLink} does not match the
+    ///         identity recorded in the pending proposal. `recorded` is `address(0)`
+    ///         if no proposal exists for the wallet.
+    error PendingCrossChainLinkIdentityMismatch(bytes wallet, address caller, address recorded);
+
+    /// @notice Reverts when an inbound cross-chain proposal targets a wallet that
+    ///         already has a registry entry (active or revoked). Sticky binding
+    ///         applies to the cross-chain path the same way it does to the EVM path.
+    error WalletAlreadyHasEntry(bytes wallet);
+
+    /// @notice Reverts when the ERC-7786 source-chain sender does not match the
+    ///         wallet envelope carried in the payload. The wallet must originate
+    ///         the bridge call itself, so `sender` and `wallet` must be the same
+    ///         interoperable address.
+    error CrossChainSenderWalletMismatch(bytes sender, bytes wallet);
+
+    /// @notice Reverts when a cross-chain link proposal is delivered or confirmed
+    ///         past its `expiry`.
+    error PendingCrossChainLinkExpired(uint256 expiry);
+
     /* ----- Verifier ----- */
 
     /// @notice The claim topic already exists.
@@ -112,10 +132,37 @@ library Errors {
     /// @notice The claim already exists.
     error ClaimAlreadyRevoked();
 
+    /* ----- ERC734Validator trusted-issuer path ----- */
+
+    /// @notice Reverts when {ERC734Validator.addClaimByTrustedIssuer} is called by a wallet
+    ///         that the factory does not resolve to any identity. The trusted-issuer path
+    ///         requires the caller wallet to be a linked account on a factory-deployed
+    ///         identity.
+    error CallerNotLinkedToFactoryIdentity(address caller);
+
+    /// @notice Reverts when the claim's declared `issuer` field does not match the
+    ///         identity the caller wallet resolves to. A trusted issuer cannot ship a
+    ///         claim attributed to a different issuer.
+    error DeclaredIssuerMismatch(address declaredIssuer, address resolvedIdentity);
+
+    /// @notice Reverts when the resolved issuer identity is not of type
+    ///         {IdentityTypes.CLAIM_ISSUER}. The trusted-issuer path is reserved for
+    ///         identities deployed under the role-gated CLAIM_ISSUER type so a high
+    ///         reputation score on another type cannot grant claim-write capability.
+    error IdentityNotClaimIssuerType(address identity);
+
+    /// @notice Reverts when the resolved CLAIM_ISSUER identity's reputation score is
+    ///         below the consumer's claim-add threshold.
+    error ReputationBelowClaimAddThreshold(address identity, uint256 score, uint256 threshold);
+
     /* ----- Identity ----- */
 
-    /// @notice Interacting with the library contract is forbidden.
-    error InteractingWithLibraryContractForbidden();
+    /// @notice {IdentityFactory.initializeBeacon} was called but the beacon is already deployed.
+    error BeaconAlreadyInitialized();
+
+    /// @notice Identity deployment was attempted before {IdentityFactory.initializeBeacon}
+    ///         deployed the beacon at its predetermined slot.
+    error BeaconNotInitialized();
 
     /// @notice The sender does not have the management key.
     error SenderDoesNotHaveManagementKey();
@@ -129,9 +176,6 @@ library Errors {
     /// @notice The caller holds no key on the target identity that authorizes proposing an
     ///         execution. PROPOSER, ACTION, CLAIM_SIGNER, CLAIM_ADDER, or MANAGEMENT works.
     error SenderCannotPropose(address sender);
-
-    /// @notice The initial key was already setup.
-    error InitialKeyAlreadySetup();
 
     /// @notice The key is not registered.
     error KeyNotRegistered(bytes32 key);
@@ -153,6 +197,9 @@ library Errors {
 
     /// @notice The claim is invalid.
     error InvalidClaim();
+
+    /// @notice Topic 0 is the "no claim" sentinel and cannot be used for a stored claim.
+    error InvalidClaimTopic();
 
     /* ----- SmartAccount ----- */
 
@@ -177,16 +224,16 @@ library Errors {
     /// @notice The execution mode requested is not supported by the account's purpose check.
     error UnsupportedExecutionMode(bytes32 mode);
 
+    /// @notice A dispatched call targeted one of the account's own modules (an installed executor,
+    ///         or the fallback handler for the call's selector). Module functions are reached via
+    ///         the account's fallback dispatch, never via `execute(module, ...)`.
+    error OwnModuleTargetBlocked(address target);
+
     /// @notice An installed executor or fallback handler tried to dispatch a call whose target
     ///         is not authorized by the purpose registered for that module at install time.
     ///         Also raised at install time if the module's initData does not begin with a
     ///         non-zero `uint256 purpose`.
     error ExecutorPurposeNotAuthorized();
-
-    /// @notice `KeyApprovalModule.canAutoApprove` was queried for an `account` that does not
-    ///         match `msg.sender`. The module only answers about the calling identity's own
-    ///         authorization table; cross-identity queries are rejected.
-    error UnauthorizedPolicyQuery();
 
     /// @notice ETH push from `KeyApprovalModule` back to the identity failed.
     error ReturnToAccountFailed();
@@ -221,5 +268,12 @@ library Errors {
 
     /// @notice The call failed.
     error CallFailed();
+
+    /* ----- EASClaimIssuer ----- */
+
+    /// @notice Reverts when a caller invokes an `IClaimIssuer` or `IIdentity` method that has
+    ///         no meaning on a stateless adapter (key management, claim storage, execution).
+    ///         The adapter is a live view over EAS and holds no keys or claims.
+    error EASNotSupported();
 
 }
