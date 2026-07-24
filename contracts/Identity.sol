@@ -65,21 +65,41 @@ contract Identity is Initializable, SmartAccount, ERC165 {
     bytes32 internal constant _IDENTITY_METADATA_SLOT =
         keccak256(abi.encode(uint256(keccak256(bytes("onchainid.identity.metadata"))) - 1)) & ~bytes32(uint256(0xff));
 
-    /// @notice The enshrined ERC-734 registry module (the merged {ERC734Validator}). Fixed at
-    ///         implementation deploy time; every identity behind the beacon shares it. Changing
-    ///         the registry means deploying a new implementation and upgrading the beacon.
-    address public immutable registryModule;
+    /// @dev The enshrined ERC-734 registry module, fixed at implementation deploy time. Read
+    ///      through the {registryModule} getter.
+    address private immutable _registryModule;
+
+    /// @dev The factory that deploys this identity, fixed at implementation deploy time. Read
+    ///      through the {identityFactory} getter.
+    address private immutable _identityFactory;
 
     /**
      * @notice Constructor of the Identity contract.
-     * @param registryModuleAddress The {ERC734Validator} that holds the key and claim registries.
+     * @param registryModule_ The {ERC734Validator} that holds the key and claim registries.
+     * @param identityFactory_ The {IdentityFactory} that deploys identities of this implementation.
      * @dev The implementation is only ever used behind a BeaconProxy, so its own `Initializable`
      *      slot is locked here; proxies keep their storage untouched and can initialize.
      */
-    constructor(address registryModuleAddress) EIP712("OnchainID", "1") {
-        require(registryModuleAddress != address(0), Errors.ZeroAddress());
-        registryModule = registryModuleAddress;
+    constructor(address registryModule_, address identityFactory_) EIP712("OnchainID", "1") {
+        require(registryModule_ != address(0), Errors.ZeroAddress());
+        require(identityFactory_ != address(0), Errors.ZeroAddress());
+        _registryModule = registryModule_;
+        _identityFactory = identityFactory_;
         _disableInitializers();
+    }
+
+    /// @notice The enshrined ERC-734 registry module (the merged {ERC734Validator}). Fixed at
+    ///         implementation deploy time; every identity behind the beacon shares it. Changing
+    ///         the registry means deploying a new implementation and upgrading the beacon.
+    function registryModule() public view override returns (address) {
+        return _registryModule;
+    }
+
+    /// @notice The factory that deploys this identity. Fixed at implementation deploy time like
+    ///         {registryModule}. The account uses it to require MANAGEMENT for the factory's
+    ///         wallet-binding calls (linkAccount, revokeAccount, confirmCrossChainLink).
+    function identityFactory() public view override returns (address) {
+        return _identityFactory;
     }
 
     /**
@@ -110,7 +130,7 @@ contract Identity is Initializable, SmartAccount, ERC165 {
             _installModule(_modules[i].moduleType, _modules[i].module, _modules[i].initData);
 
             if (_modules[i].purpose != 0) {
-                ERC734Validator(registryModule)
+                ERC734Validator(registryModule())
                     .addKey(abi.encodePacked(_modules[i].module), "", _modules[i].purpose, KeyTypes.MODULE);
             }
         }
@@ -118,16 +138,10 @@ contract Identity is Initializable, SmartAccount, ERC165 {
         // Seed the caller-supplied keys into the enshrined registry module.
         for (uint256 i = 0; i < _keys.length; i++) {
             Structs.KeyParam calldata key = _keys[i];
-            ERC734Validator(registryModule).addKey(key.signerData, key.clientData, key.purpose, key.keyType);
+            ERC734Validator(registryModule()).addKey(key.signerData, key.clientData, key.purpose, key.keyType);
         }
 
         emit IdentityInitialized(_identityType);
-    }
-
-    /// @dev Backs every registry read and write in {KeyManager} / {SmartAccount} with the
-    ///      immutable, so the auth hot path costs no storage access.
-    function _registryModule() internal view override returns (address) {
-        return registryModule;
     }
 
     /// @dev True when `modules` contains at least one validator or executor entry.

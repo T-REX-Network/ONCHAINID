@@ -16,7 +16,7 @@ import { ERC734Validator } from "./modules/validators/ERC734Validator.sol";
  *      - forwards ERC-734 key writes (`addKey`, `addKeyWithData`, `removeKey`) to the module as
  *        self-calls.
  *
- *      The module address comes from {_registryModule}, implemented by the concrete account
+ *      The module address comes from {registryModule}, implemented by the concrete account
  *      ({Identity}) as an immutable fixed at implementation deploy time.
  *
  *      The ERC-734 *getter* selectors (`getKey`, `getKeyPurposes`, `getKeysByPurpose`,
@@ -59,9 +59,9 @@ abstract contract KeyManager {
     ///      derives the keyHash from the signer bytes), then forwards the write.
     function _addKey(bytes32 _key, uint256 _purpose, uint256 _type) internal {
         (bytes memory signerData, bytes memory clientData) =
-            ERC734Validator(_registryModule()).getKeyData(address(this), _key);
+            ERC734Validator(registryModule()).getKeyData(address(this), _key);
         require(signerData.length != 0, Errors.InvalidSignerData());
-        ERC734Validator(_registryModule()).addKey(signerData, clientData, _purpose, _type);
+        ERC734Validator(registryModule()).addKey(signerData, clientData, _purpose, _type);
     }
 
     /// @notice Remove a purpose from a key. Caller must hold MANAGEMENT, or be the identity itself.
@@ -75,7 +75,7 @@ abstract contract KeyManager {
     ///      {SmartAccount._uninstallModule} when it strips purposes off an uninstalled module.
     ///      Forwards to the module, which keeps the "can't remove the last MANAGEMENT key" check.
     function _removeKeyPurpose(bytes32 _key, uint256 _purpose) internal {
-        ERC734Validator(_registryModule()).removeKey(_key, _purpose);
+        ERC734Validator(registryModule()).removeKey(_key, _purpose);
     }
 
     /**
@@ -106,16 +106,16 @@ abstract contract KeyManager {
         // The keyHash MUST commit to the signer bytes forwarded with it. Without this guard a caller
         // could register one keyHash while attaching a different signer's bytes.
         require(_key == keccak256(_signerData), Errors.InvalidSignerData());
-        ERC734Validator(_registryModule()).addKey(_signerData, _clientData, _purpose, _type);
+        ERC734Validator(registryModule()).addKey(_signerData, _clientData, _purpose, _type);
     }
 
-    /// @dev The enshrined registry module. Implemented by the concrete account ({Identity}) as an
-    ///      immutable, so reading it costs no storage access.
-    function _registryModule() internal view virtual returns (address);
+    /// @notice The enshrined registry module. Implemented by the concrete account ({Identity}) as
+    ///         an immutable, so reading it costs no storage access.
+    function registryModule() public view virtual returns (address);
 
     /// @dev MANAGEMENT / purpose read for the account itself, backed by the enshrined module.
     function _moduleKeyHasPurpose(bytes32 keyHash, uint256 purpose) internal view returns (bool) {
-        return ERC734Validator(_registryModule()).keyHasPurpose(address(this), keyHash, purpose);
+        return ERC734Validator(registryModule()).keyHasPurpose(address(this), keyHash, purpose);
     }
 
 }

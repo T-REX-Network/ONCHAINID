@@ -53,8 +53,11 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     /// @dev CREATE3 salt for the beacon's predetermined slot.
     bytes32 private constant _BEACON_SALT = keccak256("onchainid.beacon.v1");
 
-    /// @notice OZ UpgradeableBeacon that every BeaconProxy delegates to. Owned by the
-    ///         AccessManager so upgrades go through the same role gating.
+    /// @notice OZ UpgradeableBeacon that every BeaconProxy delegates to. Owned by the factory
+    ///         itself, so upgrades run through {upgradeBeacon}, which is gated by the factory's
+    ///         current authority. Ownership is a stable anchor (the factory address never
+    ///         changes) while the real permission follows `authority()`, so an authority
+    ///         rotation can never leave a stale account able to upgrade every identity.
     /// @dev The address is a CREATE3 slot committed at construction: it depends only on this
     ///      factory's address and a fixed salt, so it can be an immutable even though the
     ///      beacon itself can only exist after the factory (the beacon needs the Identity
@@ -130,12 +133,22 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     function initializeBeacon(address implementation) external restricted {
         require(implementation != address(0), Errors.ZeroAddress());
         require(beacon.code.length == 0, Errors.BeaconAlreadyInitialized());
+        // Own the beacon from the factory. Upgrades then go through {upgradeBeacon}, which the
+        // factory's live authority gates, so ownership never has to be re-transferred on an
+        // authority rotation.
         Create3.deploy(
             0,
             _BEACON_SALT,
-            abi.encodePacked(type(UpgradeableBeacon).creationCode, abi.encode(implementation, authority()))
+            abi.encodePacked(type(UpgradeableBeacon).creationCode, abi.encode(implementation, address(this)))
         );
         emit BeaconInitialized(implementation);
+    }
+
+    /// @inheritdoc IIdentityFactory
+    function upgradeBeacon(address newImplementation) external restricted {
+        require(newImplementation != address(0), Errors.ZeroAddress());
+        UpgradeableBeacon(beacon).upgradeTo(newImplementation);
+        emit BeaconUpgraded(newImplementation);
     }
 
     /// @inheritdoc IIdentityFactory

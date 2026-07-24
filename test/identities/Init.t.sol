@@ -19,7 +19,8 @@ contract InitTest is OnchainIDSetup {
     function test_revert_whenInitializingLibraryDirectly() public {
         // Every implementation locks its own `Initializable` slot in the constructor, so any
         // call to `initialize` on it (rather than on a proxy) reverts.
-        Identity libraryImpl = new Identity(address(onchainidSetup.signatureValidator));
+        Identity libraryImpl =
+            new Identity(address(onchainidSetup.signatureValidator), address(onchainidSetup.idFactory));
         vm.expectRevert(Initializable.InvalidInitialization.selector);
         libraryImpl.initialize(IdentityTypes.INDIVIDUAL, new Structs.KeyParam[](0), new Structs.ModuleInstall[](0));
     }
@@ -30,7 +31,8 @@ contract InitTest is OnchainIDSetup {
     }
 
     function test_revert_whenCallingLibraryImplementationDirectly() public {
-        Identity libraryImpl = new Identity(address(onchainidSetup.signatureValidator));
+        Identity libraryImpl =
+            new Identity(address(onchainidSetup.signatureValidator), address(onchainidSetup.idFactory));
 
         // The implementation's registry (keyed by its own address in the validator) holds no
         // keys, so nobody passes the MANAGEMENT gate on the write entry points.

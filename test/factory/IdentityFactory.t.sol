@@ -147,11 +147,58 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
     function test_initializeBeacon_deploysAtCommittedSlot() public view {
         // The setup factory's beacon lives at the address committed in the constructor,
-        // points at the Identity implementation and is owned by the AccessManager.
+        // points at the Identity implementation and is owned by the factory itself.
         UpgradeableBeacon b = UpgradeableBeacon(onchainidSetup.idFactory.beacon());
         assertGt(address(b).code.length, 0, "beacon deployed at the committed slot");
         assertEq(b.implementation(), address(onchainidSetup.identityImplementation), "beacon points at the impl");
-        assertEq(b.owner(), address(onchainidSetup.accessManager), "beacon owned by the AccessManager");
+        assertEq(b.owner(), address(onchainidSetup.idFactory), "beacon owned by the factory");
+    }
+
+    // ============ upgradeBeacon ============
+
+    function test_upgradeBeacon_byAuthorizedCaller() public {
+        Identity newImpl = new Identity(address(onchainidSetup.signatureValidator), address(onchainidSetup.idFactory));
+        vm.prank(deployer);
+        onchainidSetup.idFactory.upgradeBeacon(address(newImpl));
+        assertEq(
+            UpgradeableBeacon(onchainidSetup.idFactory.beacon()).implementation(),
+            address(newImpl),
+            "beacon points at the new impl"
+        );
+    }
+
+    function test_upgradeBeacon_revertForUnauthorizedCaller() public {
+        Identity newImpl = new Identity(address(onchainidSetup.signatureValidator), address(onchainidSetup.idFactory));
+        vm.prank(alice);
+        vm.expectRevert();
+        onchainidSetup.idFactory.upgradeBeacon(address(newImpl));
+    }
+
+    function test_upgradeBeacon_revertForZeroImplementation() public {
+        vm.prank(deployer);
+        vm.expectRevert(Errors.ZeroAddress.selector);
+        onchainidSetup.idFactory.upgradeBeacon(address(0));
+    }
+
+    /// @notice Upgrade rights follow the factory's current authority. After rotating the factory
+    ///         to a new AccessManager, the deployer (admin of the OLD one only) can no longer
+    ///         upgrade. The beacon owner (the factory) never moves, so nothing drifts out of sync.
+    function test_upgradeBeacon_rotatedOutAuthorityCannotUpgrade() public {
+        AccessManager oldAm = onchainidSetup.accessManager;
+        AccessManager newAm = new AccessManager(makeAddr("newAdmin"));
+
+        // Rotate the factory's authority. setAuthority must come from the current authority, so
+        // the old AM admin drives it through the AM (this is the production rotation path).
+        vm.prank(deployer);
+        oldAm.execute(
+            address(onchainidSetup.idFactory), abi.encodeCall(onchainidSetup.idFactory.setAuthority, (address(newAm)))
+        );
+
+        // The deployer no longer governs the factory, so it can't upgrade the beacon anymore.
+        Identity newImpl = new Identity(address(onchainidSetup.signatureValidator), address(onchainidSetup.idFactory));
+        vm.prank(deployer);
+        vm.expectRevert();
+        onchainidSetup.idFactory.upgradeBeacon(address(newImpl));
     }
 
     function test_initializeBeacon_revertWhenAlreadyInitialized() public {
@@ -613,6 +660,31 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
         bytes[] memory active = onchainidSetup.idFactory.getAccounts(address(aliceIdentity));
         assertEq(active.length, 1);
+    }
+
+    /// @notice Wallet-binding calls into the factory are management-grade. An ACTION key driving
+    ///         the identity to revokeAccount through the KAM executor path is rejected; only a
+    ///         MANAGEMENT key can. Otherwise an ACTION key could terminally revoke a wallet.
+    function test_revokeAccount_actionKeyBlocked_managementAllowed() public {
+        bytes memory davidAcc = InteroperableAddress.formatEvmV1(block.chainid, david);
+        uint256 expiry = block.timestamp + 1 hours;
+        uint256 nonce = onchainidSetup.idFactory.nonceForAccount(davidAcc);
+        bytes memory sig = _signLink(davidPk, davidAcc, address(aliceIdentity), nonce, expiry);
+        _execLink(aliceIdentity, alice, davidAcc, sig, nonce, expiry);
+
+        // david is an ACTION key on aliceIdentity. Routing revokeAccount through execute queues
+        // it but does NOT auto-run: the factory is management-grade, so KAM refuses to auto-approve
+        // an ACTION call to it. The request stays pending and the wallet is untouched.
+        bytes memory revokeCall = abi.encodeCall(IIdentityFactory.revokeAccount, (davidAcc));
+        vm.prank(david);
+        IKeyExecutor(address(aliceIdentity)).execute(address(onchainidSetup.idFactory), 0, revokeCall);
+
+        // The wallet is still active; the ACTION key changed nothing.
+        assertEq(onchainidSetup.idFactory.getIdentity(davidAcc), address(aliceIdentity), "still linked");
+
+        // alice (MANAGEMENT) can revoke.
+        _execRevoke(aliceIdentity, alice, davidAcc);
+        assertEq(onchainidSetup.idFactory.getIdentity(davidAcc), address(0), "MANAGEMENT revoke works");
     }
 
     function test_revokeAccount_revertWhenCallerIsNotBoundIdentity() public {

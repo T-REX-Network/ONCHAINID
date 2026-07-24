@@ -93,15 +93,15 @@ contract DeployOnchainID is Script {
         ERC734Validator signatureValidator = new ERC734Validator(address(idFactory), address(reputationRegistry));
         console.log("ERC734Validator:", address(signatureValidator));
 
-        // 7. Identity implementation. The validator is its enshrined registry module,
-        //    fixed as an immutable; the implementation's own initializers are disabled.
-        Identity identityImpl = new Identity(address(signatureValidator));
+        // 7. Identity implementation. The validator (its enshrined registry) and the factory are
+        //    both fixed as immutables; the implementation's own initializers are disabled.
+        Identity identityImpl = new Identity(address(signatureValidator), address(idFactory));
         console.log("Identity implementation:", address(identityImpl));
 
         // 8. UpgradeableBeacon for identity proxies, deployed by the factory at its
         //    predetermined CREATE3 slot (already committed as the factory's `beacon`
-        //    immutable) and owned by the AccessManager so upgrades go through role
-        //    gating. Deployer is still the AM admin at this point.
+        //    immutable) and owned by the factory itself. Upgrades run through
+        //    `idFactory.upgradeBeacon`, gated by the factory's current authority.
         idFactory.initializeBeacon(address(identityImpl));
         console.log("Beacon:", idFactory.beacon());
 

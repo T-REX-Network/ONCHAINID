@@ -450,6 +450,12 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         // suffices, and escalate itself.
         if (target == address(this)) return false;
 
+        // Factory-guard: the factory's wallet-binding calls (linkAccount, revokeAccount,
+        // confirmCrossChainLink) change the identity's own bindings and are management-grade.
+        // The factory is an external target, so without this an ACTION key could, for example,
+        // terminally revoke one of the identity's wallets. MANAGEMENT already passed, so reject.
+        if (target == address(factory)) return false;
+
         // An external target needs ACTION. A self-targeted call (addKey, addClaim, etc.) needs
         // MANAGEMENT, which already passed in _scopeAllows, so a non-MANAGEMENT signer is rejected.
         // Claims are not addable through a user op: the account calls itself, so the ERC-2771 caller

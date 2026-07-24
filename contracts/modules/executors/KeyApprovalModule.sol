@@ -14,6 +14,14 @@ import { Errors } from "../../libraries/Errors.sol";
 import { hashAddress } from "../../libraries/Hashing.sol";
 import { KeyPurposes } from "../../libraries/KeyPurposes.sol";
 
+/// @dev Minimal view of the account: the factory that deployed it. Used to keep the factory's
+///      wallet-binding calls management-grade in the auto-approval rule.
+interface IIdentityAccount {
+
+    function identityFactory() external view returns (address);
+
+}
+
 /**
  * @title KeyApprovalModule
  * @notice Externalized ERC-734 `execute` / `approve` queue, served to identities via the
@@ -196,6 +204,12 @@ contract KeyApprovalModule is IERC7579Module {
             }
             return false;
         }
+
+        // The factory's wallet-binding calls (linkAccount, revokeAccount, confirmCrossChainLink)
+        // change the identity's own bindings and are management-grade. MANAGEMENT already returned
+        // above, so a non-MANAGEMENT key targeting the factory is refused here rather than
+        // auto-approved as an ordinary external call.
+        if (to == IIdentityAccount(account).identityFactory()) return false;
 
         // External target: ACTION keys can dispatch directly.
         if (to != account && IERC734(account).keyHasPurpose(keyHash, KeyPurposes.ACTION)) return true;
