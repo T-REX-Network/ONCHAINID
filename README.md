@@ -10,32 +10,78 @@
 
 # OnchainID Smart Contracts
 
-Smart Contracts for secure Blockchain Identities, implementation of the ERC734 and ERC735 proposal standards.
+Smart contracts for secure blockchain identities. OnchainID implements the ERC-734 (key holder) and ERC-735 (claim holder) standards, rebuilt on top of a modular ERC-7579 account with ERC-4337 support.
 
-Learn more about OnchainID and Blockchain Identities on the official OnchainID website: [https://onchainid.com](https://onchainid.com).
+Learn more about OnchainID and blockchain identities on the official website: [https://onchainid.com](https://onchainid.com).
 
-## Usage
+## What is an OnchainID identity?
 
-- Install contracts package to use in your repository `yarn add @onchain-id/solidity`
-- Require desired contracts in-code (should you need to deploy them):
-  ```javascript
-  const {
-    contracts: { ERC734, Identity },
-  } = require("@onchain-id/solidity");
-  ```
-- Require desired interfaces in-code (should you need to interact with deployed contracts):
-  ```javascript
-  const {
-    interfaces: { IERC734, IERC735 },
-  } = require("@onchain-id/solidity");
-  ```
-- Access contract ABI `ERC734.abi` and ByteCode `ERC734.bytecode`.
+An identity is a smart contract that belongs to a person, a company, an asset, or any other subject. It does two things:
 
-## Cross-chain Identity addresses
+- **Holds keys (ERC-734).** Keys are addresses granted specific purposes, such as managing the identity or signing claims.
+- **Holds claims (ERC-735).** Claims are signed statements about the identity, for example "this identity passed KYC", issued by trusted parties.
 
-`IdFactory` deploys Identities through `CREATE3`, so a given `(salt, wallet)` resolves to the same Identity address on every chain — provided `IdFactory` itself lives at the same address on each chain.
+Each identity is a modular account. Extra behaviour — claims, execution rules, signature checks, social recovery — is added through installable modules, so the core stays small and each feature can be reviewed on its own.
 
-This property relies on the canonical EVM `CREATE2` derivation `keccak256(0xff, sender, salt, keccak256(initCode))`. Chains that deviate from this derivation will produce different addresses. The most common case is **zkSync Era** (and other non-EVM-equivalent zkEVMs), which uses a different prefix byte and hashes bytecode and constructor inputs differently. Because `CREATE3` is built on top of `CREATE2`, this divergence cascades: Identities deployed on zkSync (or chains using its stack) will not match addresses on canonical EVM chains, regardless of which `CREATE3` implementation is used.
+## Architecture
+
+The identity is built in layers. Each layer has one job:
+
+- **`Identity`** — the concrete contract that gets deployed. It wires the pieces below together and runs a single, one-shot setup step when the proxy is created.
+- **`SmartAccount`** — the ERC-7579 modular account. It decides who is allowed to run transactions and install or remove modules, using the key registry for authorization.
+- **`KeyManager`** — the ERC-734 key registry. It is the single source of truth for which key holds which purpose. Every other part of the system reads keys from here.
+
+Claims (ERC-735) are **not** built into `Identity`. They are served by an installed module (`ERC734Validator`) and reached through the account's fallback handler. If no module is installed to answer them, calling a claim function reverts.
+
+### Key purposes
+
+Each key can hold one or more purposes:
+
+| Purpose         | Value | What it can do                                              |
+| --------------- | ----- | ---------------------------------------------------------- |
+| `MANAGEMENT`    | 1     | Manage the identity: keys, modules, and top-level settings |
+| `ACTION`        | 2     | Execute approved actions on behalf of the identity         |
+| `CLAIM_SIGNER`  | 3     | Sign claims for the identity                               |
+| `ENCRYPTION`    | 4     | Hold encryption material                                   |
+| `CLAIM_ADDER`   | 5     | Add claims to the identity                                 |
+| `PROPOSER`      | 6     | Queue an execution, but not run or approve it on its own   |
+
+### Identity types
+
+The factory tags every identity with a type: `ASSET` (1), `INDIVIDUAL` (2), `CORPORATE` (3), `IOT` (4), `CLAIM_ISSUER` (5), `SMART_CONTRACT` (6), `PUBLIC_AUTHORITY` (7), `AI_AGENT` (8).
+
+## Modules
+
+Modules follow the ERC-7579 standard and are installed per identity:
+
+- **`ERC734Validator`** — validates user-operation signatures against the key registry, and serves the ERC-735 claim calls reached through the account fallback.
+- **`ERC7579Validator`** — signature validator used to verify user operations.
+- **`KeyApprovalModule`** — an executor that owns the execution queue, auto-approval rules, and execution nonce. Queueing requires the `PROPOSER` purpose.
+- **`RecoveryModule`** — social recovery for an identity (see notes below).
+- **`EASClaimIssuer`** — a stateless claim issuer that reads [EAS](https://attest.org) attestations live (see notes below).
+
+## Factory and cross-chain addresses
+
+`IdentityFactory` deploys each identity as a beacon proxy using `CREATE3`. Because of `CREATE3`, a given `(salt, wallet)` resolves to the **same identity address on every chain** — as long as the factory itself sits at the same address on each chain.
+
+This relies on the standard EVM `CREATE2` derivation `keccak256(0xff, sender, salt, keccak256(initCode))`. Chains that deviate from this derivation produce different addresses. The most common case is **zkSync Era** (and other non-EVM-equivalent zkEVMs), which uses a different prefix byte and hashes bytecode and constructor inputs differently. Since `CREATE3` is built on `CREATE2`, this difference cascades: identities on zkSync will not match addresses on standard EVM chains, no matter which `CREATE3` implementation is used.
+
+The factory offers two entry points:
+
+- **`createIdentity`** — the caller deploys an identity for themselves and is linked as the first wallet.
+- **`createIdentityFor`** — the caller deploys an identity for another account (a token, a vault, and so on). This requires the right role for that identity type.
+
+Each identity type must be registered by an admin before it can be used, and access is controlled with OpenZeppelin's `AccessManager`.
+
+## Recovery module integration notes
+
+`RecoveryModule` adds social recovery to an identity. It is a thin wrapper around OpenZeppelin's `ERC7579SocialRecoveryExecutor`, pulled in from the private `openzeppelin-accounts` repository via soldeer. All recovery logic lives upstream; the wrapper only turns the upstream `abstract` contract into a deployable one.
+
+- **Guardians recover the identity, not a password.** A set of guardians can, together, restore access by meeting a threshold. Recovery is weighted and quorum-based.
+- **Recovery is delayed and can be cancelled.** A scheduled recovery only executes after a delay window, and it can be cancelled either by the account itself or by a guardian quorum before it runs.
+- **Signatures are scoped to one identity.** Each recovery request is signed against that identity's EIP-712 domain, so signatures cannot be replayed against a different identity that uses the same module.
+
+> Because it depends on the private `openzeppelin-accounts` repository, building this repo requires read access to that repository (see below).
 
 ## EAS adapter integration notes
 
@@ -45,18 +91,78 @@ This property relies on the canonical EVM `CREATE2` derivation `keccak256(0xff, 
 - **The enforcement boundary for a compromised wallet is the token-transfer layer, not the claim layer.** The revoked wallet is blocked where it acts (token transfers, factory operations); the identity's eligibility is a fact about the identity, not about any single wallet. Attestation-level kills happen on EAS (attester revokes) or on the identity (`removeClaim`).
 - **`getAttestationData` is a raw read.** It returns the attestation payload even if the attestation is revoked, expired, or from an untrusted attester. Any eligibility or display decision (KYC badges, investment gating) must go through `isClaimValid` / `getClaimStatus` — decoding the payload alone can show stale data for attestations revoked on EAS.
 
-## Development
+## Getting started
 
-- Install dev dependencies `npm ci`
-- Update interfaces and contracts code.
-- Run lint `npm run lint`
-- Compile code `npm run compile`
+This is a [Foundry](https://book.getfoundry.sh) project. Solidity `0.8.30`, EVM version `cancun`, optimizer on (200 runs). Dependencies are managed with [soldeer](https://soldeer.xyz), listed in `foundry.toml` and locked in `soldeer.lock`.
 
-### Testing
+### Prerequisites
 
-- Run `npm ci`
-- Run `npm test`
-  - Test will be executed against a local Hardhat network.
+- [Foundry](https://book.getfoundry.sh/getting-started/installation) (`forge`)
+- Node.js and npm (used only for git hooks and to run `forge soldeer install`)
+- Read access to the private `openzeppelin-accounts` repository. `forge soldeer install` clones it, so git must be authenticated. In CI this is done with a repository secret; locally your normal GitHub git credentials are enough.
+
+### Install
+
+```bash
+npm ci                 # installs git hooks and runs `forge soldeer install`
+# or, without the hooks:
+forge soldeer install  # fetch dependencies only
+```
+
+### Build
+
+```bash
+npm run build          # forge build
+```
+
+### Test
+
+```bash
+npm test               # forge test
+forge test -vvv        # with stack traces on revert (matches CI)
+forge test --match-test <name>          # run a single test
+forge test --match-contract <Contract>  # run all tests in one file
+```
+
+### Lint and format
+
+```bash
+npm run lint           # forge fmt --check (this is what CI runs)
+npm run lint:fix       # forge fmt (auto-fix)
+```
+
+### Coverage and docs
+
+```bash
+npm run coverage       # forge coverage
+npm run docs           # forge doc --serve --open
+```
+
+## Using the published package
+
+Install the package to use the contracts and interfaces in your own project:
+
+```bash
+npm add @onchain-id/solidity
+```
+
+```javascript
+// contracts, if you need to deploy them
+const {
+  contracts: { ERC734, Identity },
+} = require("@onchain-id/solidity");
+
+// interfaces, if you need to interact with deployed contracts
+const {
+  interfaces: { IERC734, IERC735 },
+} = require("@onchain-id/solidity");
+```
+
+Each artifact exposes its ABI and bytecode, for example `ERC734.abi` and `ERC734.bytecode`.
+
+## License
+
+Released under the GPL-3.0 license. See [LICENSE.md](./LICENSE.md).
 
 ---
 
