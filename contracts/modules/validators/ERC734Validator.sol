@@ -419,8 +419,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         }
 
         if (callType == ERC7579Utils.CALLTYPE_BATCH) {
-            // Every call in the batch must pass. The weakest-authorized call gates the batch.
-            Execution[] calldata batch = ERC7579Utils.decodeBatch(executionCalldata);
+            // Every call in the batch must pass. Decode into memory so a bad offset can't point
+            // past the batch and make us read a different target than the account runs.
+            Execution[] memory batch = abi.decode(executionCalldata, (Execution[]));
             for (uint256 i = 0; i < batch.length; i++) {
                 if (!_targetAllowed(account, keyHash, batch[i].target)) return false;
             }

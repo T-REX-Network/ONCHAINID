@@ -101,8 +101,10 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
             address target = address(bytes20(executionCalldata[:20]));
             _authorizeCall(target, executionCalldata[52:], callerKeyHash, callerIsExecutor);
         } else if (callType == ERC7579Utils.CALLTYPE_BATCH) {
-            // Every call in the batch must pass.
-            Execution[] calldata batch = ERC7579Utils.decodeBatch(executionCalldata);
+            // Every call in the batch must pass. Decode into memory so a bad offset can't point
+            // past the batch and let us authorize a different target than we run, and so the
+            // validator (which decodes the same way) and this check always agree.
+            Execution[] memory batch = abi.decode(executionCalldata, (Execution[]));
             for (uint256 i = 0; i < batch.length; i++) {
                 _authorizeCall(batch[i].target, batch[i].callData, callerKeyHash, callerIsExecutor);
             }
@@ -115,7 +117,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
 
     /// @dev Authorizes one call: no dispatched call may target one of the account's own modules,
     ///      and an executor caller needs a key purpose for the target.
-    function _authorizeCall(address target, bytes calldata inner, bytes32 callerKeyHash, bool callerIsExecutor)
+    function _authorizeCall(address target, bytes memory inner, bytes32 callerKeyHash, bool callerIsExecutor)
         private
         view
     {
