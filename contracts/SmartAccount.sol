@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import { KeyManager } from "./KeyManager.sol";
+import { ISmartAccount } from "./interface/ISmartAccount.sol";
 import { Errors } from "./libraries/Errors.sol";
 import { hashAddress } from "./libraries/Hashing.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
@@ -19,7 +20,7 @@ import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 /// @notice ERC-7579 modular account that uses the ERC-734 key registry from {KeyManager}.
 ///         Signature checks happen in the installed validator; the per-target rule for
 ///         user ops runs here.
-abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 {
+abstract contract SmartAccount is ISmartAccount, KeyManager, AccountERC7579Upgradeable, EIP712 {
 
     /// @notice Install a module. Gated on MANAGEMENT.
     /// @dev The OZ default gate (`onlyEntryPointOrSelf`) is replaced with the stricter
@@ -139,14 +140,20 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         }
     }
 
-    /// @dev The purpose an executor's key needs for a target. Self-target and the factory both need
+    /// @dev The purpose an executor's key needs for a target. Management-grade targets need
     ///      MANAGEMENT; any other target needs ACTION. MANAGEMENT satisfies every purpose check.
-    ///      The factory is management-grade because its wallet-binding calls (linkAccount,
-    ///      revokeAccount, confirmCrossChainLink) change the identity's own bindings.
     function _isKeyAuthorizedToCallTarget(bytes32 keyHash, address target) private view returns (bool) {
-        bool managementTarget = target == address(this) || target == identityFactory();
-        uint256 requiredPurpose = managementTarget ? KeyPurposes.MANAGEMENT : KeyPurposes.ACTION;
+        uint256 requiredPurpose = isManagementTarget(target) ? KeyPurposes.MANAGEMENT : KeyPurposes.ACTION;
         return _moduleKeyHasPurpose(keyHash, requiredPurpose);
+    }
+
+    /// @inheritdoc ISmartAccount
+    /// @dev {ERC734Validator} keeps its own copy instead: calling the account during ERC-4337
+    ///      validation would break ERC-7562 bundler rules.
+    function isManagementTarget(address target) public view returns (bool) {
+        // OZ aliases target 0 to the account before dispatch; match that so the checks agree.
+        if (target == address(0)) target = address(this);
+        return target == address(this) || target == identityFactory();
     }
 
     /// @notice The factory that deployed this identity. Implemented by the concrete account
