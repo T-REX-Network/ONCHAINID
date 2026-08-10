@@ -2,7 +2,6 @@
 pragma solidity ^0.8.28;
 
 import { KeyManager } from "./KeyManager.sol";
-import { ISmartAccount } from "./interface/ISmartAccount.sol";
 import { Errors } from "./libraries/Errors.sol";
 import { hashAddress } from "./libraries/Hashing.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
@@ -20,7 +19,7 @@ import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 /// @notice ERC-7579 modular account that uses the ERC-734 key registry from {KeyManager}.
 ///         Signature checks happen in the installed validator; the per-target rule for
 ///         user ops runs here.
-abstract contract SmartAccount is ISmartAccount, KeyManager, AccountERC7579Upgradeable, EIP712 {
+abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 {
 
     /// @notice Install a module. Gated on MANAGEMENT.
     /// @dev The OZ default gate (`onlyEntryPointOrSelf`) is replaced with the stricter
@@ -147,13 +146,18 @@ abstract contract SmartAccount is ISmartAccount, KeyManager, AccountERC7579Upgra
         return _moduleKeyHasPurpose(keyHash, requiredPurpose);
     }
 
-    /// @inheritdoc ISmartAccount
+    /// @notice Whether a call to `target` needs MANAGEMENT rather than ACTION. Management-grade
+    ///         targets are the account itself, its factory (whose wallet-binding calls change the
+    ///         identity's own bindings), and the enshrined key registry (whose addKey/removeKey run
+    ///         under the account and rewrite its own key set). Read by executor modules (e.g.
+    ///         {KeyApprovalModule}) so they match this dispatch guard.
     /// @dev {ERC734Validator} keeps its own copy instead: calling the account during ERC-4337
-    ///      validation would break ERC-7562 bundler rules.
+    ///      validation would break ERC-7562 bundler rules. It self-guards the registry there via
+    ///      `target == address(this)`.
     function isManagementTarget(address target) public view returns (bool) {
         // OZ aliases target 0 to the account before dispatch; match that so the checks agree.
         if (target == address(0)) target = address(this);
-        return target == address(this) || target == identityFactory();
+        return target == address(this) || target == identityFactory() || target == registryModule();
     }
 
     /// @notice The factory that deployed this identity. Implemented by the concrete account

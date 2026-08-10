@@ -10,10 +10,17 @@ import {
 
 import { IERC734 } from "../../interface/IERC734.sol";
 import { IERC735 } from "../../interface/IERC735.sol";
-import { ISmartAccount } from "../../interface/ISmartAccount.sol";
 import { Errors } from "../../libraries/Errors.sol";
 import { hashAddress } from "../../libraries/Hashing.sol";
 import { KeyPurposes } from "../../libraries/KeyPurposes.sol";
+
+/// @dev Minimal view of the account: does a target need MANAGEMENT (self or factory)?
+///      See {SmartAccount.isManagementTarget}.
+interface IIdentityAccount {
+
+    function isManagementTarget(address target) external view returns (bool);
+
+}
 
 /**
  * @title KeyApprovalModule
@@ -118,8 +125,8 @@ contract KeyApprovalModule is IERC7579Module {
         }
     }
 
-    /// @notice Approve (or reject) a queued execution. Self-targeted calls and factory-targeted
-    ///         calls require MANAGEMENT; other external targets require ACTION.
+    /// @notice Approve (or reject) a queued execution. Management-grade targets (the account, its
+    ///         factory, or the key registry) require MANAGEMENT; other external targets require ACTION.
     function approve(uint256 _id, bool _shouldApprove) external returns (bool success) {
         // 1. Resolve account + ERC-2771 caller, fetch the queued request.
         address account = msg.sender;
@@ -131,10 +138,11 @@ contract KeyApprovalModule is IERC7579Module {
         require(_id < state.executionNonce, Errors.InvalidRequestId());
         require(!execution.executed, Errors.RequestAlreadyExecuted());
 
-        // 3. Authorize the approver. Management-grade target (self or factory) needs MANAGEMENT;
-        // other external targets need ACTION. Without the factory being management-grade here, an
-        // ACTION key could approve a queued factory call and, e.g., terminally revoke a wallet.
-        if (ISmartAccount(account).isManagementTarget(execution.to)) {
+        // 3. Authorize the approver. A management-grade target (the account, its factory, or the
+        // key registry) needs MANAGEMENT; other external targets need ACTION. Without this, an ACTION
+        // key could approve a queued factory call (e.g. terminally revoke a wallet) or a registry
+        // call (e.g. grant itself a MANAGEMENT key), dispatched under the module's MANAGEMENT key.
+        if (IIdentityAccount(account).isManagementTarget(execution.to)) {
             require(
                 IERC734(account).keyHasPurpose(callerKeyHash, KeyPurposes.MANAGEMENT),
                 Errors.SenderDoesNotHaveManagementKey()
@@ -197,9 +205,9 @@ contract KeyApprovalModule is IERC7579Module {
             return false;
         }
 
-        // A management-grade target (the factory) never auto-approves for a non-MANAGEMENT key;
-        // MANAGEMENT already returned above.
-        if (ISmartAccount(account).isManagementTarget(to)) return false;
+        // A management-grade target (the factory or the key registry) never auto-approves for a
+        // non-MANAGEMENT key; MANAGEMENT already returned above.
+        if (IIdentityAccount(account).isManagementTarget(to)) return false;
 
         // External target: ACTION keys can dispatch directly.
         if (to != account && IERC734(account).keyHasPurpose(keyHash, KeyPurposes.ACTION)) return true;
