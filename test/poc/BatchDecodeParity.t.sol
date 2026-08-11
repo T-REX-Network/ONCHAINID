@@ -21,9 +21,11 @@ import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.so
 ///         result was a self-call carrying attacker-chosen calldata, escalating an ACTION key to
 ///         MANAGEMENT.
 ///
-///         Both sites now decode with `abi.decode(..., (Execution[]))`, which copies into memory
-///         and validates every pointer against that copy, so the crafted batch is rejected and the
-///         two sides cannot disagree. This test fails before that change and passes after it.
+///         Both sites now decode with {SafeCalldataBatch.decodeBatch}, which keeps the batch in
+///         calldata but walks every entry and rejects any whose head or `callData` tail escapes the
+///         `executionCalldata` slice (OpenZeppelin PR #5400's bounds check, inlined). The crafted
+///         batch is rejected and the two sides cannot disagree. This test fails before that change
+///         and passes after it.
 contract BatchDecodeParityTest is OnchainIDSetup {
 
     address internal constant ENTRY_POINT = 0x433709009B8330FDa32311DF1C2AFA402eD8D009;
