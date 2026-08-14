@@ -15,11 +15,10 @@ import { UpgradeableBeacon } from "@openzeppelin/contracts/proxy/beacon/Upgradea
 import { InteroperableAddress } from "@openzeppelin/contracts/utils/draft-InteroperableAddress.sol";
 
 import { Identity } from "../Identity.sol";
-import { IERC734 } from "../interface/IERC734.sol";
 import { IIdentity } from "../interface/IIdentity.sol";
 import { Errors } from "../libraries/Errors.sol";
 import { IdentityTypes } from "../libraries/IdentityTypes.sol";
-import { KeyPurposes } from "../libraries/KeyPurposes.sol";
+import { ERC734Validator } from "../modules/validators/ERC734Validator.sol";
 import { Create3 } from "@openzeppelin/contracts/utils/Create3.sol";
 
 import { Structs } from "../storage/Structs.sol";
@@ -440,9 +439,15 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
 
         address identity = _deployIdentity(deploySalt, _identityType, _keys, _modules);
 
-        // The identity must end up with at least one MANAGEMENT key. Without it nobody
-        // can manage the identity, so deploy is treated as a programmer error and reverts.
-        require(IERC734(identity).getKeysByPurpose(KeyPurposes.MANAGEMENT).length >= 1, Errors.NoManagementKeyInKeys());
+        // The identity must end up with at least one MANAGEMENT key that can actually sign.
+        // Counting the raw MANAGEMENT purpose set would also count the MODULE keys minted by
+        // module installs (the KeyApprovalModule's MANAGEMENT grant, for one), which the
+        // validator rejects as signers — an identity whose only manager is such an entry would
+        // pass while being unmanageable from birth. Ask the registry for the signer count.
+        require(
+            ERC734Validator(Identity(payable(identity)).registryModule()).signingManagementKeyCount(identity) >= 1,
+            Errors.NoManagementKeyInKeys()
+        );
 
         // Mark factory-deployed BEFORE linking so a re-entrant module can't pretend
         // to be a non-factory caller.

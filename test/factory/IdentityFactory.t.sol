@@ -495,6 +495,25 @@ contract IdentityFactoryTest is OnchainIDSetup {
         onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "salt1", keys, _defaultModules());
     }
 
+    /// @notice M-01. A module install with a MANAGEMENT purpose mints a MODULE-type key, which
+    ///         lands in the MANAGEMENT purpose set but can never sign: `_rawERC7579Validation`
+    ///         rejects MODULE keyType for user ops and ERC-1271 alike. Counting the raw purpose
+    ///         set would let this identity deploy with no party able to manage it. The factory
+    ///         must count signer keys only, and reject.
+    function test_revertBecauseOnlyManagementKeyIsAModuleInstall() public {
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
+        keys[0] = _makeECDSAKey(david, KeyPurposes.ACTION);
+
+        Structs.ModuleInstall[] memory mods = _defaultModules();
+        // Grant the executor module MANAGEMENT. Pre-fix this made the MANAGEMENT set non-empty
+        // and the deploy went through.
+        mods[0].purpose = KeyPurposes.MANAGEMENT;
+
+        vm.prank(deployer);
+        vm.expectRevert(Errors.NoManagementKeyInKeys.selector);
+        onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "modMgmt", keys, mods);
+    }
+
     // ============ createIdentityFor auto-link ============
 
     function test_createIdentity_autoLinksAccountAsActive() public {

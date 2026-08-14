@@ -78,6 +78,58 @@ contract SmartAccountTest is OnchainIDSetup {
         aliceIdentity.removeKey(aliceKey, KeyPurposes.MANAGEMENT);
     }
 
+    /// @notice M-01. The guard must count MANAGEMENT keys that can actually sign, not raw
+    ///         membership of the purpose set. The fixture's KeyApprovalModule holds a MODULE-type
+    ///         MANAGEMENT key, so the set reads two while alice is the only real manager. Without
+    ///         the fix alice could remove her own MANAGEMENT purpose and strand the identity.
+    function test_removeKey_lastSigningManagementKey_revertsDespiteModuleKey() public {
+        bytes32 aliceKey = keccak256(abi.encodePacked(alice));
+        bytes32 moduleKey = keccak256(abi.encodePacked(address(onchainidSetup.keyApprovalModule)));
+
+        // Both are in the MANAGEMENT purpose set...
+        assertEq(
+            IERC734(address(aliceIdentity)).getKeysByPurpose(KeyPurposes.MANAGEMENT).length,
+            2,
+            "fixture should have alice + the module in the MANAGEMENT set"
+        );
+        // ...but the module key cannot sign, so only one manager really exists.
+        assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(moduleKey, KeyPurposes.MANAGEMENT),
+            "module key holds MANAGEMENT"
+        );
+
+        vm.prank(alice);
+        vm.expectRevert(Errors.CannotRemoveLastManagementKey.selector);
+        aliceIdentity.removeKey(aliceKey, KeyPurposes.MANAGEMENT);
+    }
+
+    /// @notice M-01 companion. The guard is skipped for MODULE keys, so uninstalling a module can
+    ///         always drop its registration — even when it is the only entry left in the
+    ///         MANAGEMENT set. It holds no signing authority, so nothing is stranded by removing it.
+    function test_removeKey_moduleManagementKey_removableEvenWhenLastInSet() public {
+        bytes32 aliceKey = keccak256(abi.encodePacked(alice));
+        bytes32 moduleKey = keccak256(abi.encodePacked(address(onchainidSetup.keyApprovalModule)));
+
+        // Drop alice first: allowed, because the identity's remaining MANAGEMENT entry is a
+        // module key and the signer count check is what gates this — so it must revert.
+        vm.prank(alice);
+        vm.expectRevert(Errors.CannotRemoveLastManagementKey.selector);
+        aliceIdentity.removeKey(aliceKey, KeyPurposes.MANAGEMENT);
+
+        // The module key itself comes off freely, leaving alice as the sole manager.
+        vm.prank(alice);
+        aliceIdentity.removeKey(moduleKey, KeyPurposes.MANAGEMENT);
+
+        assertEq(
+            IERC734(address(aliceIdentity)).getKeysByPurpose(KeyPurposes.MANAGEMENT).length,
+            1,
+            "alice should be the only MANAGEMENT key left"
+        );
+        assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(aliceKey, KeyPurposes.MANAGEMENT), "alice still manages"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Executor-bypass tests — executor's address is an ERC-734 key
     // -----------------------------------------------------------------------

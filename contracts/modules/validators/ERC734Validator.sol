@@ -194,15 +194,18 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         _addKey(msg.sender, signerData, clientData, purpose, keyType);
     }
 
-    /// @notice Remove a purpose from a key for the caller. The last MANAGEMENT key cannot be
-    ///         removed. Deletes the record once its last purpose is gone.
+    /// @notice Remove a purpose from a key for the caller. The last MANAGEMENT key that can
+    ///         actually sign cannot be removed. Deletes the record once its last purpose is gone.
+    /// @dev The guard counts signer keys only (see {_signingManagementKeyCount}) and is skipped
+    ///      when the key being removed is itself a MODULE key, so uninstalling a module can
+    ///      always drop that module's registration.
     function removeKey(bytes32 keyHash, uint256 purpose) external {
         AccountRegistry storage registry = _store().registries[msg.sender];
         require(registry.allKeys.contains(keyHash), KeyNotRegistered(keyHash));
         Key storage key = registry.keys[keyHash];
 
-        if (purpose == KeyPurposes.MANAGEMENT) {
-            require(registry.byPurpose[KeyPurposes.MANAGEMENT].length() > 1, CannotRemoveLastManagementKey());
+        if (purpose == KeyPurposes.MANAGEMENT && key.keyType != KeyTypes.MODULE) {
+            require(_signingManagementKeyCount(registry) > 1, CannotRemoveLastManagementKey());
         }
         // Revert if the key doesn't have this purpose.
         require(key.purposes.remove(purpose), Errors.KeyDoesNotHavePurpose(keyHash, purpose));
@@ -213,6 +216,26 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         }
 
         emit KeyRemoved(msg.sender, keyHash, purpose);
+    }
+
+    /// @notice Number of MANAGEMENT keys on `account` that {_rawERC7579Validation} would accept
+    ///         as a signer, i.e. excluding MODULE keys.
+    /// @dev This, not `getKeysByPurpose(MANAGEMENT).length`, is the honest measure of "can anyone
+    ///      still manage this identity". Module registrations (the KeyApprovalModule's MANAGEMENT
+    ///      grant, for one) sit in the MANAGEMENT purpose set but hold no signing authority, so a
+    ///      raw set-length reads as two on a single-owner identity that in truth has one manager.
+    function signingManagementKeyCount(address account) public view returns (uint256) {
+        return _signingManagementKeyCount(_store().registries[account]);
+    }
+
+    /// @dev Walks the MANAGEMENT purpose set and skips MODULE keys.
+    ///      The set is expected to be small (managers, not claims), so a linear scan is fine.
+    function _signingManagementKeyCount(AccountRegistry storage registry) internal view returns (uint256 count) {
+        EnumerableSet.Bytes32Set storage managers = registry.byPurpose[KeyPurposes.MANAGEMENT];
+        uint256 length = managers.length();
+        for (uint256 i = 0; i < length; i++) {
+            if (registry.keys[managers.at(i)].keyType != KeyTypes.MODULE) count++;
+        }
     }
 
     /// @notice `IERC734.keyHasPurpose`, scoped to `account`. MANAGEMENT satisfies any purpose.
