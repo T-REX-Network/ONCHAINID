@@ -127,6 +127,9 @@ contract KeyApprovalModule is IERC7579Module {
 
     /// @notice Approve (or reject) a queued execution. Management-grade targets (the account, its
     ///         factory, or the key registry) require MANAGEMENT; other external targets require ACTION.
+    /// @dev    This gate is target-level (MANAGEMENT vs ACTION). Per-selector claim granularity (e.g.
+    ///         addClaim needing only CLAIM_SIGNER) is handled by the claim branch in `_canAutoApprove`
+    ///         and the account's fallback dispatch, not here.
     function approve(uint256 _id, bool _shouldApprove) external returns (bool success) {
         // 1. Resolve account + ERC-2771 caller, fetch the queued request.
         address account = msg.sender;

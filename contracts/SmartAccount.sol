@@ -151,6 +151,8 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
     ///         identity's own bindings), and the enshrined key registry (whose addKey/removeKey run
     ///         under the account and rewrite its own key set). Read by executor modules (e.g.
     ///         {KeyApprovalModule}) so they match this dispatch guard.
+    /// @dev Target-level only (MANAGEMENT vs ACTION); it does not resolve per-selector granularity,
+    ///      so callers that host selector-specific purposes handle those separately.
     /// @dev {ERC734Validator} keeps its own copy instead: calling the account during ERC-4337
     ///      validation would break ERC-7562 bundler rules. It self-guards the registry there via
     ///      `target == address(this)`.
