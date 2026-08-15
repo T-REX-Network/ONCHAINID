@@ -194,14 +194,17 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         _addKey(msg.sender, signerData, clientData, purpose, keyType);
     }
 
-    /// @notice Remove a purpose from a key for the caller. The last MANAGEMENT key cannot be
-    ///         removed. Deletes the record once its last purpose is gone.
+    /// @notice Remove a purpose from a key for the caller. The last MANAGEMENT key that can
+    ///         sign cannot be removed. Deletes the record once its last purpose is gone.
+    /// @dev The MANAGEMENT index only holds signer keys (see {_addKey}), so its length is the
+    ///      manager count. The guard is skipped for MODULE keys: they hold no signing
+    ///      authority, so removing them can never strand the identity.
     function removeKey(bytes32 keyHash, uint256 purpose) external {
         AccountRegistry storage registry = _store().registries[msg.sender];
         require(registry.allKeys.contains(keyHash), KeyNotRegistered(keyHash));
         Key storage key = registry.keys[keyHash];
 
-        if (purpose == KeyPurposes.MANAGEMENT) {
+        if (purpose == KeyPurposes.MANAGEMENT && key.keyType != KeyTypes.MODULE) {
             require(registry.byPurpose[KeyPurposes.MANAGEMENT].length() > 1, CannotRemoveLastManagementKey());
         }
         // Revert if the key doesn't have this purpose.
@@ -540,7 +543,13 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         }
 
         require(key.purposes.add(purpose), KeyAlreadyRegistered(keyHash));
-        registry.byPurpose[purpose].add(keyHash);
+        // Module keys never enter the MANAGEMENT index. They cannot sign (the validator
+        // rejects MODULE keys), so they must not count as managers. The last-manager guard
+        // in removeKey and the factory's post-deploy check both rely on this index.
+        // keyHasPurpose reads the key's own purpose set, so module authority is unchanged.
+        if (purpose != KeyPurposes.MANAGEMENT || key.keyType != KeyTypes.MODULE) {
+            registry.byPurpose[purpose].add(keyHash);
+        }
         emit KeyAdded(account, keyHash, purpose, keyType);
     }
 

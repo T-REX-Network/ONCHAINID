@@ -78,6 +78,48 @@ contract SmartAccountTest is OnchainIDSetup {
         aliceIdentity.removeKey(aliceKey, KeyPurposes.MANAGEMENT);
     }
 
+    /// @notice The KeyApprovalModule holds MANAGEMENT as a MODULE key, which cannot sign.
+    ///         It does not count toward the last-manager guard, so alice is the only real
+    ///         manager and removing her MANAGEMENT purpose must revert.
+    function test_removeKey_lastSigningManagementKey_revertsDespiteModuleKey() public {
+        bytes32 aliceKey = keccak256(abi.encodePacked(alice));
+        bytes32 moduleKey = keccak256(abi.encodePacked(address(onchainidSetup.keyApprovalModule)));
+
+        // The module holds MANAGEMENT (executor gating reads this).
+        assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(moduleKey, KeyPurposes.MANAGEMENT),
+            "module key holds MANAGEMENT"
+        );
+        // But the MANAGEMENT index only counts signers, so alice is the last manager.
+        assertEq(
+            IERC734(address(aliceIdentity)).getKeysByPurpose(KeyPurposes.MANAGEMENT).length,
+            1,
+            "MANAGEMENT index counts signer keys only"
+        );
+
+        vm.prank(alice);
+        vm.expectRevert(Errors.CannotRemoveLastManagementKey.selector);
+        aliceIdentity.removeKey(aliceKey, KeyPurposes.MANAGEMENT);
+    }
+
+    /// @notice The guard is skipped for MODULE keys, so a module's registration can always
+    ///         be dropped and uninstall keeps working.
+    function test_removeKey_moduleManagementKey_alwaysRemovable() public {
+        bytes32 aliceKey = keccak256(abi.encodePacked(alice));
+        bytes32 moduleKey = keccak256(abi.encodePacked(address(onchainidSetup.keyApprovalModule)));
+
+        vm.prank(alice);
+        aliceIdentity.removeKey(moduleKey, KeyPurposes.MANAGEMENT);
+
+        assertFalse(
+            IERC734(address(aliceIdentity)).keyHasPurpose(moduleKey, KeyPurposes.MANAGEMENT),
+            "module registration dropped"
+        );
+        assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(aliceKey, KeyPurposes.MANAGEMENT), "alice still manages"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Executor-bypass tests — executor's address is an ERC-734 key
     // -----------------------------------------------------------------------
