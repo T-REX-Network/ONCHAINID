@@ -566,7 +566,15 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         // CLAIM_SIGNER or CLAIM_ADDER can add a claim. Self-issued claims still need a real
         // signature (checked by isClaimValid in _addClaim), so CLAIM_ADDER cannot fake
         // self-attestations.
-        _requireClaimKey(msg.sender, _msgSender(), false);
+        address caller = _msgSender();
+        // If the caller is this module itself, the call came from {addClaimTo}: the module made
+        // the outbound call, so the target's fallback appended the module's own address as the
+        // ERC-2771 caller. addClaimTo already checked that a MANAGEMENT key of `_issuer` started
+        // the flow and that a CLAIM_SIGNER of `_issuer` signed the claim, so the claim-key check
+        // below runs against `_issuer` instead. The module is one shared singleton, so its own
+        // address must never be the grantee: a single key granted to it would admit every issuer.
+        if (caller == address(this)) caller = _issuer;
+        _requireClaimKey(msg.sender, caller, false);
         return _addClaim(msg.sender, _topic, _scheme, _issuer, _signature, _data, _uri);
     }
 
@@ -755,7 +763,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     }
 
     /// @notice Verify a claim then write it to the target identity via its `addClaim`. The target
-    ///         must have the calling issuer added as a CLAIM_SIGNER key.
+    ///         must have granted the calling issuer identity a CLAIM_SIGNER or CLAIM_ADDER key.
     function addClaimTo(
         uint256 _topic,
         uint256 _scheme,
@@ -772,6 +780,10 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
             Errors.InvalidClaim()
         );
 
+        // This call lands back in {addClaim} on the target, with this module as the ERC-2771
+        // caller. addClaim detects that and checks the target's claim keys against `account`,
+        // passed here as the issuer. Keep this the module's only state-changing external call
+        // to an arbitrary address; the issuer rebinding in addClaim depends on it.
         _identity.addClaim(_topic, _scheme, account, _signature, _data, _uri);
         emit ClaimAddedTo(address(_identity), _topic, _signature, _data);
     }
