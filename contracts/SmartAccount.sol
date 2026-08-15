@@ -113,8 +113,9 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         return super._execute(mode, executionCalldata);
     }
 
-    /// @dev Authorizes one call: no dispatched call may target one of the account's own modules,
-    ///      and an executor caller needs a key purpose for the target.
+    /// @dev Authorizes one call: no dispatched call may target one of the account's own modules
+    ///      (unless the account itself is the caller), and an executor caller needs a key
+    ///      purpose for the target.
     function _authorizeCall(address target, bytes calldata inner, bytes32 callerKeyHash, bool callerIsExecutor)
         private
         view
@@ -127,9 +128,14 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         // through the account's fallback dispatch, which appends the real caller (ERC-2771 style);
         // `execute(module, ...)` skips that append, so the module would misread its caller.
         // `bytes4(inner)` zero-pads short/empty calldata, which matches no handler.
+        //
+        // Exception: the account itself may call its own modules. Some module functions only
+        // accept the account as caller (the recovery module's cancel and its config setters),
+        // and this is the only way to reach them. A self-call to `execute` always comes from a
+        // MANAGEMENT-authorized flow, so nothing is escalated.
         bool targetIsOwnModule = isModuleInstalled(MODULE_TYPE_EXECUTOR, target, Calldata.emptyBytes())
             || _fallbackHandler(bytes4(inner)) == target;
-        if (targetIsOwnModule) {
+        if (targetIsOwnModule && msg.sender != address(this)) {
             revert Errors.OwnModuleTargetBlocked(target);
         }
 
