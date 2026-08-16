@@ -616,8 +616,14 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
 
         AccountRegistry storage s = _store().registries[account];
         claimId = keccak256(abi.encode(issuer, topic));
-        s.claims[claimId] =
-            Structs.Claim({ topic: topic, scheme: scheme, issuer: issuer, signature: signature, data: data, uri: uri });
+        // Save the digest the signature was verified against. removeClaim revokes this stored
+        // value, so revocation stays keyed on the domain that was signed even if the issuer's
+        // EIP-712 domain changes on a later upgrade. Zero when the issuer has no EIP-712 domain
+        // (e.g. the EAS adapter); those revocations live issuer-side.
+        bytes32 digest = _getClaimDigest(issuer, account, topic, data);
+        s.claims[claimId] = Structs.Claim({
+            topic: topic, scheme: scheme, issuer: issuer, signature: signature, data: data, uri: uri, digest: digest
+        });
 
         if (s.claimsByTopic[topic].add(claimId)) {
             emit ClaimAdded(claimId, topic, scheme, issuer, signature, data, uri);
@@ -663,12 +669,16 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         uint256 topic = c.topic;
         require(topic != 0, Errors.ClaimNotRegistered(_claimId));
 
-        // Revoke the digest on both the holder's and the issuer's sets so _getClaimStatus (which
-        // reads the issuer's set) blocks re-adding the same bytes.
-        bytes32 digest = _getClaimDigest(c.issuer, account, topic, c.data);
-        require(!s.revokedDigests[digest], Errors.ClaimAlreadyRevoked());
-        s.revokedDigests[digest] = true;
-        _store().registries[c.issuer].revokedDigests[digest] = true;
+        // Revoke the digest saved at add time on both the holder's and the issuer's sets so
+        // _getClaimStatus (which reads the issuer's set) blocks re-adding the same bytes. Not
+        // recomputed here: the stored value is what the signature actually covers. A zero digest
+        // means the issuer has no EIP-712 domain, so there is nothing to revoke locally.
+        bytes32 digest = c.digest;
+        if (digest != bytes32(0)) {
+            require(!s.revokedDigests[digest], Errors.ClaimAlreadyRevoked());
+            s.revokedDigests[digest] = true;
+            _store().registries[c.issuer].revokedDigests[digest] = true;
+        }
 
         s.claimsByTopic[topic].remove(_claimId);
         emit ClaimRemoved(_claimId, topic, c.scheme, c.issuer, c.signature, c.data, c.uri);
@@ -779,29 +789,34 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     // --- claims internals ------------------------------------------------
 
     /// @dev Build the EIP-712 claim digest using the issuer identity's domain (read via IERC5267),
-    ///      so signers sign against the issuer address, not this module.
+    ///      so signers sign against the issuer address, not this module. Returns zero when the
+    ///      issuer exposes no EIP-712 domain (e.g. the stateless EAS adapter).
     function _getClaimDigest(address account, address subject, uint256 topic, Structs.ClaimData memory data)
         internal
         view
         virtual
         returns (bytes32)
     {
-        (
+        try IERC5267(account).eip712Domain() returns (
             bytes1 fields,
             string memory name,
             string memory version,
             uint256 chainId,
             address verifyingContract,
             bytes32 salt,
-        ) = IERC5267(account).eip712Domain();
+            uint256[] memory
+        ) {
+            bytes32 domainSeparator = MessageHashUtils.toDomainSeparator(
+                fields, name, version, chainId, verifyingContract, salt
+            );
 
-        bytes32 domainSeparator =
-            MessageHashUtils.toDomainSeparator(fields, name, version, chainId, verifyingContract, salt);
-
-        bytes32 dataHash =
-            keccak256(abi.encode(_CLAIM_DATA_TYPEHASH, data.issuedAt, data.validUntil, keccak256(data.payload)));
-        bytes32 structHash = keccak256(abi.encode(_CLAIM_TYPEHASH, topic, subject, dataHash));
-        return MessageHashUtils.toTypedDataHash(domainSeparator, structHash);
+            bytes32 dataHash =
+                keccak256(abi.encode(_CLAIM_DATA_TYPEHASH, data.issuedAt, data.validUntil, keccak256(data.payload)));
+            bytes32 structHash = keccak256(abi.encode(_CLAIM_TYPEHASH, topic, subject, dataHash));
+            return MessageHashUtils.toTypedDataHash(domainSeparator, structHash);
+        } catch {
+            return bytes32(0);
+        }
     }
 
     /// @dev Detailed claim validity. Checks are ordered cheapest first: time bounds, revoked

@@ -79,6 +79,12 @@ contract Identity is Initializable, SmartAccount, ERC165 {
      * @param identityFactory_ The {IdentityFactory} that deploys identities of this implementation.
      * @dev The implementation is only ever used behind a BeaconProxy, so its own `Initializable`
      *      slot is locked here; proxies keep their storage untouched and can initialize.
+     *
+     *      The EIP-712 name and version are frozen across upgrades: claim signatures and
+     *      revocation digests are keyed on this domain, so changing either invalidates them for
+     *      every identity behind the beacon. Both must also stay 31 bytes or less. OZ's EIP712
+     *      keeps short strings in immutables but spills longer ones into the implementation's
+     *      storage, which proxies read as empty, silently degrading the domain.
      */
     constructor(address registryModule_, address identityFactory_) EIP712("OnchainID", "1") {
         require(registryModule_ != address(0), Errors.ZeroAddress());

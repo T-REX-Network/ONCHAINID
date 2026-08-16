@@ -69,6 +69,9 @@ contract Structs {
      *  data: The hash of the claim data, sitting in another location, a bit-mask, call data, or actual data based on
      *  the claim scheme.
      *  uri: The location of the claim, this can be HTTP links, swarm hashes, IPFS hashes, and such.
+     *  digest: The EIP-712 digest the signature covers, saved when the claim is stored so removal
+     *  revokes what was signed even if the issuer's domain changes later. Zero when the issuer
+     *  exposes no EIP-712 domain (e.g. a stateless adapter like EASClaimIssuer).
      */
     struct Claim {
         uint256 topic;
@@ -77,6 +80,7 @@ contract Structs {
         bytes signature;
         ClaimData data;
         string uri;
+        bytes32 digest;
     }
 
     /**
