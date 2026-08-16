@@ -107,6 +107,10 @@ library Errors {
     ///         past its `expiry`.
     error PendingCrossChainLinkExpired(uint256 expiry);
 
+    /// @notice Reverts when a cross-chain proposal names a wallet on this chain.
+    ///         Local wallets link through {linkAccount} with a signature.
+    error CrossChainLinkForLocalWallet(bytes wallet);
+
     /* ----- Verifier ----- */
 
     /// @notice The claim topic already exists.
