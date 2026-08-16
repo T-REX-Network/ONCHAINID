@@ -53,6 +53,10 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     /// @dev CREATE3 salt for the beacon's predetermined slot.
     bytes32 private constant _BEACON_SALT = keccak256("onchainid.beacon.v1");
 
+    /// @dev Fixed part of an ERC-7930 v1 envelope: version (2 bytes), chainType
+    ///      (2 bytes) and the two length prefixes (1 byte each).
+    uint256 private constant _ENVELOPE_FIXED_LENGTH = 6;
+
     /// @notice OZ UpgradeableBeacon that every BeaconProxy delegates to. Owned by the factory
     ///         itself, so upgrades run through {upgradeBeacon}, which is gated by the factory's
     ///         current authority. Ownership is a stable anchor (the factory address never
@@ -195,7 +199,10 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     function linkAccount(bytes calldata account, bytes calldata signature, uint256 nonce, uint256 expiry) external {
         // `account` is an ERC-7930 envelope wrapping the wallet. Its layout is:
         //     [ chainType | chainReference | signer ]
-        // bytes feed the signature check. parseV1Calldata reverts on malformed input.
+        // The signer bytes feed the signature check. Envelopes with trailing bytes
+        // are rejected so the same wallet cannot register twice under a padded
+        // encoding.
+        require(_isCanonicalEnvelope(account), Errors.NonCanonicalAccount(account));
         (,, bytes calldata signer) = InteroperableAddress.parseV1Calldata(account);
 
         // expiry == 0 reverts (block.timestamp <= 0 is false). Forces callers to pick a window.
@@ -242,6 +249,10 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
             idType != IdentityTypes.ASSET && idType != IdentityTypes.SMART_CONTRACT,
             Errors.CannotRevokeFromNonSigningIdentity(msg.sender)
         );
+
+        // Same canonical check as linkAccount. A padded envelope could never match
+        // a linked entry anyway, but this gives the caller the right error.
+        require(_isCanonicalEnvelope(account), Errors.NonCanonicalAccount(account));
 
         bytes32 key = _walletKey(account);
         require(_storage().wallets[key].identity == msg.sender, Errors.WalletNotLinkedToIdentity(account));
@@ -325,6 +336,11 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
             keccak256(sender) == keccak256(walletEnvelope),
             Errors.CrossChainSenderWalletMismatch(sender, walletEnvelope)
         );
+
+        // Same canonical check as linkAccount, so a padded variant of a linked or
+        // revoked wallet cannot pass the status check below under a fresh key.
+        require(_isCanonicalEnvelope(walletEnvelope), Errors.NonCanonicalAccount(walletEnvelope));
+
         require(block.timestamp <= expiry, Errors.PendingCrossChainLinkExpired(expiry));
         require(_storage().isFactoryIdentity[identity], Errors.NotFactoryIdentity(identity));
 
@@ -506,8 +522,20 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         }
     }
 
+    /// @dev Raw bytes are safe to hash as the wallet key because every envelope
+    ///      supplied from outside passes {_isCanonicalEnvelope} first, and the ones
+    ///      the factory builds itself come from `formatEvmV1`.
     function _walletKey(bytes memory account) private pure returns (bytes32) {
         return keccak256(account);
+    }
+
+    /// @dev True if `account` is a valid ERC-7930 v1 envelope with no trailing
+    ///      bytes. OZ's parseV1 ignores trailing bytes, so without this check the
+    ///      same wallet could be encoded in many ways, each hashing to a different
+    ///      `_walletKey` and breaking sticky binding and terminal revocation.
+    function _isCanonicalEnvelope(bytes memory account) private pure returns (bool) {
+        (bool success,, bytes memory chainReference, bytes memory addr) = InteroperableAddress.tryParseV1(account);
+        return success && account.length == _ENVELOPE_FIXED_LENGTH + chainReference.length + addr.length;
     }
 
     /// @dev CREATE3 deploy of a fresh BeaconProxy. The address depends only on the factory

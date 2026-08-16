@@ -825,6 +825,60 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertEq(onchainidSetup.idFactory.getIdentity(nonEvmEnv), address(0));
     }
 
+    /// @notice An envelope with trailing bytes decodes to the same signer but hashes
+    ///         to a fresh registry key, so it must be rejected (M-05).
+    function test_linkAccount_revertNonCanonicalEnvelope() public {
+        bytes memory paddedAcc = bytes.concat(InteroperableAddress.formatEvmV1(block.chainid, david), hex"0000");
+        uint256 expiry = block.timestamp + 1 hours;
+        uint256 nonce = onchainidSetup.idFactory.nonceForAccount(paddedAcc);
+        // david can produce a valid signature over the padded bytes, so only the
+        // canonical check blocks the link.
+        bytes memory sig = _signLink(davidPk, paddedAcc, address(aliceIdentity), nonce, expiry);
+
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(abi.encodeWithSelector(Errors.NonCanonicalAccount.selector, paddedAcc));
+        onchainidSetup.idFactory.linkAccount(paddedAcc, sig, nonce, expiry);
+    }
+
+    /// @notice A revoked wallet cannot relink through a padded encoding of its
+    ///         envelope.
+    function test_linkAccount_paddedEnvelopeCannotBypassRevocation() public {
+        bytes memory davidAcc = InteroperableAddress.formatEvmV1(block.chainid, david);
+        uint256 expiry = block.timestamp + 1 hours;
+        uint256 nonce = onchainidSetup.idFactory.nonceForAccount(davidAcc);
+        bytes memory sig = _signLink(davidPk, davidAcc, address(aliceIdentity), nonce, expiry);
+        _execLink(aliceIdentity, alice, davidAcc, sig, nonce, expiry);
+        _execRevoke(aliceIdentity, alice, davidAcc);
+
+        bytes memory paddedAcc = bytes.concat(davidAcc, hex"0000");
+        uint256 nonce2 = onchainidSetup.idFactory.nonceForAccount(paddedAcc);
+        bytes memory sig2 = _signLink(davidPk, paddedAcc, address(bobIdentity), nonce2, expiry);
+
+        vm.prank(address(bobIdentity));
+        vm.expectRevert(abi.encodeWithSelector(Errors.NonCanonicalAccount.selector, paddedAcc));
+        onchainidSetup.idFactory.linkAccount(paddedAcc, sig2, nonce2, expiry);
+
+        assertEq(
+            uint256(onchainidSetup.idFactory.getAccountStatus(paddedAcc)),
+            uint256(IIdentityFactory.AccountStatus.None),
+            "padded variant must never gain an entry"
+        );
+    }
+
+    /// @notice revokeAccount rejects envelopes with trailing bytes.
+    function test_revokeAccount_revertNonCanonicalEnvelope() public {
+        bytes memory davidAcc = InteroperableAddress.formatEvmV1(block.chainid, david);
+        uint256 expiry = block.timestamp + 1 hours;
+        uint256 nonce = onchainidSetup.idFactory.nonceForAccount(davidAcc);
+        bytes memory sig = _signLink(davidPk, davidAcc, address(aliceIdentity), nonce, expiry);
+        _execLink(aliceIdentity, alice, davidAcc, sig, nonce, expiry);
+
+        bytes memory paddedAcc = bytes.concat(davidAcc, hex"0000");
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(abi.encodeWithSelector(Errors.NonCanonicalAccount.selector, paddedAcc));
+        onchainidSetup.idFactory.revokeAccount(paddedAcc);
+    }
+
     /// @notice Linking a non-EVM envelope through the EVM signature path is rejected.
     ///         linkAccount happily parses the envelope (it's a valid ERC-7930), but the
     ///         signer bytes inside aren't an EVM address, so SignatureChecker has nothing
@@ -986,6 +1040,21 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
         vm.expectRevert(abi.encodeWithSelector(Errors.NotFactoryIdentity.selector, stranger));
         gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(8)), solanaEnv, payload);
+    }
+
+    /// @notice The cross-chain path rejects envelopes with trailing bytes at
+    ///         delivery, so a padded variant can never stage a proposal under a
+    ///         fresh registry key.
+    function test_crossChain_processMessageRejectsNonCanonicalEnvelope() public {
+        MockERC7786Gateway gateway = _deployTrustedGateway();
+        bytes memory paddedEnv = bytes.concat(_nonEvmEnvelope(makeAddr("solanaSignerPadded")), hex"0000");
+        uint256 expiry = block.timestamp + 1 hours;
+        // The sender must equal the envelope, so both carry the padding and the
+        // canonical check is what rejects the message.
+        bytes memory payload = _crossChainPayload(paddedEnv, address(aliceIdentity), expiry);
+
+        vm.expectRevert(abi.encodeWithSelector(Errors.NonCanonicalAccount.selector, paddedEnv));
+        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(10)), paddedEnv, payload);
     }
 
     /// @notice A proposal delivered while fresh but confirmed after its expiry is
