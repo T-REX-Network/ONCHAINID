@@ -5,6 +5,7 @@ import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 import { MockERC1271Wallet } from "../mocks/MockERC1271Wallet.sol";
 import { MockERC7786Gateway } from "../mocks/MockERC7786Gateway.sol";
+import { MockERC7913PermissiveVerifier } from "../mocks/MockERC7913PermissiveVerifier.sol";
 import { Constants } from "../utils/Constants.sol";
 import { AccessManager } from "@openzeppelin/contracts/access/manager/AccessManager.sol";
 import { MODULE_TYPE_FALLBACK, MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
@@ -825,18 +826,98 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertEq(onchainidSetup.idFactory.getIdentity(nonEvmEnv), address(0));
     }
 
-    /// @notice Linking a non-EVM envelope through the EVM signature path is rejected.
-    ///         linkAccount happily parses the envelope (it's a valid ERC-7930), but the
-    ///         signer bytes inside aren't an EVM address, so SignatureChecker has nothing
-    ///         to verify against. Non-EVM wallets must use the ERC-7786 cross-chain path.
+    /// @notice Linking a non-EVM envelope through the EVM signature path is rejected
+    ///         up front on chain type, before any signature check. Non-EVM wallets
+    ///         must use the ERC-7786 cross-chain path.
     function test_linkAccount_nonEvmEnvelopeRejected() public {
         bytes memory solanaEnv = _nonEvmEnvelope(makeAddr("solanaSigner"));
         uint256 expiry = block.timestamp + 1 hours;
         bytes memory sig = hex"";
 
         vm.prank(address(aliceIdentity));
-        vm.expectRevert(Errors.InvalidSignature.selector);
+        vm.expectRevert(abi.encodeWithSelector(Errors.NonEvmAccount.selector, solanaEnv));
         onchainidSetup.idFactory.linkAccount(solanaEnv, sig, 0, expiry);
+    }
+
+    /// @notice A non-EVM envelope whose 32-byte signer starts with a permissive
+    ///         ERC-7913 verifier must not link through the signature path (M-06).
+    ///         Without the chain-type check, SignatureChecker would dispatch to the
+    ///         caller-chosen verifier and accept a dummy signature.
+    function test_linkAccount_nonEvmEnvelopeWithPermissiveVerifierRejected() public {
+        MockERC7913PermissiveVerifier permissiveVerifier = new MockERC7913PermissiveVerifier();
+        // signer = verifier(20) || key(12): a valid ERC-7913 shape hiding in a foreign envelope
+        bytes memory signer = abi.encodePacked(address(permissiveVerifier), bytes12(uint96(1)));
+        bytes memory foreignEnv = InteroperableAddress.formatV1(bytes2(0x0001), hex"01", signer);
+        uint256 expiry = block.timestamp + 1 hours;
+
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(abi.encodeWithSelector(Errors.NonEvmAccount.selector, foreignEnv));
+        onchainidSetup.idFactory.linkAccount(foreignEnv, hex"", 0, expiry);
+
+        assertEq(onchainidSetup.idFactory.getIdentity(foreignEnv), address(0));
+    }
+
+    /// @notice ERC-7913 signers keep working: an eip-155 envelope whose address field
+    ///         is verifier(20) || key links once its verifier is on the trust list.
+    function test_linkAccount_erc7913SignerWithTrustedVerifierLinks() public {
+        MockERC7913PermissiveVerifier permissiveVerifier = new MockERC7913PermissiveVerifier();
+        vm.prank(deployer);
+        onchainidSetup.idFactory.setTrustedVerifier(address(permissiveVerifier), true);
+
+        bytes memory signer = abi.encodePacked(address(permissiveVerifier), bytes32(uint256(0xBEEF)));
+        // 0x7a69 = 31337, the default foundry chain id
+        bytes memory env = InteroperableAddress.formatV1(bytes2(0x0000), hex"7a69", signer);
+        uint256 expiry = block.timestamp + 1 hours;
+
+        vm.prank(address(aliceIdentity));
+        onchainidSetup.idFactory.linkAccount(env, hex"", 0, expiry);
+
+        assertEq(onchainidSetup.idFactory.getIdentity(env), address(aliceIdentity));
+    }
+
+    /// @notice An ERC-7913 signer naming an unapproved verifier cannot link, even on
+    ///         an eip-155 envelope (M-06). Without the trust list the caller's own
+    ///         verifier would judge the proof.
+    function test_linkAccount_erc7913SignerWithUntrustedVerifierRejected() public {
+        MockERC7913PermissiveVerifier permissiveVerifier = new MockERC7913PermissiveVerifier();
+        bytes memory signer = abi.encodePacked(address(permissiveVerifier), bytes32(uint256(0xBEEF)));
+        bytes memory env = InteroperableAddress.formatV1(bytes2(0x0000), hex"7a69", signer);
+        uint256 expiry = block.timestamp + 1 hours;
+
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(abi.encodeWithSelector(Errors.UntrustedVerifier.selector, address(permissiveVerifier)));
+        onchainidSetup.idFactory.linkAccount(env, hex"", 0, expiry);
+
+        assertEq(onchainidSetup.idFactory.getIdentity(env), address(0));
+    }
+
+    // ============ setTrustedVerifier ============
+
+    function test_setTrustedVerifier_emitsEventAndUpdatesView() public {
+        address verifier = makeAddr("someVerifier");
+        assertFalse(onchainidSetup.idFactory.isTrustedVerifier(verifier));
+
+        vm.prank(deployer);
+        vm.expectEmit(true, false, false, true);
+        emit IIdentityFactory.TrustedVerifierSet(verifier, true);
+        onchainidSetup.idFactory.setTrustedVerifier(verifier, true);
+        assertTrue(onchainidSetup.idFactory.isTrustedVerifier(verifier));
+
+        vm.prank(deployer);
+        onchainidSetup.idFactory.setTrustedVerifier(verifier, false);
+        assertFalse(onchainidSetup.idFactory.isTrustedVerifier(verifier));
+    }
+
+    function test_setTrustedVerifier_revertForNonAdmin() public {
+        vm.prank(alice);
+        vm.expectRevert(); // AccessManagerUnauthorizedAccount
+        onchainidSetup.idFactory.setTrustedVerifier(makeAddr("someVerifier"), true);
+    }
+
+    function test_setTrustedVerifier_revertForZeroAddress() public {
+        vm.prank(deployer);
+        vm.expectRevert(Errors.ZeroAddress.selector);
+        onchainidSetup.idFactory.setTrustedVerifier(address(0), true);
     }
 
     // ============ ERC-7786 — cross-chain wallet linking ============

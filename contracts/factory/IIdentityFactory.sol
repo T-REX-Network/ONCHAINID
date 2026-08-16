@@ -78,6 +78,9 @@ interface IIdentityFactory {
     /// @notice Emitted when admin adds or removes an authorized ERC-7786 gateway.
     event TrustedGatewaySet(address indexed gateway, bool trusted);
 
+    /// @notice Emitted when admin adds or removes an approved ERC-7913 verifier.
+    event TrustedVerifierSet(address indexed verifier, bool trusted);
+
     /// @notice Emitted when the beacon is deployed via {initializeBeacon}.
     event BeaconInitialized(address indexed implementation);
 
@@ -132,10 +135,14 @@ interface IIdentityFactory {
     /// @notice Link a wallet to the calling identity. The wallet authorizes the link via
     ///         an EIP-712 `LinkAccount` signature. Supports EOAs, ERC-1271 smart wallets,
     ///         and ERC-7913 verifiers (passkeys, etc.) uniformly via `SignatureChecker`.
+    ///         ERC-7913 signers only link when their verifier is approved via
+    ///         {setTrustedVerifier}.
     ///
     /// @param account ERC-7930 interoperable address envelope. EVM wallets are wrapped
-    ///         via OZ `InteroperableAddress.formatEvmV1(chainId, addr)`. Non-EVM wallets
-    ///         supply the envelope for their own chain. Malformed envelopes revert.
+    ///         via OZ `InteroperableAddress.formatEvmV1(chainId, addr)`. The chain type
+    ///         must be eip-155: the signature check cannot prove control for a foreign
+    ///         chain, so non-EVM envelopes revert and go through
+    ///         {confirmCrossChainLink} instead. Malformed envelopes revert.
     /// @param signature EIP-712 signature produced by `account` over
     ///         `LinkAccount(bytes account,address identity,uint256 nonce,uint256 expiry)`.
     /// @param nonce current nonce for `account` (see {nonceForAccount}).
@@ -173,6 +180,15 @@ interface IIdentityFactory {
 
     /// @notice Read whether an address is currently a trusted ERC-7786 gateway.
     function isTrustedGateway(address gateway) external view returns (bool);
+
+    /// @notice Add or remove an approved ERC-7913 verifier. {linkAccount} rejects
+    ///         signers longer than 20 bytes whose leading verifier is not listed,
+    ///         because the verifier judges its own signer's proof. `restricted` via
+    ///         the AM.
+    function setTrustedVerifier(address verifier, bool trusted) external;
+
+    /// @notice Read whether an address is currently an approved ERC-7913 verifier.
+    function isTrustedVerifier(address verifier) external view returns (bool);
 
     /// @notice Resolve a wallet to its bound identity. Returns `address(0)` when the
     ///         wallet's status is not `Active` (never linked, or revoked).

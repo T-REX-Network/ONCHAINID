@@ -104,6 +104,10 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         /// @dev Authorized ERC-7786 destination gateways. Inbound messages from
         ///      anyone else are rejected. Manage via {setTrustedGateway}.
         mapping(address gateway => bool trusted) trustedGateways;
+        /// @dev Approved ERC-7913 verifiers for {linkAccount}. Signers longer than
+        ///      20 bytes only link when their verifier is listed here. Manage via
+        ///      {setTrustedVerifier}.
+        mapping(address verifier => bool trusted) trustedVerifiers;
         /// @dev Cross-chain link proposals awaiting identity-side confirmation.
         ///      Keyed by the wallet envelope bytes rather than `_walletKey` because
         ///      this map never participates in `accounts[identity]` enumeration
@@ -196,7 +200,19 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // `account` is an ERC-7930 envelope wrapping the wallet. Its layout is:
         //     [ chainType | chainReference | signer ]
         // bytes feed the signature check. parseV1Calldata reverts on malformed input.
-        (,, bytes calldata signer) = InteroperableAddress.parseV1Calldata(account);
+        (bytes2 chainType,, bytes calldata signer) = InteroperableAddress.parseV1Calldata(account);
+
+        // The signature check below only proves control for EVM signers (EOA,
+        // ERC-1271, ERC-7913). A foreign-chain envelope proves nothing here, so it
+        // must come through the cross-chain path instead. 0x0000 is eip-155.
+        require(chainType == 0x0000, Errors.NonEvmAccount(account));
+
+        // An ERC-7913 signer names its own verifier in its first 20 bytes, so the
+        // proof is self-certifying unless the verifier is admin-approved.
+        if (signer.length > 20) {
+            address verifier = address(bytes20(signer[:20]));
+            require(isTrustedVerifier(verifier), Errors.UntrustedVerifier(verifier));
+        }
 
         // expiry == 0 reverts (block.timestamp <= 0 is false). Forces callers to pick a window.
         require(block.timestamp <= expiry, Errors.ExpiredSignature(expiry));
@@ -260,6 +276,18 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     /// @inheritdoc IIdentityFactory
     function isTrustedGateway(address gateway) external view returns (bool) {
         return _storage().trustedGateways[gateway];
+    }
+
+    /// @inheritdoc IIdentityFactory
+    function setTrustedVerifier(address verifier, bool trusted) external restricted {
+        require(verifier != address(0), Errors.ZeroAddress());
+        _storage().trustedVerifiers[verifier] = trusted;
+        emit TrustedVerifierSet(verifier, trusted);
+    }
+
+    /// @inheritdoc IIdentityFactory
+    function isTrustedVerifier(address verifier) public view returns (bool) {
+        return _storage().trustedVerifiers[verifier];
     }
 
     /// @inheritdoc IIdentityFactory

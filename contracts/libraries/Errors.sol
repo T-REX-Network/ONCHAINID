@@ -107,6 +107,16 @@ library Errors {
     ///         past its `expiry`.
     error PendingCrossChainLinkExpired(uint256 expiry);
 
+    /// @notice Reverts when {linkAccount} gets an envelope whose chain type is not
+    ///         eip-155. The signature path can only verify EVM signers; foreign
+    ///         wallets go through the ERC-7786 cross-chain path.
+    error NonEvmAccount(bytes account);
+
+    /// @notice Reverts when an ERC-7913 signer names a verifier that admin has not
+    ///         approved via {setTrustedVerifier}. Without the list, a caller could
+    ///         ship a verifier that accepts anything and self-certify the link.
+    error UntrustedVerifier(address verifier);
+
     /* ----- Verifier ----- */
 
     /// @notice The claim topic already exists.
