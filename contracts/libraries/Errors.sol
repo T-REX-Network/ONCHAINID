@@ -43,6 +43,11 @@ library Errors {
     /// @notice Reverts if no key with MANAGEMENT purpose is provided
     error NoManagementKeyInKeys();
 
+    /// @notice Reverts when {createIdentityFor} deploys for a signing type but `_account`
+    ///         does not end up holding a MANAGEMENT key. Without it the caller could bind
+    ///         the account to an identity a different key governs.
+    error AccountNotManagementKey(address account);
+
     /// @notice Reverts when an identity is initialized with no validator and no executor
     ///         module. Without either, the account cannot verify signatures or dispatch
     ///         outbound calls.

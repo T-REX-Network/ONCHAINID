@@ -112,16 +112,30 @@ interface IIdentityFactory {
         Structs.ModuleInstall[] memory _modules
     ) external returns (address);
 
-    /// @notice Deploy for an EVM account that cannot sign (a token, a vault). The
-    ///         account is auto-linked as the identity's first wallet. Caller must hold
-    ///         the role configured for `_identityType` (use `PUBLIC_ROLE` for open types).
-    ///         Unregistered types revert.
+    /// @notice Deploy for another EVM account. The account is auto-linked as the
+    ///         identity's first wallet. Caller must hold the role configured for
+    ///         `_identityType`. Unregistered types revert.
+    ///
+    ///         Proof of control depends on the type. Single-binding types (ASSET,
+    ///         SMART_CONTRACT) are contracts that can't sign, so their only gate is the
+    ///         caller's role, which must not be `PUBLIC_ROLE`. Every other type requires
+    ///         `_account` to sign a `CreateIdentityFor` digest over the key set, and must
+    ///         end up holding a MANAGEMENT key: together these stop the caller binding a
+    ///         wallet it doesn't control to an identity it alone governs.
+    /// @param _signature `CreateIdentityFor` signature by `_account` over `_keys`. Ignored
+    ///         for single-binding types. EOA, ERC-1271 and ERC-7913.
+    /// @param _nonce current nonce for `_account` (see {nonceForAccount}).
+    /// @param _expiry unix timestamp after which the signature is invalid. `_expiry == 0`
+    ///         reverts.
     function createIdentityFor(
         address _account,
         uint256 _identityType,
         string memory _salt,
         Structs.KeyParam[] memory _keys,
-        Structs.ModuleInstall[] memory _modules
+        Structs.ModuleInstall[] memory _modules,
+        bytes memory _signature,
+        uint256 _nonce,
+        uint256 _expiry
     ) external returns (address);
 
     /// @notice Set the per-type policy: AM role required to call {createIdentityFor},

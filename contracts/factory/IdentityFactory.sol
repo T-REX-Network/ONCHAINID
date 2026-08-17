@@ -18,6 +18,7 @@ import { Identity } from "../Identity.sol";
 import { IERC734 } from "../interface/IERC734.sol";
 import { IIdentity } from "../interface/IIdentity.sol";
 import { Errors } from "../libraries/Errors.sol";
+import { hashAddress } from "../libraries/Hashing.sol";
 import { IdentityTypes } from "../libraries/IdentityTypes.sol";
 import { KeyPurposes } from "../libraries/KeyPurposes.sol";
 import { Create3 } from "@openzeppelin/contracts/utils/Create3.sol";
@@ -33,8 +34,11 @@ import { IIdentityFactory } from "./IIdentityFactory.sol";
 ///         like ASSET and SMART_CONTRACT opt out because the `msg.sender = first
 ///         wallet` binding does not apply to them.
 ///
-///         createIdentityFor: caller deploys for an EVM account that cannot sign
-///         (a token, a vault). Caller must hold the per-type role.
+///         createIdentityFor: caller deploys for another EVM account. Caller must hold
+///         the per-type role. Signing types (INDIVIDUAL, ...) require `_account` to sign
+///         a CreateIdentityFor approval over the keys and to end up holding MANAGEMENT.
+///         Single-binding types (ASSET, SMART_CONTRACT) can't sign, so the role gate
+///         alone protects them and must not be PUBLIC_ROLE.
 ///
 ///         Admin registers each identity type up front via setIdentityTypePolicy.
 ///         Unregistered types revert from both entry points. Use the AM's PUBLIC_ROLE
@@ -49,6 +53,14 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     /// @dev EIP-712 typehash for wallet → identity link.
     bytes32 private constant _LINK_ACCOUNT_TYPEHASH =
         keccak256("LinkAccount(bytes account,address identity,uint256 nonce,uint256 expiry)");
+
+    /// @dev EIP-712 typehash for the createIdentityFor approval. `_account` signs over the
+    ///      key set only. Modules are deliberately not in here: they can differ per chain and
+    ///      change over time, so binding them would break the same-address cross-chain deploy
+    ///      and force a re-sign whenever modules are synced. The MANAGEMENT-key post-check
+    ///      keeps _account in control regardless of which modules the caller installs.
+    bytes32 private constant _CREATE_FOR_TYPEHASH =
+        keccak256("CreateIdentityFor(bytes account,bytes32 keysHash,uint256 nonce,uint256 expiry)");
 
     /// @dev CREATE3 salt for the beacon's predetermined slot.
     bytes32 private constant _BEACON_SALT = keccak256("onchainid.beacon.v1");
@@ -189,12 +201,38 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         uint256 _identityType,
         string memory _salt,
         Structs.KeyParam[] memory _keys,
-        Structs.ModuleInstall[] memory _modules
+        Structs.ModuleInstall[] memory _modules,
+        bytes memory _signature,
+        uint256 _nonce,
+        uint256 _expiry
     ) external returns (address) {
         _checkTypeRole(_identityType, msg.sender);
         require(_account != address(0), Errors.ZeroAddress());
         bytes memory account = InteroperableAddress.formatEvmV1(block.chainid, _account);
-        return _doCreateIdentity(account, _identityType, _salt, _keys, _modules);
+
+        // Single-binding types (ASSET, SMART_CONTRACT) are contracts that can't sign, so
+        // their only gate is the role check above, which the deploy policy keeps off
+        // PUBLIC_ROLE. Every other type must prove _account approves this deploy, or the
+        // caller could bind a wallet it doesn't control to an identity it alone governs.
+        if (!_storage().typePolicies[_identityType].singleBinding) {
+            _requireAccountSignature(account, _keys, _signature, _nonce, _expiry);
+        }
+
+        address identity = _doCreateIdentity(account, _identityType, _salt, _keys, _modules);
+
+        // The signature pins the keys, not the modules (modules can differ per chain). A
+        // module can be management-equivalent though, so requiring _account to hold
+        // MANAGEMENT is what keeps it in control: whatever module the caller installs,
+        // _account governs the identity and can remove it. Single-binding types skip it:
+        // their bound contract can't sign or hold a key, so the role gate protects them.
+        if (!_storage().typePolicies[_identityType].singleBinding) {
+            require(
+                IERC734(identity).keyHasPurpose(hashAddress(_account), KeyPurposes.MANAGEMENT),
+                Errors.AccountNotManagementKey(_account)
+            );
+        }
+
+        return identity;
     }
 
     /// @inheritdoc IIdentityFactory
@@ -415,6 +453,32 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         return address(uint160(uint256(keccak256(account))));
     }
 
+    /// @dev `_account` signs off on this createIdentityFor deploy. The digest binds the
+    ///      account envelope and the key set, so the signature approves exactly which keys
+    ///      the identity gets: change a key and the signature no longer matches. Modules are
+    ///      not bound, so the same signature stays valid when modules are synced across
+    ///      chains; the MANAGEMENT-key post-check in createIdentityFor keeps _account in
+    ///      control of whatever modules the caller installs. SignatureChecker dispatches
+    ///      EOA, ERC-1271 and ERC-7913 signers the same way linkAccount does.
+    function _requireAccountSignature(
+        bytes memory account,
+        Structs.KeyParam[] memory _keys,
+        bytes memory signature,
+        uint256 nonce,
+        uint256 expiry
+    ) private {
+        require(block.timestamp <= expiry, Errors.ExpiredSignature(expiry));
+
+        (,, bytes memory signer) = InteroperableAddress.parseV1(account);
+
+        bytes32 digest = _hashTypedDataV4(
+            keccak256(abi.encode(_CREATE_FOR_TYPEHASH, keccak256(account), keccak256(abi.encode(_keys)), nonce, expiry))
+        );
+        require(SignatureChecker.isValidSignatureNow(signer, digest, signature), Errors.InvalidSignature());
+
+        _useCheckedNonce(_addressKeyForAccount(account), nonce);
+    }
+
     /// @dev Shared deploy core. CREATE3 deploys the proxy with keys and modules baked into
     ///      the init calldata. Identity.initialize runs in the proxy constructor frame so
     ///      keys and modules are applied without any cross-contract dance and without the
@@ -442,10 +506,10 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
             require(evmAddr != address(0), Errors.ZeroAddress());
         }
 
-        // Salt covers every deploy input, so different keys give different addresses.
-        bytes32 deploySalt = keccak256(
-            abi.encode(_identityType, _salt, keccak256(abi.encode(_keys)), keccak256(abi.encode(_modules)))
-        );
+        // Salt covers type, user salt and keys, but not modules: a module config change
+        // should not move the identity's address, so the same (type, salt, keys) always
+        // lands at the same slot regardless of which modules are installed at deploy.
+        bytes32 deploySalt = keccak256(abi.encode(_identityType, _salt, keccak256(abi.encode(_keys))));
 
         address identity = _deployIdentity(deploySalt, _identityType, _keys, _modules);
 

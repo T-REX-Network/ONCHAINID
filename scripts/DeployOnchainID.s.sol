@@ -36,10 +36,20 @@ import { ReputationRegistry } from "contracts/reputation/ReputationRegistry.sol"
  */
 contract DeployOnchainID is Script {
 
-    /// @dev Conventional, deployer-chosen role ids. Names are labeled on-chain via
-    ///      {AccessManager.labelRole} for explorer/dashboard discoverability.
+    // Role ids used below. Labeled on-chain via AccessManager.labelRole. Each one gates
+    // createIdentityFor for one identity type.
+
+    /// @dev Can create ASSET and SMART_CONTRACT identities. These can't sign, so the role
+    ///      is their only gate. Keep it off PUBLIC_ROLE.
     uint64 internal constant ROLE_TOKEN_FACTORY = 1;
+
+    /// @dev Can create CLAIM_ISSUER identities. The issuer still signs the deploy, so this
+    ///      only controls who may onboard one.
     uint64 internal constant ROLE_CLAIM_ISSUER_ADMIN = 2;
+
+    /// @dev Can create PUBLIC_AUTHORITY identities. Kept off PUBLIC_ROLE because an
+    ///      authority may not have a key to sign with.
+    uint64 internal constant ROLE_PUBLIC_AUTHORITY = 3;
 
     function run() external {
         vm.startBroadcast();
@@ -73,6 +83,7 @@ contract DeployOnchainID is Script {
         // Label roles so explorers and ops dashboards can show human names.
         am.labelRole(ROLE_TOKEN_FACTORY, "TOKEN_FACTORY");
         am.labelRole(ROLE_CLAIM_ISSUER_ADMIN, "CLAIM_ISSUER_ADMIN");
+        am.labelRole(ROLE_PUBLIC_AUTHORITY, "PUBLIC_AUTHORITY");
 
         // 4. IdentityFactory. The beacon cannot exist yet (it needs the Identity
         //    implementation, which needs the validator, which needs this factory), so the
@@ -114,24 +125,30 @@ contract DeployOnchainID is Script {
         // Contract-shaped types (ASSET, SMART_CONTRACT, PUBLIC_AUTHORITY) opt out of
         // self-deploy because their identity represents a contract, not msg.sender.
         // CLAIM_ISSUER also opts out so the admin role on createIdentityFor is not
-        // bypassable via self-deploy. ASSET and SMART_CONTRACT are single-binding:
-        // the bound contract cannot sign, so their account set never changes.
+        // bypassable via self-deploy.
         uint64 publicRole = am.PUBLIC_ROLE();
 
-        // Gated for createIdentityFor; self-deploy disabled.
+        // Gated for createIdentityFor; self-deploy disabled. ASSET and SMART_CONTRACT are
+        // single-binding: the bound contract can't sign, so the role must not be
+        // PUBLIC_ROLE or anyone could bind a contract to keys they alone hold. Both use the
+        // token-factory role.
         idFactory.setIdentityTypePolicy(IdentityTypes.ASSET, ROLE_TOKEN_FACTORY, false, true);
+        idFactory.setIdentityTypePolicy(IdentityTypes.SMART_CONTRACT, ROLE_TOKEN_FACTORY, false, true);
         idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, ROLE_CLAIM_ISSUER_ADMIN, false, false);
 
-        // Open for createIdentityFor; self-deploy enabled (EOA-shaped types).
+        // Open for createIdentityFor; self-deploy enabled (EOA-shaped types). createIdentityFor
+        // is safe under PUBLIC_ROLE because the account signs off on the deploy.
         idFactory.setIdentityTypePolicy(IdentityTypes.INDIVIDUAL, publicRole, true, false);
         idFactory.setIdentityTypePolicy(IdentityTypes.CORPORATE, publicRole, true, false);
         idFactory.setIdentityTypePolicy(IdentityTypes.IOT, publicRole, true, false);
         idFactory.setIdentityTypePolicy(IdentityTypes.AI_AGENT, publicRole, true, false);
 
-        // Open for createIdentityFor; self-deploy disabled (contract-shaped /
-        // institutional types).
-        idFactory.setIdentityTypePolicy(IdentityTypes.SMART_CONTRACT, publicRole, false, true);
-        idFactory.setIdentityTypePolicy(IdentityTypes.PUBLIC_AUTHORITY, publicRole, false, false);
+        // Restricted for createIdentityFor; self-deploy disabled. A public authority is an
+        // institution (a regulator, a court) that may have no on-chain signing key, so it
+        // can't be relied on to sign off like the EOA-shaped types. Gate it to a trusted
+        // role instead. Not single-binding: an authority that does control a multisig can
+        // sign and may link more than one wallet.
+        idFactory.setIdentityTypePolicy(IdentityTypes.PUBLIC_AUTHORITY, ROLE_PUBLIC_AUTHORITY, false, false);
 
         // 10. ERC-7913 WebAuthn Verifier (stateless — verifies P-256 WebAuthn assertions on-chain)
         ERC7913WebAuthnVerifier webAuthnVerifier = new ERC7913WebAuthnVerifier();
