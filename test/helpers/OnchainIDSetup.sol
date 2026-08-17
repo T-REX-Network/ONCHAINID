@@ -5,8 +5,6 @@ import { Constants } from "../utils/Constants.sol";
 import { ClaimSignerHelper } from "./ClaimSignerHelper.sol";
 import { IdentityHelper } from "./IdentityHelper.sol";
 import { UpgradeableBeacon } from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
-import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
-import { InteroperableAddress } from "@openzeppelin/contracts/utils/draft-InteroperableAddress.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IdentityFactory } from "contracts/factory/IdentityFactory.sol";
 import { IIdentity } from "contracts/interface/IIdentity.sol";
@@ -52,37 +50,6 @@ contract OnchainIDSetup is Test {
     // Pre-built claim
     ClaimSignerHelper.Claim public aliceClaim666;
 
-    bytes32 internal constant _CREATE_FOR_TYPEHASH =
-        keccak256("CreateIdentityFor(bytes account,bytes32 keysHash,uint256 nonce,uint256 expiry)");
-
-    /// @dev Sign a createIdentityFor approval for a signable identity type. `_account` (the
-    ///      wallet the identity is being deployed for) signs over the exact key set with its
-    ///      own key. Returns a 65-byte EOA signature the factory verifies via SignatureChecker.
-    function _signCreateFor(
-        uint256 signerPk,
-        address account,
-        Structs.KeyParam[] memory keys,
-        uint256 nonce,
-        uint256 expiry
-    ) internal view returns (bytes memory) {
-        bytes memory envelope = InteroperableAddress.formatEvmV1(block.chainid, account);
-        bytes32 domainSeparator = keccak256(
-            abi.encode(
-                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
-                keccak256(bytes("IdentityFactory")),
-                keccak256(bytes("1")),
-                block.chainid,
-                address(onchainidSetup.idFactory)
-            )
-        );
-        bytes32 structHash = keccak256(
-            abi.encode(_CREATE_FOR_TYPEHASH, keccak256(envelope), keccak256(abi.encode(keys)), nonce, expiry)
-        );
-        bytes32 digest = MessageHashUtils.toTypedDataHash(domainSeparator, structHash);
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerPk, digest);
-        return abi.encodePacked(r, s, v);
-    }
-
     function setUp() public virtual {
         // Create labeled addresses with known private keys
         (deployer, deployerPk) = makeAddrAndKey("deployer");
@@ -115,22 +82,8 @@ contract OnchainIDSetup is Test {
             signerData: abi.encodePacked(claimIssuerOwner),
             clientData: ""
         });
-        uint256 issuerExpiry = block.timestamp + 1 hours;
-        uint256 issuerNonce =
-            onchainidSetup.idFactory.nonceForAccount(InteroperableAddress.formatEvmV1(block.chainid, claimIssuerOwner));
         address claimIssuerAddr = onchainidSetup.idFactory
-            .createIdentityFor(
-                claimIssuerOwner,
-                IdentityTypes.CLAIM_ISSUER,
-                "claimIssuer",
-                issuerKeys,
-                IdentityHelper.legacyQueueModules(
-                    address(onchainidSetup.keyApprovalModule), address(onchainidSetup.signatureValidator)
-                ),
-                _signCreateFor(claimIssuerOwnerPk, claimIssuerOwner, issuerKeys, issuerNonce, issuerExpiry),
-                issuerNonce,
-                issuerExpiry
-            );
+            .createIdentityFor(claimIssuerOwner, IdentityTypes.CLAIM_ISSUER, "claimIssuer", issuerKeys);
         claimIssuer = Identity(payable(claimIssuerAddr));
 
         // No validator install on the issuer: the merged module's `isClaimValid` verifies the
@@ -147,22 +100,8 @@ contract OnchainIDSetup is Test {
             signerData: abi.encodePacked(alice),
             clientData: ""
         });
-        uint256 aliceExpiry = block.timestamp + 1 hours;
-        uint256 aliceNonce =
-            onchainidSetup.idFactory.nonceForAccount(InteroperableAddress.formatEvmV1(block.chainid, alice));
-        address aliceIdentityAddr = onchainidSetup.idFactory
-            .createIdentityFor(
-                alice,
-                IdentityTypes.INDIVIDUAL,
-                "alice",
-                aliceKeys,
-                IdentityHelper.legacyQueueModules(
-                    address(onchainidSetup.keyApprovalModule), address(onchainidSetup.signatureValidator)
-                ),
-                _signCreateFor(alicePk, alice, aliceKeys, aliceNonce, aliceExpiry),
-                aliceNonce,
-                aliceExpiry
-            );
+        address aliceIdentityAddr =
+            onchainidSetup.idFactory.createIdentityFor(alice, IdentityTypes.INDIVIDUAL, "alice", aliceKeys);
         aliceIdentity = Identity(payable(aliceIdentityAddr));
 
         // The merged ERC734Validator is already installed as a validator by `legacyQueueModules`
@@ -213,22 +152,8 @@ contract OnchainIDSetup is Test {
             signerData: abi.encodePacked(bob),
             clientData: ""
         });
-        uint256 bobExpiry = block.timestamp + 1 hours;
-        uint256 bobNonce =
-            onchainidSetup.idFactory.nonceForAccount(InteroperableAddress.formatEvmV1(block.chainid, bob));
-        address bobIdentityAddr = onchainidSetup.idFactory
-            .createIdentityFor(
-                bob,
-                IdentityTypes.INDIVIDUAL,
-                "bob",
-                bobKeys,
-                IdentityHelper.legacyQueueModules(
-                    address(onchainidSetup.keyApprovalModule), address(onchainidSetup.signatureValidator)
-                ),
-                _signCreateFor(bobPk, bob, bobKeys, bobNonce, bobExpiry),
-                bobNonce,
-                bobExpiry
-            );
+        address bobIdentityAddr =
+            onchainidSetup.idFactory.createIdentityFor(bob, IdentityTypes.INDIVIDUAL, "bob", bobKeys);
         bobIdentity = Identity(payable(bobIdentityAddr));
 
         // Create token identity
@@ -241,20 +166,9 @@ contract OnchainIDSetup is Test {
             signerData: abi.encodePacked(tokenOwner),
             clientData: ""
         });
-        // ASSET is a single-binding type: signature/nonce/expiry are ignored.
+        // ASSET is a single-binding type: the sole-management check is skipped.
         onchainidSetup.idFactory
-            .createIdentityFor(
-                Constants.TOKEN_ADDRESS,
-                IdentityTypes.ASSET,
-                "tokenOwner",
-                tokenKeys,
-                IdentityHelper.legacyQueueModules(
-                    address(onchainidSetup.keyApprovalModule), address(onchainidSetup.signatureValidator)
-                ),
-                "",
-                0,
-                0
-            );
+            .createIdentityFor(Constants.TOKEN_ADDRESS, IdentityTypes.ASSET, "tokenOwner", tokenKeys);
     }
 
     // ---- Convenience getters ----

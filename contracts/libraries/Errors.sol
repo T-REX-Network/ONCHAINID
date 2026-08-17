@@ -44,9 +44,11 @@ library Errors {
     error NoManagementKeyInKeys();
 
     /// @notice Reverts when {createIdentityFor} deploys for a signing type but `_account`
-    ///         does not end up holding a MANAGEMENT key. Without it the caller could bind
-    ///         the account to an identity a different key governs.
-    error AccountNotManagementKey(address account);
+    ///         is not the only wallet with MANAGEMENT on the new identity. The wallet the
+    ///         identity was created for has to manage it alone, or the caller could keep a
+    ///         key and strip that wallet later. The type's registered modules may hold
+    ///         MANAGEMENT alongside it.
+    error AccountNotSoleManagementKey(address account);
 
     /// @notice Reverts when an identity is initialized with no validator and no executor
     ///         module. Without either, the account cannot verify signatures or dispatch
