@@ -318,6 +318,32 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData));
     }
 
+    /* ----- local claim lifecycle ----- */
+
+    /// @notice The adapter has no `eip712Domain()`, so removal must not try to compute a digest
+    ///         from it. A claim added from an attestation stays removable after EAS revocation.
+    function test_removeClaim_worksForDomainlessIssuer() public {
+        bytes32 uid = _attestValid(address(aliceIdentity));
+
+        vm.prank(carol);
+        bytes32 claimId = IIdentity(address(aliceIdentity))
+            .addClaim(TOPIC, 1, address(adapter), _encodeUid(uid), emptyData, "https://example.com/eas");
+
+        // Attester kills the attestation at the source, then the holder drops the local record.
+        _revoke(uid);
+
+        vm.prank(carol);
+        assertTrue(IIdentity(address(aliceIdentity)).removeClaim(claimId));
+
+        (uint256 topic,,,,,) = IIdentity(address(aliceIdentity)).getClaim(claimId);
+        assertEq(topic, 0, "claim record must be gone");
+
+        // Re-adding is still blocked: the adapter re-reads EAS and sees the revocation.
+        vm.prank(carol);
+        vm.expectRevert(Errors.InvalidClaim.selector);
+        IIdentity(address(aliceIdentity)).addClaim(TOPIC, 1, address(adapter), _encodeUid(uid), emptyData, "");
+    }
+
     /* ----- signature payload sanity ----- */
 
     function test_isClaimValid_shortSignatureBytes() public view {

@@ -664,11 +664,15 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         require(topic != 0, Errors.ClaimNotRegistered(_claimId));
 
         // Revoke the digest on both the holder's and the issuer's sets so _getClaimStatus (which
-        // reads the issuer's set) blocks re-adding the same bytes.
+        // reads the issuer's set) blocks re-adding the same bytes. A zero digest means the issuer
+        // has no EIP-712 domain, so there is nothing to revoke here and removal still proceeds.
+        // Those issuers keep their own revocation source; see EASClaimIssuer, which reads EAS live.
         bytes32 digest = _getClaimDigest(c.issuer, account, topic, c.data);
-        require(!s.revokedDigests[digest], Errors.ClaimAlreadyRevoked());
-        s.revokedDigests[digest] = true;
-        _store().registries[c.issuer].revokedDigests[digest] = true;
+        if (digest != bytes32(0)) {
+            require(!s.revokedDigests[digest], Errors.ClaimAlreadyRevoked());
+            s.revokedDigests[digest] = true;
+            _store().registries[c.issuer].revokedDigests[digest] = true;
+        }
 
         s.claimsByTopic[topic].remove(_claimId);
         emit ClaimRemoved(_claimId, topic, c.scheme, c.issuer, c.signature, c.data, c.uri);
@@ -779,29 +783,36 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     // --- claims internals ------------------------------------------------
 
     /// @dev Build the EIP-712 claim digest using the issuer identity's domain (read via IERC5267),
-    ///      so signers sign against the issuer address, not this module.
+    ///      so signers sign against the issuer address, not this module. Issuers are not required
+    ///      to implement ERC-5267: `_addClaim` only asks the issuer to validate its own claim, so
+    ///      one without a domain (EASClaimIssuer) can be named as issuer. Returns zero for those
+    ///      instead of bubbling the failed call, which would make their claims unremovable.
     function _getClaimDigest(address account, address subject, uint256 topic, Structs.ClaimData memory data)
         internal
         view
         virtual
         returns (bytes32)
     {
-        (
+        try IERC5267(account).eip712Domain() returns (
             bytes1 fields,
             string memory name,
             string memory version,
             uint256 chainId,
             address verifyingContract,
             bytes32 salt,
-        ) = IERC5267(account).eip712Domain();
+            uint256[] memory
+        ) {
+            bytes32 domainSeparator = MessageHashUtils.toDomainSeparator(
+                fields, name, version, chainId, verifyingContract, salt
+            );
 
-        bytes32 domainSeparator =
-            MessageHashUtils.toDomainSeparator(fields, name, version, chainId, verifyingContract, salt);
-
-        bytes32 dataHash =
-            keccak256(abi.encode(_CLAIM_DATA_TYPEHASH, data.issuedAt, data.validUntil, keccak256(data.payload)));
-        bytes32 structHash = keccak256(abi.encode(_CLAIM_TYPEHASH, topic, subject, dataHash));
-        return MessageHashUtils.toTypedDataHash(domainSeparator, structHash);
+            bytes32 dataHash =
+                keccak256(abi.encode(_CLAIM_DATA_TYPEHASH, data.issuedAt, data.validUntil, keccak256(data.payload)));
+            bytes32 structHash = keccak256(abi.encode(_CLAIM_TYPEHASH, topic, subject, dataHash));
+            return MessageHashUtils.toTypedDataHash(domainSeparator, structHash);
+        } catch {
+            return bytes32(0);
+        }
     }
 
     /// @dev Detailed claim validity. Checks are ordered cheapest first: time bounds, revoked

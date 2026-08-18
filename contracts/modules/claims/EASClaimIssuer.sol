@@ -31,7 +31,9 @@ import { Attestation, IEAS } from "../../vendor/eas/IEAS.sol";
  *         wallet's factory status is intentionally ignored: the attestation belongs
  *         to the identity, and requiring `Active` would deadlock recovery on a
  *         compromised wallet. Kills happen elsewhere: attester revokes on EAS, holder
- *         removes the local record via `removeClaim`.
+ *         removes the local record via `removeClaim`. This adapter has no EIP-712 domain,
+ *         so the registry has no digest to revoke on removal and skips that step. Re-adding
+ *         is still blocked by EAS, which is re-read on every call.
  *
  *         The `IClaimIssuer` `signature` field carries the EAS attestation UID as a
  *         bare 32-byte word (`abi.encodePacked(uid)`). Length-32 check rejects any
