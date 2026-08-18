@@ -8,6 +8,7 @@ import { Errors } from "contracts/libraries/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
+import { Structs } from "contracts/storage/Structs.sol";
 
 /// @notice Tests for Identity Key Management (ERC-734)
 contract KeysTest is OnchainIDSetup {
@@ -242,6 +243,37 @@ contract KeysTest is OnchainIDSetup {
         (, uint256 keyType, bytes32 storedKey) = IERC734(address(aliceIdentity)).getKey(keyHash);
         assertEq(storedKey, keyHash);
         assertEq(keyType, KeyTypes.ECDSA);
+    }
+
+    // ============ Dynamic field caps ============
+
+    function test_RevertAddKey_WhenSignerDataExceedsCap() public {
+        bytes memory signerData = new bytes(Structs.MAX_SIGNER_DATA_LENGTH + 1);
+
+        vm.prank(alice);
+        vm.expectRevert(ERC734Validator.InvalidSignerLength.selector);
+        aliceIdentity.addKeyWithData(keccak256(signerData), KeyPurposes.ACTION, KeyTypes.RSA, signerData, "");
+    }
+
+    function test_RevertAddKey_WhenClientDataExceedsCap() public {
+        bytes memory signerData = abi.encodePacked(bob);
+        bytes memory clientData = new bytes(Structs.MAX_CLIENT_DATA_LENGTH + 1);
+
+        vm.prank(alice);
+        vm.expectRevert(Errors.ClientDataTooLong.selector);
+        aliceIdentity.addKeyWithData(keccak256(signerData), KeyPurposes.ACTION, KeyTypes.ECDSA, signerData, clientData);
+    }
+
+    function test_AddKey_AcceptsFieldsAtCap() public {
+        bytes memory signerData = new bytes(Structs.MAX_SIGNER_DATA_LENGTH);
+        signerData[0] = 0x01;
+        bytes memory clientData = new bytes(Structs.MAX_CLIENT_DATA_LENGTH);
+        bytes32 keyHash = keccak256(signerData);
+
+        vm.prank(alice);
+        aliceIdentity.addKeyWithData(keyHash, KeyPurposes.ACTION, KeyTypes.RSA, signerData, clientData);
+
+        assertTrue(IERC734(address(aliceIdentity)).keyHasPurpose(keyHash, KeyPurposes.ACTION));
     }
 
 }
