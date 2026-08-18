@@ -10,6 +10,7 @@ import {
 
 import { IERC734 } from "../../interface/IERC734.sol";
 import { IERC735 } from "../../interface/IERC735.sol";
+import { IKeyExecutor } from "../../interface/IKeyExecutor.sol";
 import { Errors } from "../../libraries/Errors.sol";
 import { hashAddress } from "../../libraries/Hashing.sol";
 import { KeyPurposes } from "../../libraries/KeyPurposes.sol";
@@ -43,7 +44,7 @@ interface IIdentityAccount {
  *         - CLAIM_SIGNER on self: only `addClaim` / `removeClaim`.
  *         - CLAIM_ADDER on self: only `addClaim`.
  */
-contract KeyApprovalModule is IERC7579Module {
+contract KeyApprovalModule is IERC7579Module, IKeyExecutor {
 
     /// @dev Per-identity queue state. One slot per installing account.
     struct AccountState {
@@ -62,22 +63,6 @@ contract KeyApprovalModule is IERC7579Module {
 
     /// @dev Storage shared across all identities that install this module singleton.
     mapping(address => AccountState) private _state;
-
-    /// @dev Emitted when an identity queues an execution via {execute}.
-    event ExecutionRequested(
-        address indexed account, uint256 indexed executionId, address indexed to, uint256 value, bytes data
-    );
-
-    /// @dev Emitted when an execution is approved (or rejected) via {approve}.
-    event Approved(address indexed account, uint256 indexed executionId, bool approved);
-
-    /// @dev Emitted when an approved execution successfully dispatches through the account.
-    event Executed(address indexed account, uint256 indexed executionId, address indexed to, uint256 value, bytes data);
-
-    /// @dev Emitted when an approved execution reverts inside the account.
-    event ExecutionFailed(
-        address indexed account, uint256 indexed executionId, address indexed to, uint256 value, bytes data
-    );
 
     /// @inheritdoc IERC7579Module
     function isModuleType(uint256 moduleTypeId) public pure returns (bool) {
