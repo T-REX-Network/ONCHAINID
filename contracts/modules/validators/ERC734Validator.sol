@@ -651,8 +651,8 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     }
 
     /// @inheritdoc IERC735
-    /// @dev Marks the removed claim's digest revoked, so the same (issuer, topic, ClaimData) can't
-    ///      be re-added; the issuer must sign a fresh claim to re-attest.
+    /// @dev Marks the removed claim's digest revoked. Issuers backed by this module then refuse
+    ///      the same (issuer, topic, ClaimData) and must sign a fresh claim to re-attest.
     function removeClaim(bytes32 _claimId) public returns (bool success) {
         address account = msg.sender;
         // CLAIM_ADDER cannot remove; only CLAIM_SIGNER (or self-call) is accepted here.
@@ -664,9 +664,10 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         require(topic != 0, Errors.ClaimNotRegistered(_claimId));
 
         // Revoke the digest on both the holder's and the issuer's sets so _getClaimStatus (which
-        // reads the issuer's set) blocks re-adding the same bytes.
+        // reads the issuer's set) blocks re-adding the same bytes. Marking an already marked
+        // digest is fine: an outside issuer can accept the same claim again, and that one still
+        // has to be removable. The topic check above already rejects a double removal.
         bytes32 digest = _getClaimDigest(c.issuer, account, topic, c.data);
-        require(!s.revokedDigests[digest], Errors.ClaimAlreadyRevoked());
         s.revokedDigests[digest] = true;
         _store().registries[c.issuer].revokedDigests[digest] = true;
 
