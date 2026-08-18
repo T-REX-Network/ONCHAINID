@@ -135,10 +135,11 @@ contract Identity is Initializable, SmartAccount, ERC165 {
             }
         }
 
-        // Seed the caller-supplied keys into the enshrined registry module.
+        // Seed the caller-supplied keys through the keyHash check, so the deploy salt
+        // commits to the keys actually registered.
         for (uint256 i = 0; i < _keys.length; i++) {
             Structs.KeyParam calldata key = _keys[i];
-            ERC734Validator(registryModule()).addKey(key.signerData, key.clientData, key.purpose, key.keyType);
+            _addKeyWithData(key.keyHash, key.purpose, key.keyType, key.signerData, key.clientData);
         }
 
         emit IdentityInitialized(_identityType);
