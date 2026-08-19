@@ -102,6 +102,23 @@ contract SmartAccountTest is OnchainIDSetup {
         aliceIdentity.removeKey(aliceKey, KeyPurposes.MANAGEMENT);
     }
 
+    /// @notice A MODULE key granted MANAGEMENT keeps its authority through keyHasPurpose but
+    ///         never shows up in the MANAGEMENT enumeration. Both sides asserted directly so a
+    ///         refactor of the index can't silently drop either one.
+    function test_moduleManagementKey_hasPurposeButNotEnumerated() public view {
+        bytes32 moduleKey = keccak256(abi.encodePacked(address(onchainidSetup.keyApprovalModule)));
+
+        assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(moduleKey, KeyPurposes.MANAGEMENT),
+            "module key holds MANAGEMENT"
+        );
+
+        bytes32[] memory managers = IERC734(address(aliceIdentity)).getKeysByPurpose(KeyPurposes.MANAGEMENT);
+        for (uint256 i = 0; i < managers.length; i++) {
+            assertTrue(managers[i] != moduleKey, "module key must not be enumerated as a manager");
+        }
+    }
+
     /// @notice The guard is skipped for MODULE keys, so a module's registration can always
     ///         be dropped and uninstall keeps working.
     function test_removeKey_moduleManagementKey_alwaysRemovable() public {
