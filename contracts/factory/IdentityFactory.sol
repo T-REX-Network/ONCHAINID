@@ -55,7 +55,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
 
     /// @dev Fixed part of an ERC-7930 v1 envelope: version (2 bytes), chainType
     ///      (2 bytes) and the two length prefixes (1 byte each).
-    uint256 private constant _ENVELOPE_FIXED_LENGTH = 6;
+    uint256 private constant _ENVELOPE_V1_FIXED_LENGTH = 6;
 
     /// @notice OZ UpgradeableBeacon that every BeaconProxy delegates to. Owned by the factory
     ///         itself, so upgrades run through {upgradeBeacon}, which is gated by the factory's
@@ -535,7 +535,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     ///      `_walletKey` and breaking sticky binding and terminal revocation.
     function _isCanonicalEnvelope(bytes memory account) private pure returns (bool) {
         (bool success,, bytes memory chainReference, bytes memory addr) = InteroperableAddress.tryParseV1(account);
-        return success && account.length == _ENVELOPE_FIXED_LENGTH + chainReference.length + addr.length;
+        return success && account.length == _ENVELOPE_V1_FIXED_LENGTH + chainReference.length + addr.length;
     }
 
     /// @dev CREATE3 deploy of a fresh BeaconProxy. The address depends only on the factory
