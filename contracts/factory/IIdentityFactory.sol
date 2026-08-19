@@ -185,6 +185,11 @@ interface IIdentityFactory {
     ///         signers longer than 20 bytes whose leading verifier is not listed,
     ///         because the verifier judges its own signer's proof. `restricted` via
     ///         the AM.
+    ///
+    ///         Listing a verifier means trusting its code to judge proof of
+    ///         control. A permissive or buggy verifier lets any signer that names
+    ///         it link without a genuine proof, so grant the role for this
+    ///         function only to admins who vet verifier implementations.
     function setTrustedVerifier(address verifier, bool trusted) external;
 
     /// @notice Read whether an address is currently an approved ERC-7913 verifier.
