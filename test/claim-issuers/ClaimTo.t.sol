@@ -9,6 +9,7 @@ import { IIdentity } from "contracts/interface/IIdentity.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
+import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 
 /// @notice Coverage for `addClaimTo`. The target's claim-key policy must be evaluated against the
@@ -82,17 +83,20 @@ contract ClaimToTest is OnchainIDSetup {
         IClaimIssuer(address(claimIssuer)).addClaimTo(TOPIC, 1, signature, data, "uri", IIdentity(address(bobIdentity)));
     }
 
-    /// @notice M-02 regression: a claim key granted to the shared module singleton must not admit
-    ///         an issuer the target never authorized. Before the fix the singleton was the
-    ///         ERC-2771 caller seen by the target, so this grant admitted every issuer at once.
-    function test_addClaimTo_reverts_whenOnlySingletonHoldsClaimKey() public {
-        _grantOnAlice(address(onchainidSetup.signatureValidator), KeyPurposes.CLAIM_SIGNER);
-        (bytes memory signature, Structs.ClaimData memory data) = _buildIssuerClaim(address(aliceIdentity));
-
-        vm.prank(claimIssuerOwner);
-        vm.expectRevert(Errors.SenderDoesNotHaveClaimSignerKey.selector);
-        IClaimIssuer(address(claimIssuer))
-            .addClaimTo(TOPIC, 1, signature, data, "uri", IIdentity(address(aliceIdentity)));
+    /// @notice M-02 regression: the shared module singleton must never hold a key on any identity.
+    ///         Before the fix the singleton was the ERC-2771 caller seen by the target, so one such
+    ///         grant admitted every issuer at once. The module now rejects the grant itself.
+    function test_addKey_reverts_whenGranteeIsModuleSingleton() public {
+        address module = address(onchainidSetup.signatureValidator);
+        vm.prank(alice);
+        vm.expectRevert(ERC734Validator.ModuleCannotBeKey.selector);
+        aliceIdentity.addKeyWithData(
+            ClaimSignerHelper.addressToKey(module),
+            KeyPurposes.CLAIM_SIGNER,
+            KeyTypes.ECDSA,
+            abi.encodePacked(module),
+            ""
+        );
     }
 
     /// @notice Only a MANAGEMENT key of the issuer identity may trigger `addClaimTo`.

@@ -101,6 +101,8 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     error KeyTypeMismatch(bytes32 keyHash);
     /// @dev The purpose is outside the ERC-734 range 1..6.
     error InvalidPurpose(uint256 purpose);
+    /// @dev The grantee is this module itself. See the guard in {_addKey}.
+    error ModuleCannotBeKey();
 
     event KeyAdded(address indexed account, bytes32 indexed keyHash, uint256 indexed purpose, uint256 keyType);
     event KeyRemoved(address indexed account, bytes32 indexed keyHash, uint256 indexed purpose);
@@ -527,6 +529,12 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
 
         // keyHash is derived from signerData, so the record always commits to its own bytes.
         bytes32 keyHash = keccak256(signerData);
+
+        // This module is one shared singleton, and addClaim treats its own address as "the call
+        // came from addClaimTo". A key granted to the module itself would act as a claim key for
+        // every issuer at once, so reject it here instead of trusting admins to never grant one.
+        // This also makes initialize revert if this module is installed with a non-zero purpose.
+        require(keyHash != hashAddress(address(this)), ModuleCannotBeKey());
         AccountRegistry storage registry = _store().registries[account];
         Key storage key = registry.keys[keyHash];
 
@@ -571,8 +579,15 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         // the outbound call, so the target's fallback appended the module's own address as the
         // ERC-2771 caller. addClaimTo already checked that a MANAGEMENT key of `_issuer` started
         // the flow and that a CLAIM_SIGNER of `_issuer` signed the claim, so the claim-key check
-        // below runs against `_issuer` instead. The module is one shared singleton, so its own
-        // address must never be the grantee: a single key granted to it would admit every issuer.
+        // below runs against `_issuer` instead.
+        //
+        // {addClaimTo} is the only path that can produce this caller. The other candidates are
+        // closed: `execute(module, ...)` is blocked by the account's own-module guard
+        // (Errors.OwnModuleTargetBlocked in SmartAccount), a direct call to the module with a
+        // forged calldata tail only reaches the caller's own registry entry (msg.sender selects
+        // the registry), and every other outbound call this module makes is a staticcall. As a
+        // last line of defense, {_addKey} rejects the module's own address as a grantee. A new
+        // state-changing outbound call added to this module must revisit this rebind.
         if (caller == address(this)) caller = _issuer;
         _requireClaimKey(msg.sender, caller, false);
         return _addClaim(msg.sender, _topic, _scheme, _issuer, _signature, _data, _uri);
