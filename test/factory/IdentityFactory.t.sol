@@ -1060,6 +1060,36 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertEq(pendingId, address(aliceIdentity));
     }
 
+    /// @notice Invariant behind the single-binding link rule: every single-binding
+    ///         identity leaves the factory with its one account already linked, so the
+    ///         empty-set allowance in _linkAccount is spent by the deploy auto-link and
+    ///         no fresh link remains for anyone else.
+    function test_singleBinding_oneAccountLinkedAtDeploy() public {
+        // The setUp asset identity already holds its token account.
+        bytes memory tokenAcc = InteroperableAddress.formatEvmV1(block.chainid, Constants.TOKEN_ADDRESS);
+        address assetIdentity = onchainidSetup.idFactory.getIdentity(tokenAcc);
+        assertEq(onchainidSetup.idFactory.getAccounts(assetIdentity).length, 1, "asset holds its account");
+
+        // Same for a fresh SMART_CONTRACT identity.
+        address sc = makeAddr("scInvariant");
+        vm.prank(deployer);
+        address scIdentity = onchainidSetup.idFactory
+            .createIdentityFor(
+                sc, IdentityTypes.SMART_CONTRACT, "scInvariant", _makeSingleMgmtKeys(david), _defaultModules()
+            );
+        assertEq(onchainidSetup.idFactory.getAccounts(scIdentity).length, 1, "sc holds its account");
+
+        // The one-shot is consumed: even a properly signed link is rejected.
+        bytes memory davidAcc = InteroperableAddress.formatEvmV1(block.chainid, david);
+        uint256 expiry = block.timestamp + 1 hours;
+        uint256 nonce = onchainidSetup.idFactory.nonceForAccount(davidAcc);
+        bytes memory sig = _signLink(davidPk, davidAcc, scIdentity, nonce, expiry);
+
+        vm.prank(scIdentity);
+        vm.expectRevert(abi.encodeWithSelector(Errors.CannotLinkToAssetIdentity.selector, scIdentity));
+        onchainidSetup.idFactory.linkAccount(davidAcc, sig, nonce, expiry);
+    }
+
     /// @notice Reading a pending link for a wallet that was never proposed returns the
     ///         zero record. Locks in the read shape for off-chain indexers.
     function test_getPendingCrossChainLink_unknownWalletReturnsZero() public {

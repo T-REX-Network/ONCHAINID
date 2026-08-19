@@ -118,8 +118,12 @@ contract DeployOnchainID is Script {
         // the bound contract cannot sign, so their account set never changes.
         uint64 publicRole = am.PUBLIC_ROLE();
 
-        // Gated for createIdentityFor; self-deploy disabled.
+        // Gated for createIdentityFor; self-deploy disabled. SMART_CONTRACT shares
+        // ROLE_TOKEN_FACTORY: single-binding types can't sign anything themselves,
+        // so the caller's role is the only deploy gate and must stay off PUBLIC_ROLE
+        // or anyone could squat a contract's identity with their own keys.
         idFactory.setIdentityTypePolicy(IdentityTypes.ASSET, ROLE_TOKEN_FACTORY, false, true);
+        idFactory.setIdentityTypePolicy(IdentityTypes.SMART_CONTRACT, ROLE_TOKEN_FACTORY, false, true);
         idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, ROLE_CLAIM_ISSUER_ADMIN, false, false);
 
         // Open for createIdentityFor; self-deploy enabled (EOA-shaped types).
@@ -128,9 +132,7 @@ contract DeployOnchainID is Script {
         idFactory.setIdentityTypePolicy(IdentityTypes.IOT, publicRole, true, false);
         idFactory.setIdentityTypePolicy(IdentityTypes.AI_AGENT, publicRole, true, false);
 
-        // Open for createIdentityFor; self-deploy disabled (contract-shaped /
-        // institutional types).
-        idFactory.setIdentityTypePolicy(IdentityTypes.SMART_CONTRACT, publicRole, false, true);
+        // Open for createIdentityFor; self-deploy disabled (institutional types).
         idFactory.setIdentityTypePolicy(IdentityTypes.PUBLIC_AUTHORITY, publicRole, false, false);
 
         // 10. ERC-7913 WebAuthn Verifier (stateless — verifies P-256 WebAuthn assertions on-chain)
