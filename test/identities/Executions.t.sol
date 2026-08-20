@@ -197,6 +197,72 @@ contract ExecutionsTest is OnchainIDSetup {
         assertEq(address(aliceIdentity).balance, 0, "identity drained");
     }
 
+    // -----------------------------------------------------------------------
+    // Queued request proposer: persisted and re-checked at approval
+    // -----------------------------------------------------------------------
+
+    /// @notice The queued request records who proposed it.
+    function test_execute_recordsProposer() public {
+        address proposer = makeAddr("proposerRecorded");
+        _grantProposer(proposer);
+
+        vm.prank(proposer);
+        uint256 id = IKeyExecutor(address(aliceIdentity)).execute(address(0xBEEF), 0, "");
+
+        KeyApprovalModule.Execution memory exec =
+            onchainidSetup.keyApprovalModule.getExecutionData(address(aliceIdentity), id);
+        assertEq(exec.proposer, proposer, "proposer must be persisted");
+    }
+
+    /// @notice A request whose proposer lost their key can no longer be approved.
+    function test_approve_revertWhenProposerKeyRevoked() public {
+        address proposer = makeAddr("proposerRevoked");
+        _grantProposer(proposer);
+
+        vm.prank(proposer);
+        uint256 id = IKeyExecutor(address(aliceIdentity)).execute(address(0xBEEF), 0, "");
+
+        // alice revokes the proposing key that queued the request.
+        vm.prank(alice);
+        aliceIdentity.removeKey(ClaimSignerHelper.addressToKey(proposer), KeyPurposes.PROPOSER);
+
+        vm.prank(david);
+        vm.expectRevert(abi.encodeWithSelector(Errors.ProposerNoLongerAuthorized.selector, proposer));
+        IKeyExecutor(address(aliceIdentity)).approve(id, true);
+    }
+
+    /// @notice Revoking one of the proposer's purposes does not kill the request while another
+    ///         proposing purpose remains on the key.
+    function test_approve_succeedsWhileProposerKeepsAnotherPurpose() public {
+        address proposer = makeAddr("proposerTwoPurposes");
+        _grantProposer(proposer);
+
+        // Give the same key a second proposing purpose.
+        vm.prank(alice);
+        aliceIdentity.addKeyWithData(
+            ClaimSignerHelper.addressToKey(proposer),
+            KeyPurposes.CLAIM_ADDER,
+            KeyTypes.ECDSA,
+            abi.encodePacked(proposer),
+            ""
+        );
+
+        ETHReceiver receiver = new ETHReceiver();
+        vm.deal(address(aliceIdentity), 1 ether);
+
+        vm.prank(proposer);
+        uint256 id = IKeyExecutor(address(aliceIdentity)).execute(address(receiver), 1 ether, "");
+
+        // Drop only PROPOSER; CLAIM_ADDER still authorizes proposing.
+        vm.prank(alice);
+        aliceIdentity.removeKey(ClaimSignerHelper.addressToKey(proposer), KeyPurposes.PROPOSER);
+
+        vm.prank(david);
+        IKeyExecutor(address(aliceIdentity)).approve(id, true);
+
+        assertEq(address(receiver).balance, 1 ether, "still-authorized proposer keeps the request alive");
+    }
+
 }
 
 /// @notice Accepts any incoming ETH.

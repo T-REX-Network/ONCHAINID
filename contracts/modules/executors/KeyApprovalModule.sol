@@ -37,6 +37,9 @@ interface IIdentityAccount {
  *         queue or the event log. PROPOSER is a queue-only purpose: it lets a key queue
  *         a request that then waits for an approver and never auto-runs by itself.
  *
+ *         A queued request records the key that proposed it. {approve} re-checks that key, so a
+ *         request whose proposer was revoked can no longer be dispatched.
+ *
  *         Auto-approval rules (unchanged by the propose gate):
  *         - MANAGEMENT: anything.
  *         - ACTION: external targets only.
@@ -56,6 +59,7 @@ contract KeyApprovalModule is IERC7579Module {
         address to;
         uint256 value;
         bytes data;
+        address proposer;
         bool approved;
         bool executed;
     }
@@ -65,7 +69,12 @@ contract KeyApprovalModule is IERC7579Module {
 
     /// @dev Emitted when an identity queues an execution via {execute}.
     event ExecutionRequested(
-        address indexed account, uint256 indexed executionId, address indexed to, uint256 value, bytes data
+        address indexed account,
+        uint256 indexed executionId,
+        address indexed to,
+        uint256 value,
+        bytes data,
+        address proposer
     );
 
     /// @dev Emitted when an execution is approved (or rejected) via {approve}.
@@ -115,9 +124,9 @@ contract KeyApprovalModule is IERC7579Module {
         AccountState storage state = _state[account];
         executionId = state.executionNonce++;
         state.executions[executionId] =
-            Execution({ to: _to, value: _value, data: _data, approved: false, executed: false });
+            Execution({ to: _to, value: _value, data: _data, proposer: proposer, approved: false, executed: false });
 
-        emit ExecutionRequested(account, executionId, _to, _value, _data);
+        emit ExecutionRequested(account, executionId, _to, _value, _data, proposer);
 
         // 3. Auto-approve dispatches now; otherwise the request stays pending for {approve}.
         if (_canAutoApprove(account, callerKeyHash, _to, _data)) {
@@ -138,7 +147,13 @@ contract KeyApprovalModule is IERC7579Module {
         require(_id < state.executionNonce, Errors.InvalidRequestId());
         require(!execution.executed, Errors.RequestAlreadyExecuted());
 
-        // 3. Authorize the approver. Self-call ⇒ MANAGEMENT; external target ⇒ ACTION.
+        // 3. The key that queued the request must still be able to propose. A request whose
+        //    proposer was revoked is dead and cannot be dispatched by a later approver.
+        require(
+            _canPropose(account, hashAddress(execution.proposer)), Errors.ProposerNoLongerAuthorized(execution.proposer)
+        );
+
+        // 4. Authorize the approver. Self-call ⇒ MANAGEMENT; external target ⇒ ACTION.
         // OZ `ERC7579Utils._call` rewrites `to == address(0)` to the account before dispatch,
         // so a queued `to=0` request runs as a self-call. Match that here before branching.
         address executionTo = execution.to == address(0) ? account : execution.to;
@@ -155,7 +170,7 @@ contract KeyApprovalModule is IERC7579Module {
 
         emit Approved(account, _id, _shouldApprove);
 
-        // 4. Approval ⇒ dispatch now. Rejection ⇒ mark closed and exit.
+        // 5. Approval ⇒ dispatch now. Rejection ⇒ mark closed and exit.
         if (_shouldApprove) {
             return _runApproved(account, _id);
         }

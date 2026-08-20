@@ -195,6 +195,9 @@ library Errors {
     /// @notice The request is already executed.
     error RequestAlreadyExecuted();
 
+    /// @notice The key that queued the request no longer authorizes proposing on the identity.
+    error ProposerNoLongerAuthorized(address proposer);
+
     /// @notice The claim is invalid.
     error InvalidClaim();
 
