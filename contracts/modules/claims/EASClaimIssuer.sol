@@ -37,6 +37,13 @@ import { Attestation, IEAS } from "../../vendor/eas/IEAS.sol";
  *         bare 32-byte word (`abi.encodePacked(uid)`). Length-32 check rejects any
  *         other shape.
  *
+ *         The `ClaimData` envelope must mirror the attestation: `issuedAt` is the
+ *         attestation `time`, `validUntil` its `expirationTime`, `payload` its `data`.
+ *         The ERC-735 registry stores that envelope verbatim, so binding it here is what
+ *         keeps the stored record equal to what the attester actually signed rather than
+ *         a fabrication sitting next to a genuine UID. Callers build the envelope from
+ *         `getAttestationData` plus the attestation's own timestamps.
+ *
  *         Not supported: off-chain EAS attestations, non-EVM wallets, cross-chain
  *         reads. Any `IIdentity` / ERC-734 / ERC-735 method that has no meaning on a
  *         stateless reader reverts with `Errors.EASNotSupported`.
@@ -144,7 +151,7 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
 
     /// @inheritdoc IClaimIssuer
     /// @dev `sig` must be a 32-byte EAS attestation UID (`abi.encodePacked(uid)`).
-    ///      `data` is ignored: EAS carries its own time bounds.
+    ///      `data` must mirror the attestation field for field; see `_resolve`.
     function isClaimValid(IIdentity _identity, uint256 claimTopic, bytes calldata sig, Structs.ClaimData calldata data)
         external
         view
@@ -174,17 +181,12 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
     }
 
     /// @dev Live status resolution. Missing config, missing attestation, wrong schema,
-    ///      or unaccepted attester map to `NotIssued`. Bad UID payload maps to
-    ///      `BadSignature`. EAS revocation and expiry map to `Revoked` and `Expired`.
-    ///      Recipient binding to `_identity` (self or any linked wallet, regardless of
-    ///      factory status) maps to `Valid`. Wallet status is ignored on purpose; see
-    ///      the contract header.
-    function _resolve(
-        IIdentity _identity,
-        uint256 topic,
-        bytes calldata sig,
-        Structs.ClaimData calldata /*data*/
-    )
+    ///      unaccepted attester, or `data` that does not mirror the attestation map to
+    ///      `NotIssued`. Bad UID payload maps to `BadSignature`. EAS revocation and
+    ///      expiry map to `Revoked` and `Expired`. Recipient binding to `_identity`
+    ///      (self or any linked wallet, regardless of factory status) maps to `Valid`.
+    ///      Wallet status is ignored on purpose; see the contract header.
+    function _resolve(IIdentity _identity, uint256 topic, bytes calldata sig, Structs.ClaimData calldata data)
         internal
         view
         returns (ClaimStatus)
@@ -199,6 +201,17 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         Attestation memory attestation = getEAS().getAttestation(uid);
         if (
             attestation.uid == bytes32(0) || attestation.schema != schema || !getIsAttesterAllowed(attestation.attester)
+        ) {
+            return ClaimStatus.NotIssued;
+        }
+
+        // The caller hands us a ClaimData that ERC-735 mirrors into storage verbatim. Nothing
+        // upstream binds it to the attestation, so without this check a party allowed to add a
+        // claim could pair a genuine UID with a fabricated payload and validity window and this
+        // adapter would still call it Valid. Bind all three fields to what the attester signed.
+        if (
+            data.issuedAt != attestation.time || data.validUntil != attestation.expirationTime
+                || keccak256(data.payload) != keccak256(attestation.data)
         ) {
             return ClaimStatus.NotIssued;
         }

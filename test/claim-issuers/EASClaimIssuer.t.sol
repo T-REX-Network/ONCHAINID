@@ -21,7 +21,7 @@ import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { EASClaimIssuer } from "contracts/modules/claims/EASClaimIssuer.sol";
 import { Structs } from "contracts/storage/Structs.sol";
-import { IEAS } from "contracts/vendor/eas/IEAS.sol";
+import { Attestation, IEAS } from "contracts/vendor/eas/IEAS.sol";
 
 /// @notice Coverage for the stateless EAS `ClaimIssuer` adapter. Each test targets one branch
 ///         of `isClaimValid` / `getClaimStatus` so the acceptance criteria from issue #10 map
@@ -110,6 +110,13 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         });
         vm.prank(who);
         return eas.attest(req);
+    }
+
+    /// @dev The `ClaimData` envelope the adapter accepts for `uid`: every field mirrors the
+    ///      attestation. This is what a caller builds before adding the claim on-chain.
+    function _mirrorOf(bytes32 uid) internal view returns (Structs.ClaimData memory) {
+        Attestation memory a = IEAS(EAS_ADDR).getAttestation(uid);
+        return Structs.ClaimData({ issuedAt: a.time, validUntil: a.expirationTime, payload: a.data });
     }
 
     /// @dev Revoke an attestation as its attester (EAS enforces `msg.sender == attester`).
@@ -203,10 +210,10 @@ contract EASClaimIssuerTest is OnchainIDSetup {
     function test_isClaimValid_recipientIsIdentity() public {
         bytes32 uid = _attestValid(address(aliceIdentity));
 
-        bool ok = adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData);
+        bool ok = adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), _mirrorOf(uid));
         assertTrue(ok, "attestation on the identity itself must verify");
         assertEq(
-            uint256(adapter.getClaimStatus(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData)),
+            uint256(adapter.getClaimStatus(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), _mirrorOf(uid))),
             uint256(IClaimIssuer.ClaimStatus.Valid)
         );
     }
@@ -215,7 +222,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         _linkWalletToAlice(david, davidPk);
         bytes32 uid = _attestValid(david);
 
-        bool ok = adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData);
+        bool ok = adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), _mirrorOf(uid));
         assertTrue(ok, "attestation on a linked wallet must verify");
     }
 
@@ -226,7 +233,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         bytes32 uid = _attestValid(rogue);
 
         assertFalse(
-            adapter.isClaimValid(IIdentity(rogue), TOPIC, _encodeUid(uid), emptyData),
+            adapter.isClaimValid(IIdentity(rogue), TOPIC, _encodeUid(uid), _mirrorOf(uid)),
             "non-factory identity must not self-verify"
         );
     }
@@ -237,7 +244,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         bytes32 uid = _attestValid(address(aliceIdentity));
 
         uint256 unknownTopic = 12345;
-        bool ok = adapter.isClaimValid(IIdentity(address(aliceIdentity)), unknownTopic, _encodeUid(uid), emptyData);
+        bool ok = adapter.isClaimValid(IIdentity(address(aliceIdentity)), unknownTopic, _encodeUid(uid), _mirrorOf(uid));
         assertFalse(ok, "unmapped topic must reject");
     }
 
@@ -245,21 +252,21 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         // Attest under a different schema than the one the adapter maps to TOPIC.
         bytes32 otherSchema = schemaRegistry.register("uint256 unrelated", address(0), true);
         bytes32 uid = _attestAs(attester, otherSchema, address(aliceIdentity), 0, hex"");
-        assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData));
+        assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), _mirrorOf(uid)));
     }
 
     function test_isClaimValid_unacceptedAttester() public {
         bytes32 uid = _attestAs(bob, SCHEMA, address(aliceIdentity), 0, hex"");
-        assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData));
+        assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), _mirrorOf(uid)));
     }
 
     function test_isClaimValid_attestationRevoked() public {
         bytes32 uid = _attestValid(address(aliceIdentity));
         _revoke(uid);
 
-        assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData));
+        assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), _mirrorOf(uid)));
         assertEq(
-            uint256(adapter.getClaimStatus(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData)),
+            uint256(adapter.getClaimStatus(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), _mirrorOf(uid))),
             uint256(IClaimIssuer.ClaimStatus.Revoked)
         );
     }
@@ -270,9 +277,9 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         bytes32 uid = _attestAs(attester, SCHEMA, address(aliceIdentity), uint64(block.timestamp + 10), hex"");
         vm.warp(block.timestamp + 20);
 
-        assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData));
+        assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), _mirrorOf(uid)));
         assertEq(
-            uint256(adapter.getClaimStatus(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData)),
+            uint256(adapter.getClaimStatus(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), _mirrorOf(uid))),
             uint256(IClaimIssuer.ClaimStatus.Expired)
         );
     }
@@ -280,7 +287,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
     function test_isClaimValid_attestationMissing() public view {
         // A UID that was never issued by EAS.
         bytes32 uid = keccak256("never-issued");
-        assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData));
+        assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), _mirrorOf(uid)));
     }
 
     function test_isClaimValid_recipientBoundToDifferentIdentity() public {
@@ -288,7 +295,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         bytes32 uid = _attestValid(david);
 
         // Alice holds the linked wallet, so verifying against bob must reject.
-        assertFalse(adapter.isClaimValid(IIdentity(address(bobIdentity)), TOPIC, _encodeUid(uid), emptyData));
+        assertFalse(adapter.isClaimValid(IIdentity(address(bobIdentity)), TOPIC, _encodeUid(uid), _mirrorOf(uid)));
     }
 
     /// @notice The wallet-to-identity link is sticky: an attestation whose recipient is a
@@ -302,12 +309,12 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         _linkWalletToAlice(david, davidPk);
         bytes32 uid = _attestValid(david);
 
-        assertTrue(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData));
+        assertTrue(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), _mirrorOf(uid)));
 
         // Revoking the wallet on the factory leaves the claim valid: only the wallet-as-actor
         // is disabled at the token layer, the identity's claim resolution is unchanged.
         _revokeWalletFromAlice(david);
-        assertTrue(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData));
+        assertTrue(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), _mirrorOf(uid)));
     }
 
     /// @notice A wallet that was never linked to any identity does not resolve, regardless of
@@ -315,7 +322,77 @@ contract EASClaimIssuerTest is OnchainIDSetup {
     function test_isClaimValid_recipientWalletNeverLinkedRejects() public {
         // `david` is a fresh EOA, never linked to alice or anyone.
         bytes32 uid = _attestValid(david);
-        assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData));
+        assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), _mirrorOf(uid)));
+    }
+
+    /* ----- ClaimData binding ----- */
+
+    /// @notice ERC-735 mirrors the caller's `ClaimData` into storage verbatim, so a genuine UID
+    ///         paired with a fabricated payload would otherwise persist as an issuer-authenticated
+    ///         record. Each field is bound to the attestation.
+    function test_isClaimValid_rejectsForgedPayload() public {
+        bytes32 uid = _attestAs(attester, SCHEMA, address(aliceIdentity), 0, hex"1234");
+
+        Structs.ClaimData memory forged = _mirrorOf(uid);
+        forged.payload = hex"beef";
+
+        assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), forged));
+        assertEq(
+            uint256(adapter.getClaimStatus(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), forged)),
+            uint256(IClaimIssuer.ClaimStatus.NotIssued)
+        );
+    }
+
+    /// @notice A validity window wider than the attestation's is a forgery too: the attester
+    ///         signed an unexpiring attestation, not one the holder may date at will.
+    function test_isClaimValid_rejectsForgedValidUntil() public {
+        bytes32 uid = _attestValid(address(aliceIdentity));
+
+        Structs.ClaimData memory forged = _mirrorOf(uid);
+        forged.validUntil = uint64(block.timestamp + 365 days);
+
+        assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), forged));
+    }
+
+    /// @notice Backdating `issuedAt` is rejected for the same reason.
+    function test_isClaimValid_rejectsForgedIssuedAt() public {
+        vm.warp(1000);
+        bytes32 uid = _attestValid(address(aliceIdentity));
+
+        Structs.ClaimData memory forged = _mirrorOf(uid);
+        forged.issuedAt = 1;
+
+        assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), forged));
+    }
+
+    /// @notice The forged envelope cannot reach storage either: `_addClaim` gates the write on
+    ///         the issuer's `isClaimValid`, so the whole add reverts.
+    function test_fullLoop_addClaim_revertsOnForgedPayload() public {
+        bytes32 uid = _attestAs(attester, SCHEMA, address(aliceIdentity), 0, hex"1234");
+
+        Structs.ClaimData memory forged = _mirrorOf(uid);
+        forged.payload = hex"beef";
+
+        vm.prank(alice);
+        vm.expectRevert(Errors.InvalidClaim.selector);
+        IIdentity(address(aliceIdentity)).addClaim(TOPIC, 1, address(adapter), _encodeUid(uid), forged, "eas://uid");
+    }
+
+    /// @notice The mirrored envelope round-trips: a non-empty attestation payload stored through
+    ///         `addClaim` comes back out of `getClaim` equal to the attestation's own data.
+    function test_fullLoop_addClaim_storesAttestationPayload() public {
+        bytes memory payload = abi.encode("kyc-level-2");
+        bytes32 uid = _attestAs(attester, SCHEMA, address(aliceIdentity), 0, payload);
+
+        Structs.ClaimData memory data = _mirrorOf(uid);
+
+        vm.prank(alice);
+        bytes32 claimId =
+            IIdentity(address(aliceIdentity)).addClaim(TOPIC, 1, address(adapter), _encodeUid(uid), data, "");
+
+        (,,,, Structs.ClaimData memory dataOut,) = IIdentity(address(aliceIdentity)).getClaim(claimId);
+        assertEq(dataOut.payload, payload, "stored payload mirrors the attestation");
+        assertEq(dataOut.issuedAt, IEAS(EAS_ADDR).getAttestation(uid).time, "stored issuedAt mirrors the attestation");
     }
 
     /* ----- signature payload sanity ----- */
@@ -377,10 +454,10 @@ contract EASClaimIssuerTest is OnchainIDSetup {
     function test_fullLoop_addClaim_getClaim_reverifies() public {
         bytes32 uid = _attestValid(address(aliceIdentity));
         bytes memory sig = _encodeUid(uid);
+        Structs.ClaimData memory data = _mirrorOf(uid);
 
         vm.prank(alice);
-        bytes32 claimId =
-            IIdentity(address(aliceIdentity)).addClaim(TOPIC, 1, address(adapter), sig, emptyData, "eas://uid");
+        bytes32 claimId = IIdentity(address(aliceIdentity)).addClaim(TOPIC, 1, address(adapter), sig, data, "eas://uid");
 
         assertEq(claimId, keccak256(abi.encode(address(adapter), TOPIC)));
 
@@ -400,10 +477,10 @@ contract EASClaimIssuerTest is OnchainIDSetup {
     function test_fullLoop_easRevocationFlipsStoredClaim() public {
         bytes32 uid = _attestValid(address(aliceIdentity));
         bytes memory sig = _encodeUid(uid);
+        Structs.ClaimData memory data = _mirrorOf(uid);
 
         vm.prank(alice);
-        bytes32 claimId =
-            IIdentity(address(aliceIdentity)).addClaim(TOPIC, 1, address(adapter), sig, emptyData, "eas://uid");
+        bytes32 claimId = IIdentity(address(aliceIdentity)).addClaim(TOPIC, 1, address(adapter), sig, data, "eas://uid");
         (,,, bytes memory sigOut, Structs.ClaimData memory dataOut,) =
             IIdentity(address(aliceIdentity)).getClaim(claimId);
         assertTrue(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, sigOut, dataOut));
@@ -444,7 +521,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         _revoke(uid);
         assertFalse(adapter.isDigestRevoked(uid), "digest read stays false even after EAS revocation");
         assertFalse(
-            adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData),
+            adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), _mirrorOf(uid)),
             "isClaimValid is where the revocation shows"
         );
     }
