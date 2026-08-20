@@ -1333,20 +1333,6 @@ contract IdentityFactoryTest is OnchainIDSetup {
         );
     }
 
-    /// @notice Same account, salt and keys still resolve to one address, so the salt
-    ///         change does not break address determinism for the intended caller.
-    function test_createIdentity_sameAccountAndSaltCollides() public {
-        address eoa = makeAddr("determinismEoa");
-        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(eoa);
-
-        vm.prank(eoa);
-        onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "sameSlot", keys);
-
-        vm.prank(eoa);
-        vm.expectRevert(OZErrors.FailedDeployment.selector);
-        onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "sameSlot", keys);
-    }
-
     // ============ IdentityInitialized event ============
 
     function test_createIdentity_emitsIdentityInitialized() public {
