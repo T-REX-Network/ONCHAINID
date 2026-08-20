@@ -21,9 +21,11 @@ import { Errors } from "contracts/libraries/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
+import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 import { Vm } from "forge-std/Vm.sol";
 import { RevertingIdentity } from "test/mocks/RevertingIdentity.sol";
+import { UnlockedIdentity } from "test/mocks/UnlockedIdentity.sol";
 
 contract IdentityFactoryTest is OnchainIDSetup {
 
@@ -178,6 +180,74 @@ contract IdentityFactoryTest is OnchainIDSetup {
         vm.prank(deployer);
         vm.expectRevert(Errors.ZeroAddress.selector);
         onchainidSetup.idFactory.upgradeBeacon(address(0));
+    }
+
+    /// @notice An identity's registry module is an implementation immutable, not proxy storage,
+    ///         so an upgrade to an implementation naming a different registry would silently
+    ///         re-point every deployed identity at a registry holding none of their keys.
+    function test_upgradeBeacon_revertForDifferentRegistryModule() public {
+        ERC734Validator otherRegistry =
+            new ERC734Validator(address(onchainidSetup.idFactory), address(onchainidSetup.reputationRegistry));
+        Identity newImpl = new Identity(address(otherRegistry), address(onchainidSetup.idFactory));
+
+        vm.prank(deployer);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Errors.ImplementationRegistryMismatch.selector,
+                address(onchainidSetup.signatureValidator),
+                address(otherRegistry)
+            )
+        );
+        onchainidSetup.idFactory.upgradeBeacon(address(newImpl));
+    }
+
+    /// @notice The candidate has to name this factory, otherwise the account's factory-gated
+    ///         calls (linkAccount, revokeAccount, confirmCrossChainLink) stop answering to it.
+    function test_upgradeBeacon_revertForDifferentFactory() public {
+        IdentityFactory otherFactory = new IdentityFactory(address(onchainidSetup.accessManager));
+        Identity newImpl = new Identity(address(onchainidSetup.signatureValidator), address(otherFactory));
+
+        vm.prank(deployer);
+        vm.expectRevert(abi.encodeWithSelector(Errors.ImplementationFactoryMismatch.selector, address(newImpl)));
+        onchainidSetup.idFactory.upgradeBeacon(address(newImpl));
+    }
+
+    function test_upgradeBeacon_revertForCodelessImplementation() public {
+        address notAContract = makeAddr("notAContract");
+        vm.prank(deployer);
+        vm.expectRevert(abi.encodeWithSelector(Errors.ImplementationNotAContract.selector, notAContract));
+        onchainidSetup.idFactory.upgradeBeacon(notAContract);
+    }
+
+    /// @notice An implementation whose initializers are still open can be initialized directly,
+    ///         so the factory refuses to put it behind the beacon.
+    function test_upgradeBeacon_revertForUnlockedInitializers() public {
+        UnlockedIdentity unlockedImpl =
+            new UnlockedIdentity(address(onchainidSetup.signatureValidator), address(onchainidSetup.idFactory));
+        vm.prank(deployer);
+        vm.expectRevert(
+            abi.encodeWithSelector(Errors.ImplementationInitializersNotDisabled.selector, address(unlockedImpl))
+        );
+        onchainidSetup.idFactory.upgradeBeacon(address(unlockedImpl));
+    }
+
+    /// @notice Existing identities keep resolving their keys across a continuous upgrade.
+    function test_upgradeBeacon_preservesKeysOnDeployedIdentities() public {
+        address owner = makeAddr("upgradeContinuityOwner");
+        vm.prank(owner);
+        address identityAddr = onchainidSetup.idFactory
+            .createIdentity(
+                IdentityTypes.INDIVIDUAL, "upgradeContinuity", _makeSingleMgmtKeys(owner), _defaultModules()
+            );
+
+        bytes32 ownerKey = ClaimSignerHelper.addressToKey(owner);
+        assertTrue(IERC734(identityAddr).keyHasPurpose(ownerKey, KeyPurposes.MANAGEMENT), "key set before upgrade");
+
+        Identity newImpl = new Identity(address(onchainidSetup.signatureValidator), address(onchainidSetup.idFactory));
+        vm.prank(deployer);
+        onchainidSetup.idFactory.upgradeBeacon(address(newImpl));
+
+        assertTrue(IERC734(identityAddr).keyHasPurpose(ownerKey, KeyPurposes.MANAGEMENT), "key survives the upgrade");
     }
 
     /// @notice Upgrade rights follow the factory's current authority. After rotating the factory
@@ -1072,10 +1142,10 @@ contract IdentityFactoryTest is OnchainIDSetup {
     // ============ CREATE3 failure ============
 
     function test_createIdentity_revertWhenCreate2Fails() public {
-        RevertingIdentity revertingImpl = new RevertingIdentity();
-
         AccessManager am = new AccessManager(deployer);
         IdentityFactory badFactory = new IdentityFactory(address(am));
+        RevertingIdentity revertingImpl =
+            new RevertingIdentity(address(badFactory), address(onchainidSetup.signatureValidator));
         vm.prank(deployer);
         badFactory.initializeBeacon(address(revertingImpl));
 

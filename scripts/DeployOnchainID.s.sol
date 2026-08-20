@@ -40,6 +40,12 @@ contract DeployOnchainID is Script {
     ///      {AccessManager.labelRole} for explorer/dashboard discoverability.
     uint64 internal constant ROLE_TOKEN_FACTORY = 1;
     uint64 internal constant ROLE_CLAIM_ISSUER_ADMIN = 2;
+    uint64 internal constant ROLE_BEACON_UPGRADER = 3;
+
+    /// @dev Execution delay on the beacon upgrade role. A beacon upgrade re-points every
+    ///      identity at once, so it is scheduled first and only executable after the delay,
+    ///      which gives holders a window to see it coming and the admin a window to cancel.
+    uint32 internal constant BEACON_UPGRADE_DELAY = 2 days;
 
     function run() external {
         vm.startBroadcast();
@@ -73,6 +79,7 @@ contract DeployOnchainID is Script {
         // Label roles so explorers and ops dashboards can show human names.
         am.labelRole(ROLE_TOKEN_FACTORY, "TOKEN_FACTORY");
         am.labelRole(ROLE_CLAIM_ISSUER_ADMIN, "CLAIM_ISSUER_ADMIN");
+        am.labelRole(ROLE_BEACON_UPGRADER, "BEACON_UPGRADER");
 
         // 4. IdentityFactory. The beacon cannot exist yet (it needs the Identity
         //    implementation, which needs the validator, which needs this factory), so the
@@ -104,6 +111,16 @@ contract DeployOnchainID is Script {
         //    `idFactory.upgradeBeacon`, gated by the factory's current authority.
         idFactory.initializeBeacon(address(identityImpl));
         console.log("Beacon:", idFactory.beacon());
+
+        // Give `upgradeBeacon` its own role with an execution delay instead of letting it
+        // fall through to ADMIN_ROLE, which the deployer holds with no delay. The upgrade
+        // re-points every deployed identity, so it has to be schedulable and observable
+        // rather than immediate. The deployer holds the role to bootstrap; production should
+        // rotate it to a multisig alongside the ADMIN_ROLE rotation noted above.
+        bytes4[] memory upgradeSelectors = new bytes4[](1);
+        upgradeSelectors[0] = IdentityFactory.upgradeBeacon.selector;
+        am.setTargetFunctionRole(address(idFactory), upgradeSelectors, ROLE_BEACON_UPGRADER);
+        am.grantRole(ROLE_BEACON_UPGRADER, deployer, BEACON_UPGRADE_DELAY);
 
         // ===== 9. Per-identity-type deploy policy =====
         // Each type carries a policy: an AM role id (gates createIdentityFor) and a

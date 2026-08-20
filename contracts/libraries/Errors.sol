@@ -164,6 +164,21 @@ library Errors {
     ///         deployed the beacon at its predetermined slot.
     error BeaconNotInitialized();
 
+    /// @notice The candidate beacon implementation has no code.
+    error ImplementationNotAContract(address implementation);
+
+    /// @notice The candidate beacon implementation does not name this factory as its
+    ///         enshrined {IdentityFactory}.
+    error ImplementationFactoryMismatch(address implementation);
+
+    /// @notice The candidate beacon implementation still has its initializers open, so it
+    ///         could be initialized directly instead of only behind a proxy.
+    error ImplementationInitializersNotDisabled(address implementation);
+
+    /// @notice The candidate beacon implementation names a different registry module than
+    ///         the one every deployed identity already holds its keys in.
+    error ImplementationRegistryMismatch(address expected, address actual);
+
     /// @notice The sender does not have the management key.
     error SenderDoesNotHaveManagementKey();
 
