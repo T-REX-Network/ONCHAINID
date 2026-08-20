@@ -75,7 +75,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         onchainidSetup.accessManager.setTargetFunctionRole(address(adapter), sels, ROLE_EAS_ADMIN);
 
         adapter.setSchemaForTopic(TOPIC, SCHEMA);
-        adapter.setAttester(attester, true);
+        adapter.setAttester(TOPIC, attester, true);
         vm.stopPrank();
 
         emptyData = Structs.ClaimData({ issuedAt: 0, validUntil: 0, payload: "" });
@@ -187,7 +187,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
     function test_setAttester_revertsWithoutRole() public {
         vm.prank(bob);
         vm.expectRevert();
-        adapter.setAttester(attester, true);
+        adapter.setAttester(TOPIC, attester, true);
     }
 
     /// @notice A deployment-script bug passing an unset address must fail loudly instead of
@@ -195,7 +195,14 @@ contract EASClaimIssuerTest is OnchainIDSetup {
     function test_setAttester_revertsOnZeroAddress() public {
         vm.prank(deployer);
         vm.expectRevert(Errors.ZeroAddress.selector);
-        adapter.setAttester(address(0), true);
+        adapter.setAttester(TOPIC, address(0), true);
+    }
+
+    /// @notice Allowlisting an attester for one topic must not list it for another.
+    function test_setAttester_isScopedToOneTopic() public {
+        uint256 otherTopic = TOPIC + 1;
+        assertTrue(adapter.getIsAttesterAllowed(TOPIC, attester));
+        assertFalse(adapter.getIsAttesterAllowed(otherTopic, attester), "other topic must not inherit the allowlist");
     }
 
     /* ----- isClaimValid happy paths ----- */
@@ -251,6 +258,36 @@ contract EASClaimIssuerTest is OnchainIDSetup {
     function test_isClaimValid_unacceptedAttester() public {
         bytes32 uid = _attestAs(bob, SCHEMA, address(aliceIdentity), 0, hex"");
         assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData));
+    }
+
+    /// @notice An attester trusted for TOPIC must not satisfy another topic just by attesting
+    ///         under that topic's schema. The schema check alone does not stop this: anyone may
+    ///         attest under any schema on EAS, so the attester gate has to be topic-scoped too.
+    function test_isClaimValid_attesterFromOtherTopicRejects() public {
+        uint256 otherTopic = TOPIC + 1;
+        bytes32 otherSchema = schemaRegistry.register("bytes otherClaimData", address(0), true);
+
+        // otherTopic is fully configured, but with a different trusted attester.
+        vm.startPrank(deployer);
+        adapter.setSchemaForTopic(otherTopic, otherSchema);
+        adapter.setAttester(otherTopic, bob, true);
+        vm.stopPrank();
+
+        // TOPIC's attester attests under otherTopic's schema.
+        bytes32 uid = _attestAs(attester, otherSchema, address(aliceIdentity), 0, hex"");
+
+        assertFalse(
+            adapter.isClaimValid(IIdentity(address(aliceIdentity)), otherTopic, _encodeUid(uid), emptyData),
+            "attester trusted for another topic must not satisfy this one"
+        );
+        assertEq(
+            uint256(adapter.getClaimStatus(IIdentity(address(aliceIdentity)), otherTopic, _encodeUid(uid), emptyData)),
+            uint256(IClaimIssuer.ClaimStatus.NotIssued)
+        );
+
+        // The topic's own attester still works, so the rejection is scoping, not a broken path.
+        bytes32 okUid = _attestAs(bob, otherSchema, address(aliceIdentity), 0, hex"");
+        assertTrue(adapter.isClaimValid(IIdentity(address(aliceIdentity)), otherTopic, _encodeUid(okUid), emptyData));
     }
 
     function test_isClaimValid_attestationRevoked() public {
