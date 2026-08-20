@@ -205,7 +205,7 @@ contract KeyApprovalModule is IERC7579Module {
             return false;
         }
 
-        // The factory's wallet-binding calls (linkAccount, revokeAccount, confirmCrossChainLink)
+        // The factory's wallet-binding calls (linkAccount, revokeAccount, settlePendingCrossChainLink)
         // change the identity's own bindings and are management-grade. MANAGEMENT already returned
         // above, so a non-MANAGEMENT key targeting the factory is refused here rather than
         // auto-approved as an ordinary external call.

@@ -97,7 +97,7 @@ contract Identity is Initializable, SmartAccount, ERC165 {
 
     /// @notice The factory that deploys this identity. Fixed at implementation deploy time like
     ///         {registryModule}. The account uses it to require MANAGEMENT for the factory's
-    ///         wallet-binding calls (linkAccount, revokeAccount, confirmCrossChainLink).
+    ///         wallet-binding calls (linkAccount, revokeAccount, settlePendingCrossChainLink).
     function identityFactory() public view override returns (address) {
         return _identityFactory;
     }

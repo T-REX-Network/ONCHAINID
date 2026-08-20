@@ -27,7 +27,7 @@ import { Structs } from "../storage/Structs.sol";
 ///         For EVM and ERC-7913 signers, {linkAccount} runs the signature check on-chain
 ///         via `SignatureChecker`. For non-EVM wallets, the wallet proves control on its
 ///         native chain and the proof is relayed through an ERC-7786 cross-chain message;
-///         the named identity then calls {confirmCrossChainLink} on this chain. Both
+///         the named identity then calls {settlePendingCrossChainLink} on this chain. Both
 ///         halves (wallet control + identity ownership) are required, with one inbound
 ///         message.
 ///
@@ -74,6 +74,11 @@ interface IIdentityFactory {
     /// @notice Emitted when an identity confirms a pending cross-chain proposal and the
     ///         wallet becomes active.
     event CrossChainLinkConfirmed(bytes account, address indexed identity);
+
+    /// @notice Emitted when an identity declines a pending cross-chain proposal. The
+    ///         proposal is deleted and no binding is created; the wallet stays unlinked
+    ///         and can be proposed again later.
+    event CrossChainLinkRejected(bytes account, address indexed identity, uint256 expiry);
 
     /// @notice Emitted when admin adds or removes an authorized ERC-7786 gateway.
     event TrustedGatewaySet(address indexed gateway, bool trusted);
@@ -149,12 +154,21 @@ interface IIdentityFactory {
     ///         be re-linked (terminal revocation).
     function revokeAccount(bytes calldata account) external;
 
-    /// @notice Confirm a cross-chain link previously proposed via an authenticated
+    /// @notice Settle a cross-chain link previously proposed via an authenticated
     ///         ERC-7786 message. Caller must be the identity named in the proposal —
     ///         that's the identity-ownership half of the proof. The wallet-control
-    ///         half came from the inbound message. After this call the wallet is
-    ///         linked with the same sticky-binding rules as any EVM-side link.
-    function confirmCrossChainLink(bytes calldata account) external;
+    ///         half came from the inbound message.
+    ///
+    ///         Either way the proposal is deleted, so an identity that declines (or
+    ///         never got around to accepting) does not leave a dead entry behind.
+    ///
+    /// @param account the wallet envelope carried in the proposal.
+    /// @param accept `true` links the wallet, with the same sticky-binding rules as
+    ///         any EVM-side link; reverts if the proposal has expired. `false`
+    ///         declines and clears the proposal, allowed at any time including after
+    ///         expiry. Declining creates no binding, so the wallet stays unlinked and
+    ///         may be proposed again later.
+    function settlePendingCrossChainLink(bytes calldata account, bool accept) external;
 
     /// @notice Read a pending cross-chain proposal. Returns (address(0), 0) when no
     ///         proposal is staged for `account`.
@@ -165,10 +179,11 @@ interface IIdentityFactory {
     ///         the AM so the trust surface is operated by the same admin role as the
     ///         rest of the factory.
     ///
-    ///         Removing a gateway blocks future inbound messages but does not purge
+    ///         Removing a gateway blocks future inbound messages but does not clear
     ///         pending links it already staged. Operators should audit
     ///         {getPendingCrossChainLink} and treat entries proposed via the removed
-    ///         gateway as suspect.
+    ///         gateway as suspect; the named identity clears one by calling
+    ///         {settlePendingCrossChainLink} with `accept = false`.
     function setTrustedGateway(address gateway, bool trusted) external;
 
     /// @notice Read whether an address is currently a trusted ERC-7786 gateway.

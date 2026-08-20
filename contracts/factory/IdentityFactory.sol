@@ -86,7 +86,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     ///      ONCHAINID on this chain that the wallet has named. The wallet half of
     ///      proof-of-control comes from the authenticated inbound message; the
     ///      identity half comes later when the identity itself calls
-    ///      {confirmCrossChainLink}. Until then the link is not active.
+    ///      {settlePendingCrossChainLink}. Until then the link is not active.
     struct PendingLink {
         address identity;
         uint256 expiry;
@@ -108,7 +108,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         ///      Keyed by the wallet envelope bytes rather than `_walletKey` because
         ///      this map never participates in `accounts[identity]` enumeration
         ///      (which requires `EnumerableSet.Bytes32Set`). Cleared on
-        ///      {confirmCrossChainLink}.
+        ///      {settlePendingCrossChainLink}, whether the identity accepts or declines.
         mapping(bytes wallet => PendingLink proposal) pendingLinks;
     }
 
@@ -269,9 +269,9 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     }
 
     /// @inheritdoc IIdentityFactory
-    function confirmCrossChainLink(bytes calldata account) external {
+    function settlePendingCrossChainLink(bytes calldata account, bool accept) external {
         // The wallet named an identity when it sent the cross-chain message. Only
-        // that identity gets to finalize the link. Anyone else calling here is
+        // that identity gets to settle the proposal. Anyone else calling here is
         // rejected. The identity reaches us via its own execution path, so a
         // MANAGEMENT key on the identity is what actually signs this off.
         PendingLink memory pending = _storage().pendingLinks[account];
@@ -281,9 +281,18 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
             pending.identity == msg.sender,
             Errors.PendingCrossChainLinkIdentityMismatch(account, msg.sender, pending.identity)
         );
-        require(block.timestamp <= pending.expiry, Errors.PendingCrossChainLinkExpired(pending.expiry));
 
         delete _storage().pendingLinks[account];
+
+        // Declining is allowed at any time, expired or not. Accepting is the only
+        // other way a slot gets cleared and it reverts once past expiry, so without
+        // this a proposal nobody accepted in time would sit here forever.
+        if (!accept) {
+            emit CrossChainLinkRejected(account, msg.sender, pending.expiry);
+            return;
+        }
+
+        require(block.timestamp <= pending.expiry, Errors.PendingCrossChainLinkExpired(pending.expiry));
         _linkAccount(account, msg.sender);
         emit CrossChainLinkConfirmed(account, msg.sender);
     }
