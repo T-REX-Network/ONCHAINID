@@ -510,21 +510,25 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
             if (_modules[i].purpose == KeyPurposes.MANAGEMENT) moduleManagers++;
         }
 
-        // Asset identities are deployed for a token contract, always a 20-byte EVM address.
-        // The token is auto-linked as the identity's sole wallet like any other signer;
-        // the difference is the identity's `type`. Off-chain readers can recover the
-        // token by reading `getAccounts(identity)[0]` and checking `getIdentityType()`.
-        // The envelope is built by the factory itself, so the EVM shape is guaranteed;
-        // the meaningful check here is just that the address inside is non-zero.
+        // Both entry points build the envelope from a 20-byte EVM address, so the shape is
+        // guaranteed here. Asset identities are deployed for a token contract and the token
+        // is auto-linked as the identity's sole wallet like any other signer; the difference
+        // is the identity's `type`. Off-chain readers can recover the token by reading
+        // `getAccounts(identity)[0]` and checking `getIdentityType()`.
+        (, address account) = InteroperableAddress.parseEvmV1(_account);
         if (_identityType == IdentityTypes.ASSET) {
-            (, address evmAddr) = InteroperableAddress.parseEvmV1(_account);
-            require(evmAddr != address(0), Errors.ZeroAddress());
+            require(account != address(0), Errors.ZeroAddress());
         }
 
-        // Salt covers type, user salt and keys, but not modules: a module config change
-        // should not move the identity's address, so the same (type, salt, keys) always
-        // lands at the same slot regardless of which modules are installed at deploy.
-        bytes32 deploySalt = keccak256(abi.encode(_identityType, _salt, keccak256(abi.encode(_keys))));
+        // Salt covers type, user salt, keys and the account that gets auto-linked, but not
+        // modules: a module config change should not move the identity's address, so the
+        // same inputs always land at the same slot regardless of which modules are installed
+        // at deploy. The account is in there because it is bound to the identity right after
+        // this deploy, and the binding is sticky. Leaving it out would let anyone replay a
+        // pending creation with an account of their own, take the address the caller was
+        // going to get, and have their wallet auto-linked to it. Hashing the parsed address
+        // rather than the envelope keeps the address the same across chains.
+        bytes32 deploySalt = keccak256(abi.encode(_identityType, _salt, account, keccak256(abi.encode(_keys))));
 
         identity = _deployIdentity(deploySalt, _identityType, _keys, _modules);
 
@@ -543,8 +547,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         _linkAccount(_account, identity);
 
         if (_identityType == IdentityTypes.ASSET) {
-            (, address evmAddr) = InteroperableAddress.parseEvmV1(_account);
-            emit TokenLinked(evmAddr, identity);
+            emit TokenLinked(account, identity);
         }
     }
 

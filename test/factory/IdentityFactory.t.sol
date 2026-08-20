@@ -421,17 +421,15 @@ contract IdentityFactoryTest is OnchainIDSetup {
     }
 
     function test_revertBecauseSaltAlreadyUsed() public {
-        // Same salt and keys deploy to the same address, so the second call collides.
+        // Same account, salt and keys deploy to the same address, so the second call collides.
         Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(carol);
 
         vm.prank(deployer);
         onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "saltUsed", keys);
 
-        // The collision (FailedDeployment) fires inside CREATE3, before the sole-management
-        // post-check, so reusing carol's key set for david still surfaces it.
         vm.prank(deployer);
         vm.expectRevert(OZErrors.FailedDeployment.selector);
-        onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "saltUsed", keys);
+        onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "saltUsed", keys);
     }
 
     /// @notice Same _salt string with different keys yields a different identity address.
@@ -1301,6 +1299,52 @@ contract IdentityFactoryTest is OnchainIDSetup {
             identityAddr,
             "self-deployer auto-linked"
         );
+    }
+
+    /// @notice A front-runner who replays a pending self-deploy verbatim lands on a
+    ///         different address, because the auto-linked account is part of the salt.
+    ///         Without that the attacker would take the victim's address, carrying the
+    ///         victim's MANAGEMENT key but with the attacker's own wallet auto-linked,
+    ///         and the binding is sticky.
+    function test_createIdentity_frontRunnerCannotTakeVictimAddress() public {
+        address victim = makeAddr("frontRunVictim");
+        address attacker = makeAddr("frontRunAttacker");
+
+        // The victim's pending call is public: type, salt and keys are all in the mempool.
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(victim);
+
+        vm.prank(attacker);
+        address attackerIdentity = onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "frontRun", keys);
+
+        // The victim's own transaction still goes through.
+        vm.prank(victim);
+        address victimIdentity = onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "frontRun", keys);
+
+        assertTrue(attackerIdentity != victimIdentity, "replay must not land on the victim's address");
+        assertEq(
+            onchainidSetup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, victim)),
+            victimIdentity,
+            "victim keeps its own identity"
+        );
+        assertEq(
+            onchainidSetup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, attacker)),
+            attackerIdentity,
+            "attacker's wallet stays on its own identity"
+        );
+    }
+
+    /// @notice Same account, salt and keys still resolve to one address, so the salt
+    ///         change does not break address determinism for the intended caller.
+    function test_createIdentity_sameAccountAndSaltCollides() public {
+        address eoa = makeAddr("determinismEoa");
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(eoa);
+
+        vm.prank(eoa);
+        onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "sameSlot", keys);
+
+        vm.prank(eoa);
+        vm.expectRevert(OZErrors.FailedDeployment.selector);
+        onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "sameSlot", keys);
     }
 
     // ============ IdentityInitialized event ============
