@@ -112,6 +112,12 @@ library Errors {
     ///         wallets go through the ERC-7786 cross-chain path.
     error NonEvmAccount(bytes account);
 
+    /// @notice Reverts when {linkAccount} gets an eip-155 envelope whose chain
+    ///         reference is not this chain's id in minimal big-endian form. The
+    ///         signature path can only prove control on the local chain; wallets on
+    ///         other EVM chains go through the ERC-7786 cross-chain path.
+    error AccountNotOnLocalChain(bytes account);
+
     /// @notice Reverts when an ERC-7913 signer names a verifier that admin has not
     ///         approved via {setTrustedVerifier}. Without the list, a caller could
     ///         ship a verifier that accepts anything and self-certify the link.

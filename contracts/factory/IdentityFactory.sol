@@ -200,12 +200,18 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // `account` is an ERC-7930 envelope wrapping the wallet. Its layout is:
         //     [ chainType | chainReference | signer ]
         // bytes feed the signature check. parseV1Calldata reverts on malformed input.
-        (bytes2 chainType,, bytes calldata signer) = InteroperableAddress.parseV1Calldata(account);
+        (bytes2 chainType, bytes calldata chainReference, bytes calldata signer) =
+            InteroperableAddress.parseV1Calldata(account);
 
         // The signature check below only proves control for EVM signers (EOA,
         // ERC-1271, ERC-7913). A foreign-chain envelope proves nothing here, so it
         // must come through the cross-chain path instead. 0x0000 is eip-155.
         require(chainType == 0x0000, Errors.NonEvmAccount(account));
+
+        // The chain reference must name this chain: a signature verified here says
+        // nothing about the wallet at that address on another EVM chain, so
+        // envelopes for other chains must not link through the signature path.
+        require(keccak256(chainReference) == keccak256(_localChainReference()), Errors.AccountNotOnLocalChain(account));
 
         // An ERC-7913 signer names its own verifier in its first 20 bytes, so the
         // proof is self-certifying unless the verifier is admin-approved.
@@ -425,6 +431,12 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         require(requiredRole != 0, Errors.UnknownIdentityType(_identityType));
         (bool isMember,) = IAccessManager(authority()).hasRole(requiredRole, caller);
         require(isMember, Errors.NotAuthorizedForIdentityType(caller, _identityType, requiredRole));
+    }
+
+    /// @dev `block.chainid` encoded as an ERC-7930 chain reference. Round-trips
+    ///      through the library so the encoding is exactly the one it emits.
+    function _localChainReference() private view returns (bytes memory chainReference) {
+        (, chainReference,) = InteroperableAddress.parseV1(InteroperableAddress.formatEvmV1(block.chainid));
     }
 
     /// @dev keccak256(account) cast to address. Used as the nonce key so OZ Nonces

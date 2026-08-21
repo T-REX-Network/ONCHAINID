@@ -140,9 +140,10 @@ interface IIdentityFactory {
     ///
     /// @param account ERC-7930 interoperable address envelope. EVM wallets are wrapped
     ///         via OZ `InteroperableAddress.formatEvmV1(chainId, addr)`. The chain type
-    ///         must be eip-155: the signature check cannot prove control for a foreign
-    ///         chain, so non-EVM envelopes revert and go through
-    ///         {confirmCrossChainLink} instead. Malformed envelopes revert.
+    ///         must be eip-155 and the chain reference must be the local chain id in
+    ///         minimal big-endian form: the signature check cannot prove control on any
+    ///         other chain, so envelopes for non-EVM or foreign EVM chains revert and
+    ///         go through {confirmCrossChainLink} instead. Malformed envelopes revert.
     /// @param signature EIP-712 signature produced by `account` over
     ///         `LinkAccount(bytes account,address identity,uint256 nonce,uint256 expiry)`.
     /// @param nonce current nonce for `account` (see {nonceForAccount}).

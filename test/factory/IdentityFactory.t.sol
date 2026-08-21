@@ -891,6 +891,36 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertEq(onchainidSetup.idFactory.getIdentity(env), address(0));
     }
 
+    /// @notice An eip-155 envelope naming a foreign EVM chain must not link through
+    ///         the local signature path (M-06 residual). The signature is valid for
+    ///         the digest, but it only proves control on this chain — the wallet at
+    ///         that address on chain 137 may be unrelated.
+    function test_linkAccount_foreignEvmChainReferenceRejected() public {
+        // chain reference hex"89" = 137 (Polygon), signer = david's real address
+        bytes memory foreignEnv = InteroperableAddress.formatV1(bytes2(0x0000), hex"89", abi.encodePacked(david));
+        uint256 expiry = block.timestamp + 1 hours;
+        bytes memory sig = _signLink(davidPk, foreignEnv, address(aliceIdentity), 0, expiry);
+
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(abi.encodeWithSelector(Errors.AccountNotOnLocalChain.selector, foreignEnv));
+        onchainidSetup.idFactory.linkAccount(foreignEnv, sig, 0, expiry);
+
+        assertEq(onchainidSetup.idFactory.getIdentity(foreignEnv), address(0));
+    }
+
+    /// @notice A zero-padded alias of the local chain id is rejected too — otherwise
+    ///         one key could occupy one registry entry per padding variant.
+    function test_linkAccount_paddedChainReferenceRejected() public {
+        // hex"007a69" is 31337 with a leading zero byte — same chain, different bytes
+        bytes memory paddedEnv = InteroperableAddress.formatV1(bytes2(0x0000), hex"007a69", abi.encodePacked(david));
+        uint256 expiry = block.timestamp + 1 hours;
+        bytes memory sig = _signLink(davidPk, paddedEnv, address(aliceIdentity), 0, expiry);
+
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(abi.encodeWithSelector(Errors.AccountNotOnLocalChain.selector, paddedEnv));
+        onchainidSetup.idFactory.linkAccount(paddedEnv, sig, 0, expiry);
+    }
+
     // ============ setTrustedVerifier ============
 
     function test_setTrustedVerifier_emitsEventAndUpdatesView() public {
