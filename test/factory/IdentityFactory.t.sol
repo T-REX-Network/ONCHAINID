@@ -825,23 +825,27 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertEq(onchainidSetup.idFactory.getIdentity(nonEvmEnv), address(0));
     }
 
-    /// @notice An envelope with trailing bytes decodes to the same signer but hashes
-    ///         to a fresh registry key, so it must be rejected (M-05).
-    function test_linkAccount_revertNonCanonicalEnvelope() public {
-        bytes memory paddedAcc = bytes.concat(InteroperableAddress.formatEvmV1(block.chainid, david), hex"0000");
+    /// @notice An envelope with trailing bytes decodes to the same signer, and the
+    ///         registry resolves it to the same entry: the wallet key is the hash
+    ///         of the canonical re-encoding, not of the raw bytes (M-05).
+    function test_linkAccount_paddedEnvelopeResolvesToCanonicalWallet() public {
+        bytes memory davidAcc = InteroperableAddress.formatEvmV1(block.chainid, david);
+        bytes memory paddedAcc = bytes.concat(davidAcc, hex"0000");
         uint256 expiry = block.timestamp + 1 hours;
+        // Both encodings share one nonce sequence.
         uint256 nonce = onchainidSetup.idFactory.nonceForAccount(paddedAcc);
-        // david can produce a valid signature over the padded bytes, so only the
-        // canonical check blocks the link.
+        assertEq(nonce, onchainidSetup.idFactory.nonceForAccount(davidAcc), "nonce slot must be shared");
         bytes memory sig = _signLink(davidPk, paddedAcc, address(aliceIdentity), nonce, expiry);
 
         vm.prank(address(aliceIdentity));
-        vm.expectRevert(abi.encodeWithSelector(Errors.NonCanonicalAccount.selector, paddedAcc));
         onchainidSetup.idFactory.linkAccount(paddedAcc, sig, nonce, expiry);
+
+        assertEq(onchainidSetup.idFactory.getIdentity(davidAcc), address(aliceIdentity));
+        assertEq(onchainidSetup.idFactory.getIdentity(paddedAcc), address(aliceIdentity));
     }
 
     /// @notice A revoked wallet cannot relink through a padded encoding of its
-    ///         envelope.
+    ///         envelope: both encodings hit the same revoked entry.
     function test_linkAccount_paddedEnvelopeCannotBypassRevocation() public {
         bytes memory davidAcc = InteroperableAddress.formatEvmV1(block.chainid, david);
         uint256 expiry = block.timestamp + 1 hours;
@@ -854,19 +858,66 @@ contract IdentityFactoryTest is OnchainIDSetup {
         uint256 nonce2 = onchainidSetup.idFactory.nonceForAccount(paddedAcc);
         bytes memory sig2 = _signLink(davidPk, paddedAcc, address(bobIdentity), nonce2, expiry);
 
+        // The error carries the canonical bytes because the entry is canonical.
         vm.prank(address(bobIdentity));
-        vm.expectRevert(abi.encodeWithSelector(Errors.NonCanonicalAccount.selector, paddedAcc));
+        vm.expectRevert(abi.encodeWithSelector(Errors.WalletAlreadyRevoked.selector, davidAcc));
         onchainidSetup.idFactory.linkAccount(paddedAcc, sig2, nonce2, expiry);
 
         assertEq(
             uint256(onchainidSetup.idFactory.getAccountStatus(paddedAcc)),
-            uint256(IIdentityFactory.AccountStatus.None),
-            "padded variant must never gain an entry"
+            uint256(IIdentityFactory.AccountStatus.Revoked),
+            "padded variant must resolve to the revoked entry"
         );
     }
 
-    /// @notice revokeAccount rejects envelopes with trailing bytes.
-    function test_revokeAccount_revertNonCanonicalEnvelope() public {
+    /// @notice A zero-padded eip-155 chain reference decodes to the same chainid
+    ///         but hashes to a fresh registry key, so it is rejected outright.
+    function test_linkAccount_zeroPaddedChainIdRejected() public {
+        // Same wallet, but the chainid (31337 = 0x7a69) carries a leading zero byte.
+        bytes memory zeroPaddedAcc = InteroperableAddress.formatV1(bytes2(0x0000), hex"007a69", abi.encodePacked(david));
+        assertTrue(
+            keccak256(zeroPaddedAcc) != keccak256(InteroperableAddress.formatEvmV1(block.chainid, david)),
+            "encodings must differ as raw bytes"
+        );
+        uint256 expiry = block.timestamp + 1 hours;
+        // david can produce a valid signature over the padded bytes, so only the
+        // canonical check blocks the link.
+        bytes memory sig = _signLink(davidPk, zeroPaddedAcc, address(aliceIdentity), 0, expiry);
+
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(abi.encodeWithSelector(Errors.NonCanonicalAccount.selector, zeroPaddedAcc));
+        onchainidSetup.idFactory.linkAccount(zeroPaddedAcc, sig, 0, expiry);
+    }
+
+    /// @notice A revoked wallet cannot relink through a zero-padded chain
+    ///         reference either.
+    function test_linkAccount_zeroPaddedChainIdCannotBypassRevocation() public {
+        bytes memory davidAcc = InteroperableAddress.formatEvmV1(block.chainid, david);
+        uint256 expiry = block.timestamp + 1 hours;
+        uint256 nonce = onchainidSetup.idFactory.nonceForAccount(davidAcc);
+        bytes memory sig = _signLink(davidPk, davidAcc, address(aliceIdentity), nonce, expiry);
+        _execLink(aliceIdentity, alice, davidAcc, sig, nonce, expiry);
+        _execRevoke(aliceIdentity, alice, davidAcc);
+
+        // Same wallet, but the chainid (31337 = 0x7a69) carries a leading zero byte.
+        bytes memory zeroPaddedAcc = InteroperableAddress.formatV1(bytes2(0x0000), hex"007a69", abi.encodePacked(david));
+        bytes memory sig2 = _signLink(davidPk, zeroPaddedAcc, address(bobIdentity), nonce + 1, expiry);
+
+        vm.prank(address(bobIdentity));
+        vm.expectRevert(abi.encodeWithSelector(Errors.NonCanonicalAccount.selector, zeroPaddedAcc));
+        onchainidSetup.idFactory.linkAccount(zeroPaddedAcc, sig2, nonce + 1, expiry);
+
+        assertEq(
+            uint256(onchainidSetup.idFactory.getAccountStatus(davidAcc)),
+            uint256(IIdentityFactory.AccountStatus.Revoked),
+            "canonical entry must stay revoked"
+        );
+    }
+
+    /// @notice revokeAccount resolves a padded encoding to the canonical entry, so
+    ///         a link established under the canonical envelope can be revoked
+    ///         through either encoding.
+    function test_revokeAccount_paddedEnvelopeRevokesCanonicalWallet() public {
         bytes memory davidAcc = InteroperableAddress.formatEvmV1(block.chainid, david);
         uint256 expiry = block.timestamp + 1 hours;
         uint256 nonce = onchainidSetup.idFactory.nonceForAccount(davidAcc);
@@ -875,8 +926,13 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
         bytes memory paddedAcc = bytes.concat(davidAcc, hex"0000");
         vm.prank(address(aliceIdentity));
-        vm.expectRevert(abi.encodeWithSelector(Errors.NonCanonicalAccount.selector, paddedAcc));
         onchainidSetup.idFactory.revokeAccount(paddedAcc);
+
+        assertEq(
+            uint256(onchainidSetup.idFactory.getAccountStatus(davidAcc)),
+            uint256(IIdentityFactory.AccountStatus.Revoked),
+            "canonical entry must be revoked"
+        );
     }
 
     /// @notice Linking a non-EVM envelope through the EVM signature path is rejected.
@@ -1042,19 +1098,28 @@ contract IdentityFactoryTest is OnchainIDSetup {
         gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(8)), solanaEnv, payload);
     }
 
-    /// @notice The cross-chain path rejects envelopes with trailing bytes at
-    ///         delivery, so a padded variant can never stage a proposal under a
-    ///         fresh registry key.
-    function test_crossChain_processMessageRejectsNonCanonicalEnvelope() public {
+    /// @notice A padded variant delivered over the cross-chain path resolves to
+    ///         the same registry entry as the canonical envelope, so a linked
+    ///         wallet cannot be re-proposed under a different encoding.
+    function test_crossChain_paddedEnvelopeResolvesToCanonicalWallet() public {
         MockERC7786Gateway gateway = _deployTrustedGateway();
-        bytes memory paddedEnv = bytes.concat(_nonEvmEnvelope(makeAddr("solanaSignerPadded")), hex"0000");
+        bytes memory solanaEnv = _nonEvmEnvelope(makeAddr("solanaSignerPadded"));
         uint256 expiry = block.timestamp + 1 hours;
-        // The sender must equal the envelope, so both carry the padding and the
-        // canonical check is what rejects the message.
-        bytes memory payload = _crossChainPayload(paddedEnv, address(aliceIdentity), expiry);
+        bytes memory payload = _crossChainPayload(solanaEnv, address(aliceIdentity), expiry);
 
-        vm.expectRevert(abi.encodeWithSelector(Errors.NonCanonicalAccount.selector, paddedEnv));
-        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(10)), paddedEnv, payload);
+        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(10)), solanaEnv, payload);
+        vm.prank(address(aliceIdentity));
+        onchainidSetup.idFactory.confirmCrossChainLink(solanaEnv);
+
+        // The sender must equal the envelope, so both carry the padding; the
+        // canonical wallet key is what blocks the second proposal.
+        bytes memory paddedEnv = bytes.concat(solanaEnv, hex"0000");
+        bytes memory paddedPayload = _crossChainPayload(paddedEnv, address(bobIdentity), expiry);
+
+        vm.expectRevert(abi.encodeWithSelector(Errors.WalletAlreadyHasEntry.selector, paddedEnv));
+        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(11)), paddedEnv, paddedPayload);
+
+        assertEq(onchainidSetup.idFactory.getIdentity(paddedEnv), address(aliceIdentity));
     }
 
     /// @notice A proposal delivered while fresh but confirmed after its expiry is
