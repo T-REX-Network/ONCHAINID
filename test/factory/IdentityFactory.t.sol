@@ -345,6 +345,16 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertEq(singleBinding, true);
     }
 
+    function test_setIdentityTypePolicy_revertWhenSingleBindingTypeIsPublic() public {
+        // A single-binding identity is bound to a contract that holds no key, so the role
+        // gate is its only defense. Opening it to PUBLIC_ROLE would let anyone bind a
+        // contract to keys they alone hold, so the factory refuses the config.
+        uint64 publicRole = onchainidSetup.accessManager.PUBLIC_ROLE();
+        vm.prank(deployer);
+        vm.expectRevert(abi.encodeWithSelector(Errors.SingleBindingTypeCannotBePublic.selector, IdentityTypes.ASSET));
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.ASSET, publicRole, false, true);
+    }
+
     function test_setIdentityTypePolicy_revertForNonAdmin() public {
         vm.prank(alice);
         vm.expectRevert(); // AccessManagerUnauthorizedAccount
@@ -393,10 +403,10 @@ contract IdentityFactoryTest is OnchainIDSetup {
     /// @notice Regression guard: ASSET-typed self-deploy must revert. Closes the bug where
     ///         any EOA could mint an ASSET identity bound to themselves.
     function test_createIdentity_assetTypeRevertsForEoa() public {
-        // Apply the production policy for ASSET (matches DeployOnchainID defaults).
-        uint64 publicRole = onchainidSetup.accessManager.PUBLIC_ROLE();
+        // Apply the production policy for ASSET (matches DeployOnchainID defaults):
+        // gated role, no self-deploy, single binding.
         vm.prank(deployer);
-        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.ASSET, publicRole, false, true);
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.ASSET, 1, false, true);
 
         address eoa = makeAddr("eoaTryingToMintAsset");
         vm.prank(eoa);
@@ -427,11 +437,11 @@ contract IdentityFactoryTest is OnchainIDSetup {
         vm.prank(deployer);
         onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "saltUsed", keys);
 
-        // The collision (FailedDeployment) fires inside CREATE3, before the sole-management
-        // post-check, so reusing carol's key set for david still surfaces it.
+        // The collision (FailedDeployment) fires inside CREATE3: same type, salt and keys
+        // land on the same address.
         vm.prank(deployer);
         vm.expectRevert(OZErrors.FailedDeployment.selector);
-        onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "saltUsed", keys);
+        onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "saltUsed", keys);
     }
 
     /// @notice Same _salt string with different keys yields a different identity address.
@@ -541,9 +551,10 @@ contract IdentityFactoryTest is OnchainIDSetup {
         onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "moduleOnlyManager", keys);
     }
 
-    /// @notice The standard bundle registers the KeyApprovalModule with `purpose: MANAGEMENT`,
-    ///         so the identity has two MANAGEMENT keys. The sole-management check counts the
-    ///         type's registered modules, so the module key is carved out and the deploy passes.
+    /// @notice The standard bundle registers the KeyApprovalModule with `purpose: MANAGEMENT`.
+    ///         MODULE keys stay out of the MANAGEMENT index, so the account is still the sole
+    ///         indexed manager and the deploy passes; the module keeps its purpose through
+    ///         keyHasPurpose.
     function test_createIdentityFor_allowsRegisteredModuleWithManagementPurpose() public {
         address fresh = makeAddr("freshOnboardee");
         vm.prank(david);
@@ -551,14 +562,14 @@ contract IdentityFactoryTest is OnchainIDSetup {
             .createIdentityFor(fresh, IdentityTypes.INDIVIDUAL, "moduleCarveOut", _makeSingleMgmtKeys(fresh));
 
         assertTrue(IERC734(identity).keyHasPurpose(keccak256(abi.encodePacked(fresh)), KeyPurposes.MANAGEMENT));
-        // The account plus the KeyApprovalModule key.
-        assertEq(IERC734(identity).getKeysByPurpose(KeyPurposes.MANAGEMENT).length, 2);
+        // Only the account: the module's MODULE key never enters the index.
+        assertEq(IERC734(identity).getKeysByPurpose(KeyPurposes.MANAGEMENT).length, 1);
         assertTrue(
             IERC734(identity)
                 .keyHasPurpose(
                     keccak256(abi.encodePacked(address(onchainidSetup.keyApprovalModule))), KeyPurposes.MANAGEMENT
                 ),
-            "the registered module is the second manager"
+            "the registered module still holds the purpose"
         );
     }
 
@@ -571,31 +582,49 @@ contract IdentityFactoryTest is OnchainIDSetup {
     // carol is the victim, david is the caller trying to hijack her wallet.
 
     function test_createIdentityFor_revertWhenAccountNotManagement() public {
-        // david deploys for carol's wallet but keys the identity to himself. carol would not
-        // govern it, so the sole-management post-check reverts and the hijack fails.
+        // david deploys for carol's wallet but keys the identity to himself. Keys on a
+        // third-party deploy may only target the account, so this fails before deploying.
         Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(david);
         vm.prank(david);
-        vm.expectRevert(abi.encodeWithSelector(Errors.AccountNotSoleManagementKey.selector, carol));
+        vm.expectRevert(abi.encodeWithSelector(Errors.KeyNotForAccount.selector, keccak256(abi.encodePacked(david))));
         onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "hijack", keys);
     }
 
     function test_createIdentityFor_revertWhenCallerAddsSecondManagementKey() public {
         // david keys carol honestly but slips himself in as a second MANAGEMENT key. He
-        // could later strip carol and own an identity stuck to her wallet, so sole means
-        // sole: the deploy reverts.
+        // could later strip carol and own an identity stuck to her wallet. His key is not
+        // carol's, so the deploy reverts.
         Structs.KeyParam[] memory keys = new Structs.KeyParam[](2);
         keys[0] = _makeECDSAKey(carol, KeyPurposes.MANAGEMENT);
         keys[1] = _makeECDSAKey(david, KeyPurposes.MANAGEMENT);
         vm.prank(david);
-        vm.expectRevert(abi.encodeWithSelector(Errors.AccountNotSoleManagementKey.selector, carol));
+        vm.expectRevert(abi.encodeWithSelector(Errors.KeyNotForAccount.selector, keccak256(abi.encodePacked(david))));
         onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "coGov", keys);
     }
 
     function test_createIdentityFor_revertWhenSecondManagementKeyPosesAsModule() public {
-        // Same attack, but david labels his wallet MODULE to look like module plumbing.
-        // keyType is caller-supplied and never validated, and the identity's management gate
-        // checks purpose only, so he would keep full management. The check matches against
-        // the modules actually installed, not the claimed type, so it still fails.
+        // A key labeled MODULE stays out of the MANAGEMENT index and would hold hidden
+        // management authority through the approval queue. The factory rejects MODULE
+        // typed caller keys outright, even when the key is the account's own.
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](2);
+        keys[0] = _makeECDSAKey(carol, KeyPurposes.MANAGEMENT);
+        keys[1] = Structs.KeyParam({
+            keyHash: keccak256(abi.encodePacked(carol)),
+            purpose: KeyPurposes.MANAGEMENT,
+            keyType: KeyTypes.MODULE,
+            signerData: abi.encodePacked(carol),
+            clientData: ""
+        });
+        vm.prank(david);
+        vm.expectRevert(
+            abi.encodeWithSelector(Errors.CallerKeyCannotBeModule.selector, keccak256(abi.encodePacked(carol)))
+        );
+        onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "fakeMod", keys);
+    }
+
+    function test_createIdentity_revertWhenCallerKeyPosesAsModule() public {
+        // Self-deploy rejects MODULE typed caller keys too: a wallet key wearing MODULE
+        // would escape the MANAGEMENT index and the last-manager removal guard.
         Structs.KeyParam[] memory keys = new Structs.KeyParam[](2);
         keys[0] = _makeECDSAKey(carol, KeyPurposes.MANAGEMENT);
         keys[1] = Structs.KeyParam({
@@ -605,9 +634,11 @@ contract IdentityFactoryTest is OnchainIDSetup {
             signerData: abi.encodePacked(david),
             clientData: ""
         });
-        vm.prank(david);
-        vm.expectRevert(abi.encodeWithSelector(Errors.AccountNotSoleManagementKey.selector, carol));
-        onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "fakeMod", keys);
+        vm.prank(carol);
+        vm.expectRevert(
+            abi.encodeWithSelector(Errors.CallerKeyCannotBeModule.selector, keccak256(abi.encodePacked(david)))
+        );
+        onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "selfFakeMod", keys);
     }
 
     function test_createIdentityFor_succeedsWhenAccountIsManagement() public {
@@ -621,19 +652,48 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertTrue(IERC734(identity).keyHasPurpose(keccak256(abi.encodePacked(carol)), KeyPurposes.MANAGEMENT));
     }
 
-    function test_createIdentityFor_succeedsWithExtraNonManagementKeys() public {
-        // The caller may seed extra non-management keys (here david as ACTION): carol is
-        // still the sole manager, david only holds an action key she can remove.
+    function test_createIdentityFor_revertWhenCallerSeedsLesserKeys() public {
+        // david keys carol as manager but gives himself an ACTION key. carol never asked
+        // for the identity and may not know it exists to clean it up, so the caller may
+        // not seed keys for anyone but the account.
         Structs.KeyParam[] memory keys = new Structs.KeyParam[](2);
         keys[0] = _makeECDSAKey(carol, KeyPurposes.MANAGEMENT);
         keys[1] = _makeECDSAKey(david, KeyPurposes.ACTION);
+        vm.prank(david);
+        vm.expectRevert(abi.encodeWithSelector(Errors.KeyNotForAccount.selector, keccak256(abi.encodePacked(david))));
+        onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "carolPlus", keys);
+    }
+
+    function test_createIdentityFor_succeedsWithExtraKeysForTheAccount() public {
+        // Extra purposes for the account itself are fine: every key is carol's.
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](2);
+        keys[0] = _makeECDSAKey(carol, KeyPurposes.MANAGEMENT);
+        keys[1] = _makeECDSAKey(carol, KeyPurposes.ACTION);
         vm.prank(david);
         address identity =
             onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "carolPlus", keys);
 
         assertTrue(IERC734(identity).keyHasPurpose(keccak256(abi.encodePacked(carol)), KeyPurposes.MANAGEMENT));
-        assertTrue(IERC734(identity).keyHasPurpose(keccak256(abi.encodePacked(david)), KeyPurposes.ACTION));
-        assertFalse(IERC734(identity).keyHasPurpose(keccak256(abi.encodePacked(david)), KeyPurposes.MANAGEMENT));
+        assertTrue(IERC734(identity).keyHasPurpose(keccak256(abi.encodePacked(carol)), KeyPurposes.ACTION));
+    }
+
+    function test_createIdentityFor_openRoleBindingIsSticky_documentedTradeoff() public {
+        // The test harness keeps INDIVIDUAL on PUBLIC_ROLE, so david can bind carol's
+        // wallet to an identity carol never asked for. carol manages it alone, but sticky
+        // binding then blocks that wallet from joining any other identity. This is why the
+        // production deploy script gates createIdentityFor for INDIVIDUAL behind
+        // ROLE_ISSUER and leaves only self-deploy open.
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(carol);
+        vm.prank(david);
+        address identity = onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "grief", keys);
+
+        bytes memory carolAcc = InteroperableAddress.formatEvmV1(block.chainid, carol);
+        assertEq(onchainidSetup.idFactory.getIdentity(carolAcc), identity);
+
+        // Any later deploy for carol's wallet lands on the sticky binding and reverts.
+        vm.prank(carol);
+        vm.expectRevert(abi.encodeWithSelector(Errors.WalletBoundToAnotherIdentity.selector, carolAcc, identity));
+        onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "carolOwnChoice", keys);
     }
 
     function test_createIdentityFor_singleBindingTypeSkipsAccountCheck() public {
@@ -653,13 +713,16 @@ contract IdentityFactoryTest is OnchainIDSetup {
         Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
         keys[0] = _makeECDSAKey(david, KeyPurposes.ACTION);
 
-        Structs.ModuleInstall[] memory mods = _defaultModules();
-        // Grant the validator module MANAGEMENT: the only MANAGEMENT holder is now a MODULE key.
+        // Re-register the type's bundle with the validator granted MANAGEMENT: the only
+        // MANAGEMENT holder is now a MODULE key.
+        Structs.ModuleInstall[] memory mods = onchainidSetup.idFactory.getIdentityTypeModules(IdentityTypes.INDIVIDUAL);
         mods[0].purpose = KeyPurposes.MANAGEMENT;
+        vm.prank(deployer);
+        onchainidSetup.idFactory.setIdentityTypeModules(IdentityTypes.INDIVIDUAL, mods);
 
         vm.prank(deployer);
         vm.expectRevert(Errors.NoManagementKeyInKeys.selector);
-        onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "modMgmt", keys, mods);
+        onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "modMgmt", keys);
     }
 
     // ============ createIdentityFor auto-link ============

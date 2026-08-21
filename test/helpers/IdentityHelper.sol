@@ -69,7 +69,11 @@ library IdentityHelper {
 
         // Register every standard type with PUBLIC_ROLE and selfDeployable = true for
         // a permissive test default. ASSET and SMART_CONTRACT are single-binding as
-        // in production.
+        // in production, and the factory refuses PUBLIC_ROLE for those, so they get a
+        // dedicated role granted to `managementKey`. High id so tests picking their own
+        // role ids never collide with it.
+        uint64 singleBindingRole = type(uint64).max - 1;
+        setup.accessManager.grantRole(singleBindingRole, managementKey, 0);
         uint256[8] memory types = [
             IdentityTypes.ASSET,
             IdentityTypes.INDIVIDUAL,
@@ -85,7 +89,8 @@ library IdentityHelper {
             legacyQueueModules(address(setup.keyApprovalModule), address(setup.signatureValidator));
         for (uint256 i = 0; i < types.length; i++) {
             bool singleBinding = types[i] == IdentityTypes.ASSET || types[i] == IdentityTypes.SMART_CONTRACT;
-            setup.idFactory.setIdentityTypePolicy(types[i], PUBLIC_ROLE, true, singleBinding);
+            setup.idFactory
+                .setIdentityTypePolicy(types[i], singleBinding ? singleBindingRole : PUBLIC_ROLE, true, singleBinding);
             setup.idFactory.setIdentityTypeModules(types[i], standardModules);
         }
     }

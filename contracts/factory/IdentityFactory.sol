@@ -21,6 +21,7 @@ import { Errors } from "../libraries/Errors.sol";
 import { hashAddress } from "../libraries/Hashing.sol";
 import { IdentityTypes } from "../libraries/IdentityTypes.sol";
 import { KeyPurposes } from "../libraries/KeyPurposes.sol";
+import { KeyTypes } from "../libraries/KeyTypes.sol";
 import { Create3 } from "@openzeppelin/contracts/utils/Create3.sol";
 
 import { Structs } from "../storage/Structs.sol";
@@ -173,6 +174,10 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         external
         restricted
     {
+        // Single binding types skip the sole management check, their role gate is the only
+        // thing standing between an open deploy and a hijacked contract identity. Refuse
+        // the config instead of trusting every operator to remember that.
+        require(!_singleBinding || _roleId != type(uint64).max, Errors.SingleBindingTypeCannotBePublic(_identityType));
         _storage().typePolicies[_identityType] = TypePolicy(_roleId, _selfDeployable, _singleBinding);
         emit IdentityTypePolicySet(_identityType, _roleId, _selfDeployable, _singleBinding);
     }
@@ -212,8 +217,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // addresses here and envelopes in linkAccount, the same wallet would hash to
         // two different keys and sticky binding would not catch the collision.
         bytes memory account = InteroperableAddress.formatEvmV1(block.chainid, msg.sender);
-        (address identity,) = _doCreateIdentity(account, _identityType, _salt, _keys);
-        return identity;
+        return _doCreateIdentity(account, _identityType, _salt, _keys);
     }
 
     /// @inheritdoc IIdentityFactory
@@ -227,16 +231,24 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         require(_account != address(0), Errors.ZeroAddress());
         bytes memory account = InteroperableAddress.formatEvmV1(block.chainid, _account);
 
-        (address identity, uint256 moduleManagers) = _doCreateIdentity(account, _identityType, _salt, _keys);
-
         // The identity is created for _account, so _account has to end up managing it. The
-        // account signs nothing, which keeps onboarding easy. The caller picks the keys but
-        // cannot keep management for itself, so all it can do is hand the identity over. It
-        // cannot go through a module either, because modules come from the type's registered
-        // configuration. Single binding types (ASSET, SMART_CONTRACT) are contracts and hold
-        // no key, so they skip this and rely on their role gate instead.
-        if (!_storage().typePolicies[_identityType].singleBinding) {
-            _requireSoleManagementKey(identity, _account, moduleManagers);
+        // account signs nothing, which keeps onboarding easy. For signing types the caller
+        // may only grant purposes to _account itself: no lesser keys for the caller or
+        // anyone else that _account never asked for. _account can add more keys later once
+        // it is in control. Single binding types (ASSET, SMART_CONTRACT) are contracts and
+        // hold no key, so they skip this and rely on their role gate instead.
+        bool singleBinding = _storage().typePolicies[_identityType].singleBinding;
+        if (!singleBinding) {
+            bytes32 accountKey = hashAddress(_account);
+            for (uint256 i = 0; i < _keys.length; i++) {
+                require(_keys[i].keyHash == accountKey, Errors.KeyNotForAccount(_keys[i].keyHash));
+            }
+        }
+
+        address identity = _doCreateIdentity(account, _identityType, _salt, _keys);
+
+        if (!singleBinding) {
+            _requireSoleManagementKey(identity, _account);
         }
 
         return identity;
@@ -460,15 +472,13 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         return address(uint160(uint256(keccak256(account))));
     }
 
-    /// @dev `_account` must be the only wallet holding MANAGEMENT on the new identity. The
-    ///      modules this deploy installs are allowed alongside it: a module install with a
-    ///      non-zero purpose registers the module address as a key, so those entries are
-    ///      expected. They are matched against `_modules` rather than the stored `keyType`,
-    ///      because `keyType` is caller-supplied and never validated, so a caller could
-    ///      label its own wallet as a module key and keep management of the identity. The
-    ///      deployed registry is read rather than `_keys` inspected up front, because a
-    ///      module can seed keys of its own through `onInstall`.
-    function _requireSoleManagementKey(address identity, address _account, uint256 moduleManagers) private view {
+    /// @dev `_account` must be the only wallet holding MANAGEMENT on the new identity.
+    ///      MODULE keys never enter the MANAGEMENT index, so the count below only sees
+    ///      wallet keys. Callers cannot abuse that exception because the deploy rejects
+    ///      caller keys typed MODULE, so the only MODULE keys are the ones the module
+    ///      install itself registers. The deployed registry is read rather than `_keys`
+    ///      inspected up front, because a module can seed keys through `onInstall`.
+    function _requireSoleManagementKey(address identity, address _account) private view {
         IERC734 registry = IERC734(identity);
 
         require(
@@ -476,13 +486,8 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
             Errors.AccountNotSoleManagementKey(_account)
         );
 
-        // Apart from _account, the only managers allowed are the type's registered modules
-        // that ask for MANAGEMENT, already counted during the deploy. One more than that
-        // means a key this deploy should not have created, whether it came from `_keys` or
-        // from a module seeding one in `onInstall`.
         require(
-            registry.getKeysByPurpose(KeyPurposes.MANAGEMENT).length == moduleManagers + 1,
-            Errors.AccountNotSoleManagementKey(_account)
+            registry.getKeysByPurpose(KeyPurposes.MANAGEMENT).length == 1, Errors.AccountNotSoleManagementKey(_account)
         );
     }
 
@@ -497,18 +502,22 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         uint256 _identityType,
         string memory _salt,
         Structs.KeyParam[] memory _keys
-    ) private returns (address identity, uint256 moduleManagers) {
+    ) private returns (address identity) {
         require(bytes(_salt).length != 0, Errors.EmptyString());
         require(_keys.length > 0, Errors.EmptyListOfKeys());
 
+        // Caller keys are wallet keys. The MODULE type is reserved for the keys the module
+        // install registers: MODULE keys stay out of the MANAGEMENT index and cannot sign,
+        // so a wallet key labeled MODULE would hold management authority through the
+        // approval queue while every count and guard misses it.
+        for (uint256 i = 0; i < _keys.length; i++) {
+            require(_keys[i].keyType != KeyTypes.MODULE, Errors.CallerKeyCannotBeModule(_keys[i].keyHash));
+        }
+
         // Modules come from the type's registered configuration, never from the caller. A
         // type with no modules registered cannot deploy, because Identity.initialize needs
-        // a validator or an executor. The ones asking for MANAGEMENT are counted here and
-        // returned, so the caller can tell a module's key apart from a wallet's.
+        // a validator or an executor.
         Structs.ModuleInstall[] memory _modules = _storage().typeModules[_identityType];
-        for (uint256 i = 0; i < _modules.length; i++) {
-            if (_modules[i].purpose == KeyPurposes.MANAGEMENT) moduleManagers++;
-        }
 
         // Asset identities are deployed for a token contract, always a 20-byte EVM address.
         // The token is auto-linked as the identity's sole wallet like any other signer;
@@ -529,13 +538,10 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         identity = _deployIdentity(deploySalt, _identityType, _keys, _modules);
 
         // The identity must end up with at least one wallet holding MANAGEMENT. Module keys
-        // do not count: a module only acts when someone drives it, so an identity managed
-        // solely by its modules is one nobody can manage. Without a wallet manager the
-        // deploy is a programmer error and reverts.
-        require(
-            IERC734(identity).getKeysByPurpose(KeyPurposes.MANAGEMENT).length > moduleManagers,
-            Errors.NoManagementKeyInKeys()
-        );
+        // do not count and never enter this index: a module only acts when someone drives
+        // it, so an identity managed solely by its modules is one nobody can manage.
+        // Without a wallet manager the deploy is a programmer error and reverts.
+        require(IERC734(identity).getKeysByPurpose(KeyPurposes.MANAGEMENT).length != 0, Errors.NoManagementKeyInKeys());
 
         // Mark factory-deployed BEFORE linking so a re-entrant module can't pretend
         // to be a non-factory caller.
