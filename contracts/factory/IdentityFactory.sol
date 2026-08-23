@@ -120,7 +120,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
 
     function _storage() private pure returns (IdentityFactoryStorage storage $) {
         bytes32 slot = _IDENTITY_FACTORY_STORAGE_SLOT;
-        assembly {
+        assembly ("memory-safe") {
             $.slot := slot
         }
     }
