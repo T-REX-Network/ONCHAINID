@@ -74,12 +74,14 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         bytes record;
     }
 
-    /// @dev Per-type deploy policy. `roleId == 0` means the type is unregistered;
-    ///      both deploy entry points revert. `selfDeployable` gates {createIdentity}.
-    ///      uint64 + bool pack into one storage slot.
+    /// @dev Per-type deploy policy. `registered` carries registration explicitly so
+    ///      `roleId == 0` (the AM's ADMIN_ROLE) stays usable as a type's required role.
+    ///      Unregistered types revert from both deploy entry points. `selfDeployable`
+    ///      gates {createIdentity}. uint64 + two bools pack into one storage slot.
     struct TypePolicy {
         uint64 roleId;
         bool selfDeployable;
+        bool registered;
     }
 
     /// @dev Pending cross-chain link proposed via ERC-7786. `identity` is the
@@ -99,7 +101,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         mapping(bytes32 walletKey => WalletEntry entry) wallets;
         mapping(address identity => EnumerableSet.Bytes32Set walletKeys) accounts;
         mapping(address identity => bool deployedByFactory) isFactoryIdentity;
-        /// @dev Per-type deploy policy. Unregistered types (`roleId == 0`) revert.
+        /// @dev Per-type deploy policy. Unregistered types revert.
         mapping(uint256 identityType => TypePolicy policy) typePolicies;
         /// @dev Authorized ERC-7786 destination gateways. Inbound messages from
         ///      anyone else are rejected. Manage via {setTrustedGateway}.
@@ -153,8 +155,14 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
 
     /// @inheritdoc IIdentityFactory
     function setIdentityTypePolicy(uint256 _identityType, uint64 _roleId, bool _selfDeployable) external restricted {
-        _storage().typePolicies[_identityType] = TypePolicy(_roleId, _selfDeployable);
+        _storage().typePolicies[_identityType] = TypePolicy(_roleId, _selfDeployable, true);
         emit IdentityTypePolicySet(_identityType, _roleId, _selfDeployable);
+    }
+
+    /// @inheritdoc IIdentityFactory
+    function removeIdentityTypePolicy(uint256 _identityType) external restricted {
+        delete _storage().typePolicies[_identityType];
+        emit IdentityTypePolicyRemoved(_identityType);
     }
 
     /// @inheritdoc IIdentityFactory
@@ -167,7 +175,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // Self-deploy is gated per type. Contract-shaped types like ASSET / SMART_CONTRACT
         // opt out because their identity represents a contract, not msg.sender.
         TypePolicy storage policy = _storage().typePolicies[_identityType];
-        require(policy.roleId != 0, Errors.UnknownIdentityType(_identityType));
+        require(policy.registered, Errors.UnknownIdentityType(_identityType));
         require(policy.selfDeployable, Errors.IdentityTypeNotSelfDeployable(_identityType));
 
         // Always store the wallet as an ERC-7930 envelope. If we stored raw 20-byte
@@ -385,18 +393,22 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     }
 
     /// @inheritdoc IIdentityFactory
-    function getIdentityTypePolicy(uint256 _identityType) external view returns (uint64 roleId, bool selfDeployable) {
+    function getIdentityTypePolicy(uint256 _identityType)
+        external
+        view
+        returns (uint64 roleId, bool selfDeployable, bool registered)
+    {
         TypePolicy storage policy = _storage().typePolicies[_identityType];
-        return (policy.roleId, policy.selfDeployable);
+        return (policy.roleId, policy.selfDeployable, policy.registered);
     }
 
     /// @dev Per-type gate for {createIdentityFor}. Unknown types revert. Admin registers
     ///      a type with `setIdentityTypePolicy` (use the AM's `PUBLIC_ROLE` for open types).
     function _checkTypeRole(uint256 _identityType, address caller) private view {
-        uint64 requiredRole = _storage().typePolicies[_identityType].roleId;
-        require(requiredRole != 0, Errors.UnknownIdentityType(_identityType));
-        (bool isMember,) = IAccessManager(authority()).hasRole(requiredRole, caller);
-        require(isMember, Errors.NotAuthorizedForIdentityType(caller, _identityType, requiredRole));
+        TypePolicy storage policy = _storage().typePolicies[_identityType];
+        require(policy.registered, Errors.UnknownIdentityType(_identityType));
+        (bool isMember,) = IAccessManager(authority()).hasRole(policy.roleId, caller);
+        require(isMember, Errors.NotAuthorizedForIdentityType(caller, _identityType, policy.roleId));
     }
 
     /// @dev keccak256(account) cast to address. Used as the nonce key so OZ Nonces

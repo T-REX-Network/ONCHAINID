@@ -61,11 +61,13 @@ interface IIdentityFactory {
     // event emitted when a token is linked to an ONCHAINID contract (tokens are EVM-only)
     event TokenLinked(address indexed token, address indexed identity);
 
-    /// @notice Emitted when the policy for a given identity type changes. `roleId == 0`
-    ///         means the type is unregistered (both deploy paths revert). `selfDeployable`
-    ///         gates {createIdentity}: true allows self-deploy, false reserves the type
-    ///         for {createIdentityFor}.
+    /// @notice Emitted when the policy for a given identity type is set. Setting a policy
+    ///         registers the type. `selfDeployable` gates {createIdentity}: true allows
+    ///         self-deploy, false reserves the type for {createIdentityFor}.
     event IdentityTypePolicySet(uint256 indexed identityType, uint64 indexed roleId, bool selfDeployable);
+
+    /// @notice Emitted when an identity type is unregistered (both deploy paths revert).
+    event IdentityTypePolicyRemoved(uint256 indexed identityType);
 
     /// @notice Emitted when an inbound ERC-7786 message has staged a wallet -> identity
     ///         binding awaiting identity-side confirmation. The link is not active yet.
@@ -121,13 +123,22 @@ interface IIdentityFactory {
     ) external returns (address);
 
     /// @notice Set the per-type policy: AM role required to call {createIdentityFor},
-    ///         and whether {createIdentity} (self-deploy) is allowed. Pass `roleId == 0`
-    ///         to unregister the type (both deploy paths will revert). `restricted` via
-    ///         the AM.
+    ///         and whether {createIdentity} (self-deploy) is allowed. Setting a policy
+    ///         registers the type; registration is tracked separately from the role, so
+    ///         the AM's `ADMIN_ROLE` (id 0) is usable like any other role. `restricted`
+    ///         via the AM.
     function setIdentityTypePolicy(uint256 _identityType, uint64 _roleId, bool _selfDeployable) external;
 
-    /// @notice Read the per-type policy. `roleId == 0` means the type is unregistered.
-    function getIdentityTypePolicy(uint256 _identityType) external view returns (uint64 roleId, bool selfDeployable);
+    /// @notice Unregister an identity type (both deploy paths will revert). `restricted`
+    ///         via the AM.
+    function removeIdentityTypePolicy(uint256 _identityType) external;
+
+    /// @notice Read the per-type policy. `registered == false` means the type is
+    ///         unregistered and both deploy paths revert.
+    function getIdentityTypePolicy(uint256 _identityType)
+        external
+        view
+        returns (uint64 roleId, bool selfDeployable, bool registered);
 
     /// @notice Link a wallet to the calling identity. The wallet authorizes the link via
     ///         an EIP-712 `LinkAccount` signature. Supports EOAs, ERC-1271 smart wallets,

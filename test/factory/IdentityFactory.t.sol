@@ -348,10 +348,65 @@ contract IdentityFactoryTest is OnchainIDSetup {
         vm.expectEmit(true, true, false, true, address(onchainidSetup.idFactory));
         emit IIdentityFactory.IdentityTypePolicySet(IdentityTypes.CLAIM_ISSUER, 123, false);
         onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 123, false);
-        (uint64 roleId, bool selfDeployable) =
+        (uint64 roleId, bool selfDeployable, bool registered) =
             onchainidSetup.idFactory.getIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER);
         assertEq(roleId, 123);
         assertEq(selfDeployable, false);
+        assertTrue(registered);
+    }
+
+    /// @notice Registration is tracked separately from the role, so the AM's ADMIN_ROLE
+    ///         (id 0) can gate a type like any other role.
+    function test_setIdentityTypePolicy_adminRoleUsableAsTypeRole() public {
+        vm.prank(deployer);
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 0, false);
+
+        // deployer is the AM admin, so it holds role 0; anyone else is rejected.
+        vm.prank(alice);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Errors.NotAuthorizedForIdentityType.selector, alice, IdentityTypes.CLAIM_ISSUER, uint64(0)
+            )
+        );
+        onchainidSetup.idFactory
+            .createIdentityFor(
+                david, IdentityTypes.CLAIM_ISSUER, "adminGated", _makeSingleMgmtKeys(david), _defaultModules()
+            );
+
+        vm.prank(deployer);
+        address identityAddr = onchainidSetup.idFactory
+            .createIdentityFor(
+                david, IdentityTypes.CLAIM_ISSUER, "adminGated", _makeSingleMgmtKeys(david), _defaultModules()
+            );
+        assertTrue(identityAddr != address(0));
+    }
+
+    function test_removeIdentityTypePolicy_unregistersType() public {
+        vm.prank(deployer);
+        vm.expectEmit(true, false, false, true, address(onchainidSetup.idFactory));
+        emit IIdentityFactory.IdentityTypePolicyRemoved(IdentityTypes.INDIVIDUAL);
+        onchainidSetup.idFactory.removeIdentityTypePolicy(IdentityTypes.INDIVIDUAL);
+
+        (,, bool registered) = onchainidSetup.idFactory.getIdentityTypePolicy(IdentityTypes.INDIVIDUAL);
+        assertFalse(registered);
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(Errors.UnknownIdentityType.selector, IdentityTypes.INDIVIDUAL));
+        onchainidSetup.idFactory
+            .createIdentity(IdentityTypes.INDIVIDUAL, "removed", _makeSingleMgmtKeys(alice), _defaultModules());
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(Errors.UnknownIdentityType.selector, IdentityTypes.INDIVIDUAL));
+        onchainidSetup.idFactory
+            .createIdentityFor(
+                david, IdentityTypes.INDIVIDUAL, "removed", _makeSingleMgmtKeys(david), _defaultModules()
+            );
+    }
+
+    function test_removeIdentityTypePolicy_revertForNonAdmin() public {
+        vm.prank(alice);
+        vm.expectRevert(); // AccessManagerUnauthorizedAccount
+        onchainidSetup.idFactory.removeIdentityTypePolicy(IdentityTypes.INDIVIDUAL);
     }
 
     function test_setIdentityTypePolicy_revertForNonAdmin() public {
