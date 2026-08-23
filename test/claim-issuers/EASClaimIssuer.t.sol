@@ -277,6 +277,19 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         );
     }
 
+    function test_isClaimValid_attestationExpired_atBoundary() public {
+        vm.warp(100);
+        // Expiry takes effect at the exact timestamp, not one block later.
+        bytes32 uid = _attestAs(attester, SCHEMA, address(aliceIdentity), uint64(block.timestamp + 10), hex"");
+        vm.warp(block.timestamp + 10);
+
+        assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData));
+        assertEq(
+            uint256(adapter.getClaimStatus(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData)),
+            uint256(IClaimIssuer.ClaimStatus.Expired)
+        );
+    }
+
     function test_isClaimValid_attestationMissing() public view {
         // A UID that was never issued by EAS.
         bytes32 uid = keccak256("never-issued");

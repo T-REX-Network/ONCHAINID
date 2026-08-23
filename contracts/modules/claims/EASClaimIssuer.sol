@@ -204,7 +204,7 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         }
 
         if (attestation.revocationTime != 0) return ClaimStatus.Revoked;
-        if (attestation.expirationTime != 0 && block.timestamp > attestation.expirationTime) {
+        if (attestation.expirationTime != 0 && block.timestamp >= attestation.expirationTime) {
             return ClaimStatus.Expired;
         }
 
