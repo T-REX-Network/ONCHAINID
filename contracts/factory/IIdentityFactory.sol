@@ -158,6 +158,12 @@ interface IIdentityFactory {
     /// @notice Revoke a wallet from the calling identity. The wallet→identity record
     ///         remains on-chain; status flips to `Revoked`. A revoked wallet can never
     ///         be re-linked (terminal revocation).
+    ///
+    ///         Revoking the identity's last wallet only retires that address: wallet
+    ///         links and ERC-734 keys are separate namespaces, so the identity's keys
+    ///         are untouched and a MANAGEMENT key can still drive {linkAccount} to bind
+    ///         a fresh wallet. Integrators must not treat an identity whose active set
+    ///         is momentarily empty as dead.
     function revokeAccount(bytes calldata account) external;
 
     /// @notice Confirm a cross-chain link previously proposed via an authenticated

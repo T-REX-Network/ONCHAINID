@@ -498,7 +498,9 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
 
     /// @dev Revoke rule. Flips status to Revoked and drops the wallet from the active
     ///      set. identity + record stay so the binding is visible via
-    ///      getIdentityIncludingRevoked.
+    ///      getIdentityIncludingRevoked. Revoking the last wallet leaves the active set
+    ///      empty but the identity manageable: keys are a separate namespace, so a
+    ///      MANAGEMENT key can still link a fresh wallet.
     function _revokeAccount(bytes memory account, address identity) internal {
         bytes32 key = _walletKey(account);
         WalletEntry storage entry = _storage().wallets[key];
