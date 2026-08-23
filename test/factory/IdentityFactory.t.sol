@@ -291,6 +291,34 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertTrue(identityAddr != address(0));
     }
 
+    /// @notice A membership granted with a non-zero AM execution delay is rejected
+    ///         instead of the delay being silently ignored (N-07).
+    function test_createIdentityFor_revertWhenTypeRoleHasExecutionDelay() public {
+        uint64 role = _restrictTypeToFreshRole(IdentityTypes.CLAIM_ISSUER);
+
+        vm.prank(deployer);
+        onchainidSetup.accessManager.grantRole(role, alice, 1 days);
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(Errors.DelayedRoleNotSupported.selector, alice, role, uint32(1 days)));
+        onchainidSetup.idFactory
+            .createIdentityFor(
+                david, IdentityTypes.CLAIM_ISSUER, "delayedRole", _makeSingleMgmtKeys(david), _defaultModules()
+            );
+
+        // Re-granting with a zero delay unblocks the caller (delay decrease settles
+        // after the old delay elapses).
+        vm.prank(deployer);
+        onchainidSetup.accessManager.grantRole(role, alice, 0);
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(alice);
+        address identityAddr = onchainidSetup.idFactory
+            .createIdentityFor(
+                david, IdentityTypes.CLAIM_ISSUER, "delayCleared", _makeSingleMgmtKeys(david), _defaultModules()
+            );
+        assertTrue(identityAddr != address(0));
+    }
+
     function test_createIdentityFor_nonAdminWithTypeRoleCanCall() public {
         uint64 role = _restrictTypeToFreshRole(IdentityTypes.CLAIM_ISSUER);
 
