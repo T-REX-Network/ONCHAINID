@@ -564,8 +564,8 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertEq(
             uint256(onchainidSetup.idFactory.getAccountStatus(davidAcc)), uint256(IIdentityFactory.AccountStatus.Active)
         );
-        bytes[] memory accs = onchainidSetup.idFactory.getAccounts(identityAddr);
-        assertEq(accs.length, 1);
+        assertEq(onchainidSetup.idFactory.getAccountsCount(identityAddr), 1);
+        bytes[] memory accs = onchainidSetup.idFactory.getAccounts(identityAddr, 0, 1);
         assertEq(keccak256(accs[0]), keccak256(davidAcc));
     }
 
@@ -713,8 +713,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertEq(bound, address(aliceIdentity));
         assertEq(uint256(status), uint256(IIdentityFactory.AccountStatus.Revoked));
 
-        bytes[] memory active = onchainidSetup.idFactory.getAccounts(address(aliceIdentity));
-        assertEq(active.length, 1);
+        assertEq(onchainidSetup.idFactory.getAccountsCount(address(aliceIdentity)), 1);
     }
 
     /// @notice Wallet-binding calls into the factory are management-grade. An ACTION key driving
@@ -807,11 +806,18 @@ contract IdentityFactoryTest is OnchainIDSetup {
         uint256 nc = onchainidSetup.idFactory.nonceForAccount(carolAcc);
         _execLink(aliceIdentity, alice, carolAcc, _signLink(carolPk, carolAcc, address(aliceIdentity), nc, ex), nc, ex);
 
-        bytes[] memory all = onchainidSetup.idFactory.getAccounts(address(aliceIdentity));
+        uint256 count = onchainidSetup.idFactory.getAccountsCount(address(aliceIdentity));
+        assertEq(count, 3);
+
+        bytes[] memory all = onchainidSetup.idFactory.getAccounts(address(aliceIdentity), 0, count);
         assertEq(all.length, 3);
 
         bytes[] memory page = onchainidSetup.idFactory.getAccounts(address(aliceIdentity), 1, 3);
         assertEq(page.length, 2);
+
+        // out-of-range bounds are clamped, not reverted
+        bytes[] memory clamped = onchainidSetup.idFactory.getAccounts(address(aliceIdentity), 0, type(uint256).max);
+        assertEq(clamped.length, 3);
     }
 
     // ============ unified token + wallet resolution ============

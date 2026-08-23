@@ -373,13 +373,13 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     }
 
     /// @inheritdoc IIdentityFactory
-    function getAccounts(address identity) external view returns (bytes[] memory) {
-        return _accountsRange(identity, 0, _storage().accounts[identity].length());
+    function getAccounts(address identity, uint256 start, uint256 end) external view returns (bytes[] memory) {
+        return _accountsRange(identity, start, end);
     }
 
     /// @inheritdoc IIdentityFactory
-    function getAccounts(address identity, uint256 start, uint256 end) external view returns (bytes[] memory) {
-        return _accountsRange(identity, start, end);
+    function getAccountsCount(address identity) external view returns (uint256) {
+        return _storage().accounts[identity].length();
     }
 
     /// @inheritdoc IIdentityFactory
@@ -437,7 +437,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // Asset identities are deployed for a token contract, always a 20-byte EVM address.
         // The token is auto-linked as the identity's sole wallet like any other signer;
         // the difference is the identity's `type`. Off-chain readers can recover the
-        // token by reading `getAccounts(identity)[0]` and checking `getIdentityType()`.
+        // token by reading `getAccounts(identity, 0, 1)[0]` and checking `getIdentityType()`.
         // The envelope is built by the factory itself, so the EVM shape is guaranteed;
         // the meaningful check here is just that the address inside is non-zero.
         if (_identityType == IdentityTypes.ASSET) {

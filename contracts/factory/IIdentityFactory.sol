@@ -41,7 +41,7 @@ import { Structs } from "../storage/Structs.sol";
 ///
 ///         Tokens share the same keyspace as wallets: an ASSET identity's auto-linked
 ///         wallet is the token, looked up via `getIdentity(bytes)` or
-///         `getAccounts(identity)[0]`.
+///         `getAccounts(identity, 0, 1)[0]`.
 interface IIdentityFactory {
 
     /// @notice Lifecycle state of a wallet entry. `None` means "never seen" and is
@@ -199,12 +199,15 @@ interface IIdentityFactory {
     /// @notice Read the current lifecycle status of a wallet entry.
     function getAccountStatus(bytes calldata account) external view returns (AccountStatus);
 
-    /// @notice Enumerate the active wallets currently linked to `identity`. Each entry
-    ///         is the ERC-7930 envelope that was used to link the wallet.
-    function getAccounts(address identity) external view returns (bytes[] memory);
-
-    /// @notice Paginated variant of {getAccounts}.
+    /// @notice Enumerate the active wallets currently linked to `identity`, paginated
+    ///         over `[start, end)` (out-of-range bounds are clamped). Each entry is the
+    ///         ERC-7930 envelope that was used to link the wallet. Envelopes are
+    ///         unbounded bytes and the set has no size cap, so read in pages sized to
+    ///         the provider's eth_call gas cap; {getAccountsCount} gives the total.
     function getAccounts(address identity, uint256 start, uint256 end) external view returns (bytes[] memory);
+
+    /// @notice Number of active wallets currently linked to `identity`.
+    function getAccountsCount(address identity) external view returns (uint256);
 
     /// @notice Returns true iff `identity` was deployed by this factory. Used by
     ///         {linkAccount} to reject pulls into non-OnchainID contracts.
