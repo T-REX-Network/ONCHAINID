@@ -17,8 +17,9 @@ import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 
 /// @title SmartAccount
 /// @notice ERC-7579 modular account that uses the ERC-734 key registry from {KeyManager}.
-///         Signature checks happen in the installed validator; the per-target rule for
-///         user ops runs here.
+///         Signature checks happen in the installed validator, and the account does not
+///         re-check a user op the validator accepted; the per-target purpose rule in
+///         {_authorizeCall} applies to executor callers only.
 abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 {
 
     /// @notice Install a module. Gated on MANAGEMENT.

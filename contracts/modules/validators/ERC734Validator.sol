@@ -486,12 +486,15 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     /// @dev ERC-7913 dispatch: 20-byte signer = EOA/1271, longer = verifier+key. Uses the
     ///      ECDSA path directly instead of `SignatureChecker.isValidSignatureNow(bytes,...)` to
     ///      avoid its `signer.code.length` check, which violates ERC-7562 bundler validation rules.
+    ///      That only helps the EOA fast path: a contract signer still falls through to the
+    ///      ERC-1271 external call below, so ERC-1271 signers do incur an external call during
+    ///      user-op validation.
     function _verify(bytes memory signer, bytes32 hash, bytes memory signature) internal view returns (bool) {
         if (signer.length == 20) {
             address signerAddr = address(bytes20(signer));
-            // Try ECDSA first: the common EOA case needs no external call, and this keeps the
-            // 4337 validation path free of an external call to an arbitrary signer (ERC-7562).
-            // Only a contract signer, whose sig isn't a valid ECDSA sig, falls through to 1271.
+            // Try ECDSA first: the common EOA case resolves with no external call at all.
+            // A contract signer, whose sig isn't a valid ECDSA sig, falls through to 1271,
+            // which does staticcall the signer — the no-external-call property is EOA-only.
             (address recovered, ECDSA.RecoverError err,) = ECDSA.tryRecover(hash, signature);
             if (err == ECDSA.RecoverError.NoError && recovered == signerAddr) return true;
             return SignatureChecker.isValidERC1271SignatureNow(signerAddr, hash, signature);
@@ -506,8 +509,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         // arbitrary user op cannot even execute it with an unregistered verifier.
         (bool success, bytes memory result) =
             verifier.staticcall(abi.encodeCall(IERC7913SignatureVerifier.verify, (key, hash, signature)));
-        // The length check is not strictly needed (a short result casts to zero-padded bytes32
-        // and fails the compare), but it keeps the intent obvious.
+        // The length check is required: nothing here ABI-decodes the returndata, and
+        // bytes-to-bytes32 pads on the RIGHT, so a verifier returning the 4 raw magic bytes
+        // would otherwise pass the compare. Verifiers must ABI-encode their bytes4 return.
         return success && result.length >= 32 && bytes32(result) == bytes32(IERC7913SignatureVerifier.verify.selector);
     }
 
