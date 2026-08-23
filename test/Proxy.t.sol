@@ -91,7 +91,7 @@ contract ProxyTest is OnchainIDSetup {
         // implementation is rejected by the factory before it reaches the beacon.
         vm.prank(deployer);
         vm.expectRevert(Errors.ZeroAddress.selector);
-        onchainidSetup.idFactory.upgradeBeacon(address(0));
+        onchainidSetup.idFactory.upgradeBeacon(address(0), "3.0.0");
     }
 
     function test_preventUpdatingWhenNotOwner() public {

@@ -159,7 +159,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
     function test_upgradeBeacon_byAuthorizedCaller() public {
         Identity newImpl = new Identity(address(onchainidSetup.signatureValidator), address(onchainidSetup.idFactory));
         vm.prank(deployer);
-        onchainidSetup.idFactory.upgradeBeacon(address(newImpl));
+        onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.0.0");
         assertEq(
             UpgradeableBeacon(onchainidSetup.idFactory.beacon()).implementation(),
             address(newImpl),
@@ -171,13 +171,20 @@ contract IdentityFactoryTest is OnchainIDSetup {
         Identity newImpl = new Identity(address(onchainidSetup.signatureValidator), address(onchainidSetup.idFactory));
         vm.prank(alice);
         vm.expectRevert();
-        onchainidSetup.idFactory.upgradeBeacon(address(newImpl));
+        onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.0.0");
     }
 
     function test_upgradeBeacon_revertForZeroImplementation() public {
         vm.prank(deployer);
         vm.expectRevert(Errors.ZeroAddress.selector);
-        onchainidSetup.idFactory.upgradeBeacon(address(0));
+        onchainidSetup.idFactory.upgradeBeacon(address(0), "3.0.0");
+    }
+
+    function test_upgradeBeacon_revertOnVersionMismatch() public {
+        Identity newImpl = new Identity(address(onchainidSetup.signatureValidator), address(onchainidSetup.idFactory));
+        vm.prank(deployer);
+        vm.expectRevert(abi.encodeWithSelector(Errors.ImplementationVersionMismatch.selector, "4.0.0", "3.0.0"));
+        onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "4.0.0");
     }
 
     /// @notice Upgrade rights follow the factory's current authority. After rotating the factory
@@ -198,7 +205,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         Identity newImpl = new Identity(address(onchainidSetup.signatureValidator), address(onchainidSetup.idFactory));
         vm.prank(deployer);
         vm.expectRevert();
-        onchainidSetup.idFactory.upgradeBeacon(address(newImpl));
+        onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.0.0");
     }
 
     function test_initializeBeacon_revertWhenAlreadyInitialized() public {
