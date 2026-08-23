@@ -841,11 +841,12 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
     // ============ ERC-7786 — cross-chain wallet linking ============
 
-    /// @dev Deploy a mock gateway and register it as trusted on the factory.
+    /// @dev Deploy a mock gateway and trust it for the origin chain used by
+    ///      {_nonEvmEnvelope} (chainType 0x0001, chainReference 0x01).
     function _deployTrustedGateway() internal returns (MockERC7786Gateway) {
         MockERC7786Gateway gateway = new MockERC7786Gateway();
         vm.prank(deployer);
-        onchainidSetup.idFactory.setTrustedGateway(address(gateway), true);
+        onchainidSetup.idFactory.setTrustedGateway(address(gateway), bytes2(0x0001), hex"01", true);
         return gateway;
     }
 
@@ -898,6 +899,31 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
         vm.expectRevert(); // OZ ERC7786RecipientUnauthorizedGateway
         rogue.deliver(address(onchainidSetup.idFactory), bytes32(uint256(2)), solanaEnv, payload);
+    }
+
+    /// @notice Gateway trust is scoped per origin chain. A trusted gateway cannot
+    ///         deliver a sender from another origin, whether the chainType or the
+    ///         chainReference differs.
+    function test_crossChain_gatewayTrustIsPerOrigin() public {
+        MockERC7786Gateway gateway = _deployTrustedGateway();
+        bytes32 signer32 = bytes32(uint256(uint160(makeAddr("foreignOriginSigner"))));
+        uint256 expiry = block.timestamp + 1 hours;
+
+        assertTrue(onchainidSetup.idFactory.isTrustedGateway(address(gateway), bytes2(0x0001), hex"01"));
+        assertFalse(onchainidSetup.idFactory.isTrustedGateway(address(gateway), bytes2(0x0002), hex"01"));
+
+        // Same trusted gateway, sender from an origin it was never trusted for.
+        bytes memory otherChainType = InteroperableAddress.formatV1(bytes2(0x0002), hex"01", abi.encodePacked(signer32));
+        bytes memory payload = _crossChainPayload(otherChainType, address(aliceIdentity), expiry);
+        vm.expectRevert(); // OZ ERC7786RecipientUnauthorizedGateway
+        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(20)), otherChainType, payload);
+
+        // Same chainType, different chainReference is a different origin too.
+        bytes memory otherChainReference =
+            InteroperableAddress.formatV1(bytes2(0x0001), hex"02", abi.encodePacked(signer32));
+        payload = _crossChainPayload(otherChainReference, address(aliceIdentity), expiry);
+        vm.expectRevert(); // OZ ERC7786RecipientUnauthorizedGateway
+        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(21)), otherChainReference, payload);
     }
 
     /// @notice An expired proposal is rejected at delivery time. Saves the identity
