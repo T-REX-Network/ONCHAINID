@@ -237,11 +237,17 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // anyone else that _account never asked for. _account can add more keys later once
         // it is in control. Single binding types (ASSET, SMART_CONTRACT) are contracts and
         // hold no key, so they skip this and rely on their role gate instead.
+        //
+        // The check reads the hash derived from signerData, not the caller supplied keyHash
+        // field. The registry stores each key under keccak256(signerData) and never reads
+        // keyHash, so trusting that field would let a caller pass the account's hash while
+        // pointing signerData at its own address.
         bool singleBinding = _storage().typePolicies[_identityType].singleBinding;
         if (!singleBinding) {
             bytes32 accountKey = hashAddress(_account);
             for (uint256 i = 0; i < _keys.length; i++) {
-                require(_keys[i].keyHash == accountKey, Errors.KeyNotForAccount(_keys[i].keyHash));
+                bytes32 derivedKey = keccak256(_keys[i].signerData);
+                require(derivedKey == accountKey, Errors.KeyNotForAccount(derivedKey));
             }
         }
 
@@ -511,7 +517,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // so a wallet key labeled MODULE would hold management authority through the
         // approval queue while every count and guard misses it.
         for (uint256 i = 0; i < _keys.length; i++) {
-            require(_keys[i].keyType != KeyTypes.MODULE, Errors.CallerKeyCannotBeModule(_keys[i].keyHash));
+            require(_keys[i].keyType != KeyTypes.MODULE, Errors.CallerKeyCannotBeModule(keccak256(_keys[i].signerData)));
         }
 
         // Modules come from the type's registered configuration, never from the caller. A

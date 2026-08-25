@@ -664,6 +664,24 @@ contract IdentityFactoryTest is OnchainIDSetup {
         onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "carolPlus", keys);
     }
 
+    function test_createIdentityFor_revertWhenCallerSpoofsKeyHash() public {
+        // keyHash is caller supplied and the registry never reads it: keys are stored under
+        // keccak256(signerData). david sets carol's hash on a key whose signerData is his
+        // own address, so the honest shape check has to run on the derived hash instead.
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](2);
+        keys[0] = _makeECDSAKey(carol, KeyPurposes.MANAGEMENT);
+        keys[1] = Structs.KeyParam({
+            keyHash: keccak256(abi.encodePacked(carol)),
+            purpose: KeyPurposes.CLAIM_SIGNER,
+            keyType: KeyTypes.ECDSA,
+            signerData: abi.encodePacked(david),
+            clientData: ""
+        });
+        vm.prank(david);
+        vm.expectRevert(abi.encodeWithSelector(Errors.KeyNotForAccount.selector, keccak256(abi.encodePacked(david))));
+        onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "carolSpoof", keys);
+    }
+
     function test_createIdentityFor_succeedsWithExtraKeysForTheAccount() public {
         // Extra purposes for the account itself are fine: every key is carol's.
         Structs.KeyParam[] memory keys = new Structs.KeyParam[](2);

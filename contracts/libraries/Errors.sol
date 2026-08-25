@@ -53,7 +53,8 @@ library Errors {
     /// @notice Reverts when {createIdentityFor} deploys for a signing type and the caller
     ///         supplies a key that is not `_account`'s own key hash. The caller may only
     ///         grant purposes to the account the identity is created for; the account adds
-    ///         any other keys itself once it is in control.
+    ///         any other keys itself once it is in control. `keyHash` is the hash derived
+    ///         from the key's `signerData`, which is the value the registry stores under.
     error KeyNotForAccount(bytes32 keyHash);
 
     /// @notice Reverts when a deploy caller supplies a key typed MODULE. That type is
