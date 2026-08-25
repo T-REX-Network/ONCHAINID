@@ -201,6 +201,10 @@ library Errors {
     /// @notice Topic 0 is the "no claim" sentinel and cannot be used for a stored claim.
     error InvalidClaimTopic();
 
+    /// @notice A re-add changed the claim's uri without changing its data. The uri is not signed,
+    ///         so changing it requires a fresh attestation.
+    error ClaimUriImmutable(bytes32 claimId);
+
     /* ----- SmartAccount ----- */
 
     /// @notice The signature is invalid.

@@ -616,6 +616,16 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
 
         AccountRegistry storage s = _store().registries[account];
         claimId = keccak256(abi.encode(issuer, topic));
+
+        // The uri is not signed, so a replayed issuer signature could repoint it. Only allow a
+        // uri change together with new data, which forces a fresh issuer signature.
+        Structs.Claim storage existing = s.claims[claimId];
+        require(
+            existing.topic == 0 || keccak256(bytes(existing.uri)) == keccak256(bytes(uri))
+                || keccak256(abi.encode(existing.data)) != keccak256(abi.encode(data)),
+            Errors.ClaimUriImmutable(claimId)
+        );
+
         s.claims[claimId] =
             Structs.Claim({ topic: topic, scheme: scheme, issuer: issuer, signature: signature, data: data, uri: uri });
 
