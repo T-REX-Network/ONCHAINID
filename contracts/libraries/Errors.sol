@@ -201,6 +201,11 @@ library Errors {
     /// @notice Topic 0 is the "no claim" sentinel and cannot be used for a stored claim.
     error InvalidClaimTopic();
 
+    /// @notice Re-adding a claim cannot change its scheme or uri. Neither field is signed, so
+    ///         allowing an overwrite would let a claim key repoint the record while it stays
+    ///         attributed to the issuer. Remove the claim and add it afresh instead.
+    error ClaimMetadataImmutable(bytes32 claimId);
+
     /* ----- SmartAccount ----- */
 
     /// @notice The signature is invalid.

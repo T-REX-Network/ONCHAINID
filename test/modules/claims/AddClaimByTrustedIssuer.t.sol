@@ -232,6 +232,74 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
         ERC734Validator(address(aliceIdentity)).addClaimByTrustedIssuer(0, scheme, issuer, signature, data, "");
     }
 
+    // ============ scheme / uri are pinned on re-add ============
+
+    /// @notice Neither scheme nor uri is covered by the claim signature, so re-presenting the
+    ///         issuer's own unchanged signature with a different uri would repoint the stored
+    ///         record while it still reads as issuer-attested. The overwrite is rejected.
+    function test_reAddClaim_withDifferentUri_reverts() public {
+        (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
+            _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
+
+        vm.prank(claimIssuerOwner);
+        ERC734Validator(address(aliceIdentity))
+            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "ipfs://issuer-doc");
+
+        bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), FRESH_TOPIC);
+
+        // Same issuer, same signature, same data — only the uri changes.
+        vm.prank(claimIssuerOwner);
+        vm.expectRevert(abi.encodeWithSelector(Errors.ClaimMetadataImmutable.selector, claimId));
+        ERC734Validator(address(aliceIdentity))
+            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "ipfs://attacker-doc");
+
+        (,,,,, string memory storedUri) = IIdentity(address(aliceIdentity)).getClaim(claimId);
+        assertEq(storedUri, "ipfs://issuer-doc");
+    }
+
+    /// @notice scheme is pinned on the same terms as uri.
+    function test_reAddClaim_withDifferentScheme_reverts() public {
+        (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
+            _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
+
+        vm.prank(claimIssuerOwner);
+        ERC734Validator(address(aliceIdentity))
+            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
+
+        bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), FRESH_TOPIC);
+
+        vm.prank(claimIssuerOwner);
+        vm.expectRevert(abi.encodeWithSelector(Errors.ClaimMetadataImmutable.selector, claimId));
+        ERC734Validator(address(aliceIdentity))
+            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme + 1, issuer, signature, data, "");
+    }
+
+    /// @notice Re-adding with both fields unchanged still refreshes the claim, so an issuer can
+    ///         re-attest with new data without first removing the record.
+    function test_reAddClaim_withSameMetadata_succeeds() public {
+        (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
+            _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
+
+        vm.prank(claimIssuerOwner);
+        ERC734Validator(address(aliceIdentity))
+            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "ipfs://issuer-doc");
+
+        // A fresh signature over new data, same scheme and uri.
+        Structs.ClaimData memory newData =
+            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: hex"02" });
+        bytes memory newSignature = ClaimSignerHelper.signClaim(
+            claimIssuerOwnerPk, claimIssuerOwner, address(claimIssuer), address(aliceIdentity), FRESH_TOPIC, newData
+        );
+
+        vm.prank(claimIssuerOwner);
+        ERC734Validator(address(aliceIdentity))
+            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, newSignature, newData, "ipfs://issuer-doc");
+
+        bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), FRESH_TOPIC);
+        (,,,, Structs.ClaimData memory storedData,) = IIdentity(address(aliceIdentity)).getClaim(claimId);
+        assertEq(storedData.payload, hex"02");
+    }
+
     // ============ Helper ============
 
     /// @dev Build the four signed-claim components used by addClaimByTrustedIssuer.
