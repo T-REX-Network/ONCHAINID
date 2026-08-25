@@ -154,6 +154,24 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertEq(b.owner(), address(onchainidSetup.idFactory), "beacon owned by the factory");
     }
 
+    /// @notice On a chain with the canonical CREATE2 derivation, the CREATE3 deploy lands exactly
+    ///         on the address committed in the constructor, so the BeaconAddressMismatch guard in
+    ///         initializeBeacon never fires. On a divergent chain (zkSync Era et al.) it reverts
+    ///         with that error instead of half-initializing; that branch cannot be reproduced on a
+    ///         canonical EVM, which is what this suite runs on.
+    function test_initializeBeacon_matchesCommittedAddressOnCanonicalChain() public {
+        AccessManager am = new AccessManager(deployer);
+        IdentityFactory freshFactory = new IdentityFactory(address(am));
+
+        address committed = freshFactory.beacon();
+        assertEq(committed.code.length, 0, "committed slot starts empty");
+
+        vm.prank(deployer);
+        freshFactory.initializeBeacon(address(onchainidSetup.identityImplementation));
+
+        assertGt(committed.code.length, 0, "beacon landed exactly at the committed address");
+    }
+
     // ============ upgradeBeacon ============
 
     function test_upgradeBeacon_byAuthorizedCaller() public {
