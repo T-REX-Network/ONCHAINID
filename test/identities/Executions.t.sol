@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
+import { MODULE_TYPE_EXECUTOR, MODULE_TYPE_FALLBACK } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+
 import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
@@ -261,6 +263,83 @@ contract ExecutionsTest is OnchainIDSetup {
         IKeyExecutor(address(aliceIdentity)).approve(id, true);
 
         assertEq(address(receiver).balance, 1 ether, "still-authorized proposer keeps the request alive");
+    }
+
+    /// @notice A request whose proposer lost their key can still be rejected, so the stale
+    ///         entry gets closed instead of lingering forever.
+    function test_approve_rejectSucceedsWhenProposerKeyRevoked() public {
+        address proposer = makeAddr("proposerRevokedReject");
+        _grantProposer(proposer);
+
+        vm.prank(proposer);
+        uint256 id = IKeyExecutor(address(aliceIdentity)).execute(address(0xBEEF), 0, "");
+
+        vm.prank(alice);
+        aliceIdentity.removeKey(ClaimSignerHelper.addressToKey(proposer), KeyPurposes.PROPOSER);
+
+        // david (ACTION) rejects the stale request.
+        vm.prank(david);
+        IKeyExecutor(address(aliceIdentity)).approve(id, false);
+
+        KeyApprovalModule.Execution memory exec =
+            onchainidSetup.keyApprovalModule.getExecutionData(address(aliceIdentity), id);
+        assertTrue(exec.executed, "rejection closes the entry");
+        assertFalse(exec.approved, "rejected, not approved");
+
+        // Closed for good: even approval now hits the already-executed check.
+        vm.prank(david);
+        vm.expectRevert(Errors.RequestAlreadyExecuted.selector);
+        IKeyExecutor(address(aliceIdentity)).approve(id, true);
+    }
+
+    // -----------------------------------------------------------------------
+    // Uninstall voids the queue
+    // -----------------------------------------------------------------------
+
+    /// @notice Uninstalling the module voids pending requests: after a reinstall the old
+    ///         request cannot be approved, while newly queued requests work as usual.
+    function test_onUninstall_voidsQueuedRequests() public {
+        address kam = address(onchainidSetup.keyApprovalModule);
+        address proposer = makeAddr("proposerPreUninstall");
+        _grantProposer(proposer);
+
+        ETHReceiver receiver = new ETHReceiver();
+        vm.deal(address(aliceIdentity), 1 ether);
+
+        vm.prank(proposer);
+        uint256 staleId = IKeyExecutor(address(aliceIdentity)).execute(address(receiver), 1 ether, "");
+
+        // Full teardown, then reinstall the executor and its three fallback handlers, and
+        // re-grant the module key MANAGEMENT (uninstall strips the module's purposes).
+        vm.startPrank(alice);
+        aliceIdentity.uninstallModule(MODULE_TYPE_EXECUTOR, kam, "");
+        aliceIdentity.uninstallModule(MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.execute.selector));
+        aliceIdentity.uninstallModule(MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.approve.selector));
+        aliceIdentity.uninstallModule(
+            MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.getCurrentNonce.selector)
+        );
+        aliceIdentity.installModule(MODULE_TYPE_EXECUTOR, kam, "");
+        aliceIdentity.installModule(MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.execute.selector));
+        aliceIdentity.installModule(MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.approve.selector));
+        aliceIdentity.installModule(MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.getCurrentNonce.selector));
+        aliceIdentity.addKeyWithData(
+            ClaimSignerHelper.addressToKey(kam), KeyPurposes.MANAGEMENT, KeyTypes.ECDSA, abi.encodePacked(kam), ""
+        );
+        vm.stopPrank();
+
+        // The pre-uninstall request is void, approved or not.
+        vm.prank(david);
+        vm.expectRevert(Errors.RequestInvalidated.selector);
+        IKeyExecutor(address(aliceIdentity)).approve(staleId, true);
+
+        // A request queued after the reinstall runs normally.
+        vm.prank(proposer);
+        uint256 freshId = IKeyExecutor(address(aliceIdentity)).execute(address(receiver), 1 ether, "");
+        assertEq(freshId, staleId + 1, "nonce keeps counting across reinstalls");
+
+        vm.prank(david);
+        IKeyExecutor(address(aliceIdentity)).approve(freshId, true);
+        assertEq(address(receiver).balance, 1 ether, "post-reinstall request dispatches");
     }
 
 }

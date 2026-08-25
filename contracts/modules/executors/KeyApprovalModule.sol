@@ -37,8 +37,12 @@ interface IIdentityAccount {
  *         queue or the event log. PROPOSER is a queue-only purpose: it lets a key queue
  *         a request that then waits for an approver and never auto-runs by itself.
  *
- *         A queued request records the key that proposed it. {approve} re-checks that key, so a
- *         request whose proposer was revoked can no longer be dispatched.
+ *         A queued request records the key that proposed it. Approving re-checks that key, so a
+ *         request whose proposer was revoked can no longer be dispatched. Rejecting does not:
+ *         any authorized approver can still close a stale entry.
+ *
+ *         Uninstalling the module (the executor or any of its fallback selectors) voids every
+ *         request queued so far, so a pending queue cannot be resurrected across a reinstall.
  *
  *         Auto-approval rules (unchanged by the propose gate):
  *         - MANAGEMENT: anything.
@@ -48,9 +52,11 @@ interface IIdentityAccount {
  */
 contract KeyApprovalModule is IERC7579Module {
 
-    /// @dev Per-identity queue state. One slot per installing account.
+    /// @dev Per-identity queue state. One slot per installing account. Requests with an id
+    ///      below `firstValidId` are void; {onUninstall} bumps the floor to the current nonce.
     struct AccountState {
         uint256 executionNonce;
+        uint256 firstValidId;
         mapping(uint256 => Execution) executions;
     }
 
@@ -80,6 +86,9 @@ contract KeyApprovalModule is IERC7579Module {
     /// @dev Emitted when an execution is approved (or rejected) via {approve}.
     event Approved(address indexed account, uint256 indexed executionId, bool approved);
 
+    /// @dev Emitted when an uninstall voids every request queued below `firstValidId`.
+    event QueueInvalidated(address indexed account, uint256 firstValidId);
+
     /// @dev Emitted when an approved execution successfully dispatches through the account.
     event Executed(address indexed account, uint256 indexed executionId, address indexed to, uint256 value, bytes data);
 
@@ -97,7 +106,17 @@ contract KeyApprovalModule is IERC7579Module {
     function onInstall(bytes calldata) external pure { }
 
     /// @inheritdoc IERC7579Module
-    function onUninstall(bytes calldata) external pure { }
+    /// @dev Voids every request queued so far by the uninstalling account. Runs on each
+    ///      uninstall of this module (the executor or any fallback selector), so even a
+    ///      partial teardown kills the queue. Fails closed: nothing here can revert.
+    function onUninstall(bytes calldata) external {
+        AccountState storage state = _state[msg.sender];
+        uint256 nonce = state.executionNonce;
+        if (state.firstValidId < nonce) {
+            state.firstValidId = nonce;
+            emit QueueInvalidated(msg.sender, nonce);
+        }
+    }
 
     /// @notice Queue an execution for the calling identity. Auto-runs if the caller's key
     ///         purpose authorizes it; otherwise waits for {approve}.
@@ -143,17 +162,13 @@ contract KeyApprovalModule is IERC7579Module {
         AccountState storage state = _state[account];
         Execution storage execution = state.executions[_id];
 
-        // 2. Sanity-check the request id and that it isn't already executed.
+        // 2. Sanity-check the request id, that it wasn't voided by an uninstall, and that
+        //    it isn't already executed.
         require(_id < state.executionNonce, Errors.InvalidRequestId());
+        require(_id >= state.firstValidId, Errors.RequestInvalidated());
         require(!execution.executed, Errors.RequestAlreadyExecuted());
 
-        // 3. The key that queued the request must still be able to propose. A request whose
-        //    proposer was revoked is dead and cannot be dispatched by a later approver.
-        require(
-            _canPropose(account, hashAddress(execution.proposer)), Errors.ProposerNoLongerAuthorized(execution.proposer)
-        );
-
-        // 4. Authorize the approver. Self-call ⇒ MANAGEMENT; external target ⇒ ACTION.
+        // 3. Authorize the approver. Self-call ⇒ MANAGEMENT; external target ⇒ ACTION.
         // OZ `ERC7579Utils._call` rewrites `to == address(0)` to the account before dispatch,
         // so a queued `to=0` request runs as a self-call. Match that here before branching.
         address executionTo = execution.to == address(0) ? account : execution.to;
@@ -170,8 +185,14 @@ contract KeyApprovalModule is IERC7579Module {
 
         emit Approved(account, _id, _shouldApprove);
 
-        // 5. Approval ⇒ dispatch now. Rejection ⇒ mark closed and exit.
+        // 4. Approval ⇒ the key that queued the request must still be able to propose, then
+        //    dispatch now. A request whose proposer was revoked cannot run, but any authorized
+        //    approver can still reject it and close the stale entry.
         if (_shouldApprove) {
+            require(
+                _canPropose(account, hashAddress(execution.proposer)),
+                Errors.ProposerNoLongerAuthorized(execution.proposer)
+            );
             return _runApproved(account, _id);
         }
         execution.executed = true;
