@@ -170,12 +170,18 @@ contract Identity is Initializable, SmartAccount, ERC165 {
         return "3.0.0";
     }
 
-    /// @notice ERC-165 surface. Returns true for the ERC-734 / ERC-735 / IIdentity selectors
-    ///         even though the ERC-735 methods are served by an installed module via the
-    ///         fallback handler — the interface contract is still honored at runtime.
+    /// @notice ERC-165 surface. An interface is only advertised while the fallback handler
+    ///         serving it is installed, probed via one representative selector.
+    /// @dev The advertised ERC-734 id is this repo's registry-only {IERC734}. execute/approve
+    ///      moved to {IKeyExecutor}, so the legacy monolithic id is intentionally not claimed.
     function supportsInterface(bytes4 interfaceId) public view override returns (bool) {
-        return (interfaceId == type(IERC734).interfaceId || interfaceId == type(IERC735).interfaceId
-                || interfaceId == type(IIdentity).interfaceId || super.supportsInterface(interfaceId));
+        bool hasKeyGetters = _fallbackHandler(IERC734.getKey.selector) != address(0);
+        bool hasClaims = _fallbackHandler(IERC735.getClaim.selector) != address(0);
+
+        if (interfaceId == type(IERC734).interfaceId) return hasKeyGetters;
+        if (interfaceId == type(IERC735).interfaceId) return hasClaims;
+        if (interfaceId == type(IIdentity).interfaceId) return hasKeyGetters && hasClaims;
+        return super.supportsInterface(interfaceId);
     }
 
     /// @dev Returns the identity metadata storage at its ERC-7201 slot.

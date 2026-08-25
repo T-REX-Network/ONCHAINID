@@ -3,7 +3,11 @@ pragma solidity ^0.8.27;
 
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import { MODULE_TYPE_FALLBACK } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { Identity } from "contracts/Identity.sol";
+import { IERC734 } from "contracts/interface/IERC734.sol";
+import { IERC735 } from "contracts/interface/IERC735.sol";
+import { IIdentity } from "contracts/interface/IIdentity.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { Structs } from "contracts/storage/Structs.sol";
@@ -53,6 +57,42 @@ contract InitTest is OnchainIDSetup {
         assertFalse(aliceIdentity.supportsInterface(0x12345678));
         assertFalse(aliceIdentity.supportsInterface(0x00000000));
         assertFalse(aliceIdentity.supportsInterface(0xffffffff));
+    }
+
+    function test_supportsInterface_tracksInstalledFallbackSurface() public {
+        assertTrue(aliceIdentity.supportsInterface(type(IERC734).interfaceId));
+        assertTrue(aliceIdentity.supportsInterface(type(IERC735).interfaceId));
+        assertTrue(aliceIdentity.supportsInterface(type(IIdentity).interfaceId));
+
+        // Uninstalling the claim handler drops the claim interfaces; the registry stays.
+        vm.prank(alice);
+        aliceIdentity.uninstallModule(
+            MODULE_TYPE_FALLBACK,
+            address(onchainidSetup.signatureValidator),
+            abi.encodePacked(IERC735.getClaim.selector)
+        );
+
+        assertTrue(aliceIdentity.supportsInterface(type(IERC734).interfaceId));
+        assertFalse(aliceIdentity.supportsInterface(type(IERC735).interfaceId));
+        assertFalse(aliceIdentity.supportsInterface(type(IIdentity).interfaceId));
+
+        // Dropping the key getters too takes the registry interface down as well.
+        vm.prank(alice);
+        aliceIdentity.uninstallModule(
+            MODULE_TYPE_FALLBACK, address(onchainidSetup.signatureValidator), abi.encodePacked(IERC734.getKey.selector)
+        );
+
+        assertFalse(aliceIdentity.supportsInterface(type(IERC734).interfaceId));
+    }
+
+    function test_supportsExecutionMode_matchesExecute() public view {
+        // Mode layout: callType (1 byte) | execType (1 byte) | reserved.
+        assertTrue(aliceIdentity.supportsExecutionMode(bytes32(0))); // single / default
+        assertTrue(aliceIdentity.supportsExecutionMode(bytes32(uint256(0x01) << 248))); // batch / default
+        assertTrue(aliceIdentity.supportsExecutionMode(bytes32(uint256(0x01) << 240))); // single / try
+        assertFalse(aliceIdentity.supportsExecutionMode(bytes32(uint256(0xff) << 248))); // delegatecall
+        assertFalse(aliceIdentity.supportsExecutionMode(bytes32(uint256(0x02) << 248))); // unknown call type
+        assertFalse(aliceIdentity.supportsExecutionMode(bytes32(uint256(0x02) << 240))); // unknown exec type
     }
 
 }
