@@ -494,14 +494,12 @@ contract IdentityFactoryTest is OnchainIDSetup {
     }
 
     function test_revertBecauseSaltAlreadyUsed() public {
-        // Same salt and keys deploy to the same address, so the second call collides.
+        // Same account, salt and keys deploy to the same address, so the second call collides.
         Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(carol);
 
         vm.prank(deployer);
         onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "saltUsed", keys);
 
-        // The collision (FailedDeployment) fires inside CREATE3: same type, salt and keys
-        // land on the same address.
         vm.prank(deployer);
         vm.expectRevert(OZErrors.FailedDeployment.selector);
         onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "saltUsed", keys);
@@ -524,6 +522,27 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertTrue(first != address(0));
         assertTrue(second != address(0));
         assertTrue(first != second, "different bootstrap config must land at a different address");
+    }
+
+    /// @notice The auto-linked account is part of the deploy salt (L-11). With the type, the
+    ///         salt string and the keys all held constant, changing only the account must move
+    ///         the address: otherwise someone watching a pending creation could replay those
+    ///         public arguments with an account of their own, land on the address the caller
+    ///         was going to get, and have their wallet stickily bound to it.
+    function test_createIdentityFor_sameKeysDifferentAccountGivesDifferentAddress() public {
+        // ASSET is single-binding, so its keys are not bound to the account (the bound
+        // contract holds none). That leaves the account as the only differing input.
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(carol);
+        address tokenA = makeAddr("tokenA");
+        address tokenB = makeAddr("tokenB");
+
+        vm.prank(deployer);
+        address forA = onchainidSetup.idFactory.createIdentityFor(tokenA, IdentityTypes.ASSET, "sameSalt", keys);
+
+        vm.prank(deployer);
+        address forB = onchainidSetup.idFactory.createIdentityFor(tokenB, IdentityTypes.ASSET, "sameSalt", keys);
+
+        assertTrue(forA != forB, "the auto-linked account must move the deploy address");
     }
 
     function test_createIdentityFor_revertWhenKeyHashDoesNotMatchSignerData() public {
@@ -1867,6 +1886,38 @@ contract IdentityFactoryTest is OnchainIDSetup {
             onchainidSetup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, eoa)),
             identityAddr,
             "self-deployer auto-linked"
+        );
+    }
+
+    /// @notice A front-runner who replays a pending self-deploy verbatim lands on a
+    ///         different address, because the auto-linked account is part of the salt.
+    ///         Without that the attacker would take the victim's address, carrying the
+    ///         victim's MANAGEMENT key but with the attacker's own wallet auto-linked,
+    ///         and the binding is sticky.
+    function test_createIdentity_frontRunnerCannotTakeVictimAddress() public {
+        address victim = makeAddr("frontRunVictim");
+        address attacker = makeAddr("frontRunAttacker");
+
+        // The victim's pending call is public: type, salt and keys are all in the mempool.
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(victim);
+
+        vm.prank(attacker);
+        address attackerIdentity = onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "frontRun", keys);
+
+        // The victim's own transaction still goes through.
+        vm.prank(victim);
+        address victimIdentity = onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "frontRun", keys);
+
+        assertTrue(attackerIdentity != victimIdentity, "replay must not land on the victim's address");
+        assertEq(
+            onchainidSetup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, victim)),
+            victimIdentity,
+            "victim keeps its own identity"
+        );
+        assertEq(
+            onchainidSetup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, attacker)),
+            attackerIdentity,
+            "attacker's wallet stays on its own identity"
         );
     }
 
