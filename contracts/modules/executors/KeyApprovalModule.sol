@@ -9,16 +9,15 @@ import {
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 
 import { IERC734 } from "../../interface/IERC734.sol";
-import { IERC735 } from "../../interface/IERC735.sol";
 import { Errors } from "../../libraries/Errors.sol";
 import { hashAddress } from "../../libraries/Hashing.sol";
 import { KeyPurposes } from "../../libraries/KeyPurposes.sol";
 
-/// @dev Minimal view of the account: the factory that deployed it. Used to keep the factory's
-///      wallet-binding calls management-grade in the auto-approval rule.
+/// @dev Minimal view of the account: does a target need MANAGEMENT (self or factory)?
+///      See {SmartAccount.isManagementTarget}.
 interface IIdentityAccount {
 
-    function identityFactory() external view returns (address);
+    function isManagementTarget(address target) external view returns (bool);
 
 }
 
@@ -40,8 +39,14 @@ interface IIdentityAccount {
  *         Auto-approval rules (unchanged by the propose gate):
  *         - MANAGEMENT: anything.
  *         - ACTION: external targets only.
- *         - CLAIM_SIGNER on self: only `addClaim` / `removeClaim`.
- *         - CLAIM_ADDER on self: only `addClaim`.
+ *         - Anything else on self: never.
+ *
+ *         {execute} and {approve} only work when called through the account's ERC-7579 fallback,
+ *         because that is what appends the caller for {_msgSender} to read. If the call arrives
+ *         any other way, for example relayed by the EntryPoint or dispatched by the account
+ *         itself, nothing is appended, so the recovered caller holds no key and the call is
+ *         refused. To add or remove a claim on the identity itself, call that selector on the
+ *         account directly instead of queueing it here.
  */
 contract KeyApprovalModule is IERC7579Module {
 
@@ -123,13 +128,16 @@ contract KeyApprovalModule is IERC7579Module {
         emit ExecutionRequested(account, executionId, _to, _value, _data);
 
         // 3. Auto-approve dispatches now; otherwise the request stays pending for {approve}.
-        if (_canAutoApprove(account, callerKeyHash, _to, _data)) {
+        if (_canAutoApprove(account, callerKeyHash, _to)) {
             _runApproved(account, executionId);
         }
     }
 
-    /// @notice Approve (or reject) a queued execution. Self-targeted calls require MANAGEMENT;
-    ///         external targets require ACTION.
+    /// @notice Approve (or reject) a queued execution. Management-grade targets (the account, its
+    ///         factory, or the key registry) require MANAGEMENT; other external targets require ACTION.
+    /// @dev    This gate is target-level (MANAGEMENT vs ACTION). Per-selector claim granularity (e.g.
+    ///         addClaim needing only CLAIM_SIGNER) is handled by the claim branch in `_canAutoApprove`
+    ///         and the account's fallback dispatch, not here.
     function approve(uint256 _id, bool _shouldApprove) external returns (bool success) {
         // 1. Resolve account + ERC-2771 caller, fetch the queued request.
         address account = msg.sender;
@@ -141,11 +149,11 @@ contract KeyApprovalModule is IERC7579Module {
         require(_id < state.executionNonce, Errors.InvalidRequestId());
         require(!execution.executed, Errors.RequestAlreadyExecuted());
 
-        // 3. Authorize the approver. Self-call ⇒ MANAGEMENT; external target ⇒ ACTION.
-        // OZ `ERC7579Utils._call` rewrites `to == address(0)` to the account before dispatch,
-        // so a queued `to=0` request runs as a self-call. Match that here before branching.
-        address executionTo = execution.to == address(0) ? account : execution.to;
-        if (executionTo == account) {
+        // 3. Authorize the approver. A management-grade target (the account, its factory, or the
+        // key registry) needs MANAGEMENT; other external targets need ACTION. Without this, an ACTION
+        // key could approve a queued factory call (e.g. terminally revoke a wallet) or a registry
+        // call (e.g. grant itself a MANAGEMENT key), dispatched under the module's MANAGEMENT key.
+        if (IIdentityAccount(account).isManagementTarget(execution.to)) {
             require(
                 IERC734(account).keyHasPurpose(callerKeyHash, KeyPurposes.MANAGEMENT),
                 Errors.SenderDoesNotHaveManagementKey()
@@ -180,11 +188,7 @@ contract KeyApprovalModule is IERC7579Module {
     /// @dev Auto-approval policy. See contract NatSpec for the rule table. Module targets are
     ///      not special-cased here: the account itself refuses to dispatch into its own modules
     ///      (see {SmartAccount}), so such a request just fails there and emits `ExecutionFailed`.
-    function _canAutoApprove(address account, bytes32 keyHash, address to, bytes calldata data)
-        internal
-        view
-        returns (bool)
-    {
+    function _canAutoApprove(address account, bytes32 keyHash, address to) internal view returns (bool) {
         // OZ rewrites to 0 to the account before dispatch, so treat it as a self-call.
         if (to == address(0)) to = account;
 
@@ -193,26 +197,18 @@ contract KeyApprovalModule is IERC7579Module {
             return true;
         }
 
-        // Self-targeted calls: only claim-related selectors auto-approve for claim keys.
-        if (to == account && data.length >= 4) {
-            bytes4 selector = bytes4(data);
-            bool isAddClaim = selector == IERC735.addClaim.selector;
-            bool isRemoveClaim = selector == IERC735.removeClaim.selector;
+        // Self-targeted calls never auto-approve below MANAGEMENT. There used to be a rule here
+        // letting claim keys auto-approve addClaim/removeClaim on self, but it could never work.
+        // `_runApproved` dispatches through `executeFromExecutor`, so the account calls the claim
+        // selector on itself and the fallback appends the account as the ERC-2771 caller. The
+        // claim registry then looks for a claim key on the account, finds none, and reverts. The
+        // try/catch turned that into a silent `ExecutionFailed`. Claim keys should call addClaim
+        // or removeClaim on the account directly.
+        if (to == account) return false;
 
-            if (IERC734(account).keyHasPurpose(keyHash, KeyPurposes.CLAIM_SIGNER) && (isAddClaim || isRemoveClaim)) {
-                return true;
-            }
-            if (IERC734(account).keyHasPurpose(keyHash, KeyPurposes.CLAIM_ADDER) && isAddClaim) {
-                return true;
-            }
-            return false;
-        }
-
-        // The factory's wallet-binding calls (linkAccount, revokeAccount, confirmCrossChainLink)
-        // change the identity's own bindings and are management-grade. MANAGEMENT already returned
-        // above, so a non-MANAGEMENT key targeting the factory is refused here rather than
-        // auto-approved as an ordinary external call.
-        if (to == IIdentityAccount(account).identityFactory()) return false;
+        // A management-grade target (the factory or the key registry) never auto-approves for a
+        // non-MANAGEMENT key; MANAGEMENT already returned above.
+        if (IIdentityAccount(account).isManagementTarget(to)) return false;
 
         // External target: ACTION keys can dispatch directly.
         if (to != account && IERC734(account).keyHasPurpose(keyHash, KeyPurposes.ACTION)) return true;
@@ -264,8 +260,12 @@ contract KeyApprovalModule is IERC7579Module {
     ///      appended (ERC-2771 style) as the trailing 20 bytes; we read it from there.
     /// @dev We can trust that tail because {SmartAccount} blocks the only path that could forge it
     ///      (a direct call to this module, which arrives with no appended tail).
+    /// @dev The length check only says a tail could fit, not that one was actually appended. On a
+    ///      path that skips the fallback the last 20 bytes are just ABI arguments, so the caller
+    ///      reads back as some address that holds no key and the call is refused. We ask for a
+    ///      selector plus the tail, so a call too short to carry one uses `msg.sender` instead.
     function _msgSender() internal view returns (address sender) {
-        if (msg.data.length >= 20) {
+        if (msg.data.length >= 24) {
             // solhint-disable-next-line no-inline-assembly
             assembly {
                 sender := shr(96, calldataload(sub(calldatasize(), 20)))
