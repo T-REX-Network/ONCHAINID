@@ -32,6 +32,7 @@ import { KeyPurposes } from "../../libraries/KeyPurposes.sol";
 import { KeyTypes } from "../../libraries/KeyTypes.sol";
 import { IReputationRegistry } from "../../reputation/IReputationRegistry.sol";
 import { Structs } from "../../storage/Structs.sol";
+import { SafeCalldataBatch } from "../../vendor/utils/SafeCalldataBatch.sol";
 import { ERC7579Validator } from "./ERC7579Validator.sol";
 
 /// @title ERC734Validator
@@ -419,8 +420,11 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         }
 
         if (callType == ERC7579Utils.CALLTYPE_BATCH) {
-            // Every call in the batch must pass. The weakest-authorized call gates the batch.
-            Execution[] calldata batch = ERC7579Utils.decodeBatch(executionCalldata);
+            // Every call in the batch must pass. {SafeCalldataBatch} keeps the batch in calldata but
+            // validates each entry against the slice bounds, so a backward offset can't point past
+            // the batch and make us read a different target than the account runs. The account
+            // decodes the same way, so the two checks always agree.
+            Execution[] calldata batch = SafeCalldataBatch.decodeBatch(executionCalldata);
             for (uint256 i = 0; i < batch.length; i++) {
                 if (!_targetAllowed(account, keyHash, batch[i].target)) return false;
             }
@@ -486,6 +490,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     /// @dev ERC-7913 dispatch: 20-byte signer = EOA/1271, longer = verifier+key. Uses the
     ///      ECDSA path directly instead of `SignatureChecker.isValidSignatureNow(bytes,...)` to
     ///      avoid its `signer.code.length` check, which violates ERC-7562 bundler validation rules.
+    ///      Single definition of a valid signature for the whole module: the key path and the claim
+    ///      path both go through here, so a signer that gains code (EIP-7702) can't be judged valid
+    ///      by one and invalid by the other.
     function _verify(bytes memory signer, bytes32 hash, bytes memory signature) internal view returns (bool) {
         if (signer.length == 20) {
             address signerAddr = address(bytes20(signer));
@@ -656,8 +663,8 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     }
 
     /// @inheritdoc IERC735
-    /// @dev Marks the removed claim's digest revoked, so the same (issuer, topic, ClaimData) can't
-    ///      be re-added; the issuer must sign a fresh claim to re-attest.
+    /// @dev Marks the removed claim's digest revoked. Issuers backed by this module then refuse
+    ///      the same (issuer, topic, ClaimData) and must sign a fresh claim to re-attest.
     function removeClaim(bytes32 _claimId) public returns (bool success) {
         address account = msg.sender;
         // CLAIM_ADDER cannot remove; only CLAIM_SIGNER (or self-call) is accepted here.
@@ -669,9 +676,10 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         require(topic != 0, Errors.ClaimNotRegistered(_claimId));
 
         // Revoke the digest on both the holder's and the issuer's sets so _getClaimStatus (which
-        // reads the issuer's set) blocks re-adding the same bytes.
+        // reads the issuer's set) blocks re-adding the same bytes. Marking an already marked
+        // digest is fine: an outside issuer can accept the same claim again, and that one still
+        // has to be removable. The topic check above already rejects a double removal.
         bytes32 digest = _getClaimDigest(c.issuer, account, topic, c.data);
-        require(!s.revokedDigests[digest], Errors.ClaimAlreadyRevoked());
         s.revokedDigests[digest] = true;
         _store().registries[c.issuer].revokedDigests[digest] = true;
 
@@ -833,7 +841,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         if (!keyHasPurpose(account, keccak256(signer), KeyPurposes.CLAIM_SIGNER)) {
             return IClaimIssuer.ClaimStatus.NotIssued;
         }
-        if (!SignatureChecker.isValidSignatureNow(signer, digest, rawSig)) {
+        if (!_verify(signer, digest, rawSig)) {
             return IClaimIssuer.ClaimStatus.BadSignature;
         }
         return IClaimIssuer.ClaimStatus.Valid;

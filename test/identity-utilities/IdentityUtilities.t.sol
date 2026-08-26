@@ -29,8 +29,7 @@ contract IdentityUtilitiesTest is Test {
         user = makeAddr("utilUser");
 
         IdentityUtilities impl = new IdentityUtilities();
-        IdentityUtilitiesProxy proxy =
-            new IdentityUtilitiesProxy(address(impl), abi.encodeCall(IdentityUtilities.initialize, (admin)));
+        IdentityUtilitiesProxy proxy = new IdentityUtilitiesProxy(address(impl), admin);
         utilities = IdentityUtilities(address(proxy));
     }
 
@@ -1044,6 +1043,26 @@ contract IdentityUtilitiesTest is Test {
         vm.prank(nonAdmin);
         vm.expectRevert();
         proxyUtil.upgradeToAndCall(address(newImpl), bytes(""));
+    }
+
+    // =========================================================================
+    //  Proxy deployment
+    // =========================================================================
+
+    /// @dev The constructor takes the admin, not raw data, so the proxy is always
+    ///      initialized on deploy and nobody else can claim it afterwards.
+    function test_proxy_deploysInitialized() public {
+        address proxyAdmin = makeAddr("proxyAdmin");
+        address attacker = makeAddr("proxyAttacker");
+
+        IdentityUtilities impl = new IdentityUtilities();
+        IdentityUtilities proxyUtil = IdentityUtilities(address(new IdentityUtilitiesProxy(address(impl), proxyAdmin)));
+
+        assertTrue(proxyUtil.hasRole(proxyUtil.DEFAULT_ADMIN_ROLE(), proxyAdmin));
+
+        vm.prank(attacker);
+        vm.expectRevert();
+        proxyUtil.initialize(attacker);
     }
 
 }

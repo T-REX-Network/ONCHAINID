@@ -2,9 +2,11 @@
 pragma solidity ^0.8.27;
 
 import { OnchainIDSetup } from "../../helpers/OnchainIDSetup.sol";
+import { IERC7579Execution } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IERC734 } from "contracts/interface/IERC734.sol";
 import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
+import { Errors } from "contracts/libraries/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { RecoveryModule } from "contracts/modules/executors/RecoveryModule.sol";
@@ -19,6 +21,8 @@ import { RecoveryModule } from "contracts/modules/executors/RecoveryModule.sol";
 ///           * typehash separation: a SCHEDULE signature cannot be reused as a CANCEL signature
 ///           * cancel paths: both the account-self-cancel path and the guardian-quorum-cancel path
 ///           * weighted multisig: a single high-weight guardian can meet a weighted threshold
+///           * account-side control: a MANAGEMENT key can cancel a recovery and change the
+///             guardian setup; ACTION keys and direct dispatches at the module cannot
 ///
 ///         setUp() installs the module on alice with 3 guardians, threshold 2,
 ///         delay 1 day, expiration 30 days, all weights 1.
@@ -44,6 +48,9 @@ contract RecoveryModuleTest is OnchainIDSetup {
     // Per OZ ERC7579MultisigWeighted.onInstall encoding:
     //   multisigArgs = abi.encode(bytes[] signers, uint64 threshold, uint64[] weights)
     uint64 internal constant THRESHOLD = 2;
+
+    // Same canonical EntryPoint the account trusts; see PrivilegedReentryGuard.t.sol.
+    address internal constant ENTRY_POINT = 0x433709009B8330FDa32311DF1C2AFA402eD8D009;
 
     function setUp() public override {
         super.setUp();
@@ -445,7 +452,125 @@ contract RecoveryModuleTest is OnchainIDSetup {
         recovery.executeRecovery(address(aliceIdentity), salt, mode, recoveryData);
     }
 
+    // ---- account-side cancel and reconfiguration ----
+
+    /// @notice alice (MANAGEMENT) cancels a pending recovery from a plain transaction. Her call
+    ///         goes through the identity's KeyApprovalModule queue, which auto-approves for
+    ///         MANAGEMENT and makes the account call `execute` on itself. That self-call then
+    ///         targets the recovery module, so the module sees the identity as caller, which is
+    ///         what its owner cancel path requires.
+    function test_managementKeyCancelsRecovery_endToEnd() public {
+        bytes32 salt = bytes32(uint256(31));
+        bytes32 mode = bytes32(0);
+        bytes memory recoveryData = _addNewOwnerCalldata();
+
+        bytes32 digest = _scheduleDigest(address(aliceIdentity), salt, mode, recoveryData);
+        bytes[] memory signers = new bytes[](2);
+        bytes[] memory sigs = new bytes[](2);
+        signers[0] = abi.encodePacked(g1);
+        signers[1] = abi.encodePacked(g2);
+        sigs[0] = _sign(g1Pk, digest);
+        sigs[1] = _sign(g2Pk, digest);
+        recovery.startRecovery(address(aliceIdentity), salt, mode, recoveryData, abi.encode(signers, sigs));
+
+        bytes memory cancelCall = abi.encodeWithSignature(
+            "cancelRecovery(address,bytes32,bytes32,bytes)", address(aliceIdentity), salt, mode, recoveryData
+        );
+        vm.prank(alice);
+        IKeyExecutor(address(aliceIdentity)).execute(address(aliceIdentity), 0, _recoveryModuleCall(cancelCall));
+
+        // The canceled operation can never execute.
+        vm.warp(block.timestamp + DELAY);
+        vm.expectRevert();
+        recovery.executeRecovery(address(aliceIdentity), salt, mode, recoveryData);
+    }
+
+    /// @notice Guardians and parameters can be changed after install: alice swaps g3 for a new
+    ///         guardian, raises the threshold, and updates the delay and expiration, all through
+    ///         the same route as the cancel test above.
+    function test_managementKeyRotatesGuardiansAndConfig_endToEnd() public {
+        (address g4,) = makeAddrAndKey("guardian4");
+        bytes[] memory toRemove = new bytes[](1);
+        toRemove[0] = abi.encodePacked(g3);
+        bytes[] memory toAdd = new bytes[](1);
+        toAdd[0] = abi.encodePacked(g4);
+
+        vm.startPrank(alice);
+        IKeyExecutor(address(aliceIdentity))
+            .execute(
+                address(aliceIdentity), 0, _recoveryModuleCall(abi.encodeCall(recovery.removeGuardians, (toRemove)))
+            );
+        IKeyExecutor(address(aliceIdentity))
+            .execute(address(aliceIdentity), 0, _recoveryModuleCall(abi.encodeCall(recovery.addGuardians, (toAdd))));
+        IKeyExecutor(address(aliceIdentity))
+            .execute(
+                address(aliceIdentity),
+                0,
+                _recoveryModuleCall(abi.encodeWithSignature("setThreshold(uint64)", uint64(3)))
+            );
+        IKeyExecutor(address(aliceIdentity))
+            .execute(
+                address(aliceIdentity),
+                0,
+                _recoveryModuleCall(abi.encodeWithSignature("setDelay(uint32)", uint32(2 days)))
+            );
+        IKeyExecutor(address(aliceIdentity))
+            .execute(
+                address(aliceIdentity),
+                0,
+                _recoveryModuleCall(abi.encodeWithSignature("setExpiration(uint32)", uint32(60 days)))
+            );
+        vm.stopPrank();
+
+        assertFalse(recovery.isGuardian(address(aliceIdentity), abi.encodePacked(g3)), "g3 rotated out");
+        assertTrue(recovery.isGuardian(address(aliceIdentity), abi.encodePacked(g4)), "g4 rotated in");
+        assertEq(recovery.getGuardianCount(address(aliceIdentity)), 3, "guardian count unchanged");
+        assertEq(recovery.threshold(address(aliceIdentity)), 3, "threshold raised");
+        assertEq(recovery.getExpiration(address(aliceIdentity)), uint32(60 days), "expiration retuned");
+        // Delay increases take effect after a transition period; the new value is pending.
+        (, uint32 pendingDelay,) = recovery.getDelay(address(aliceIdentity));
+        assertEq(pendingDelay, uint32(2 days), "delay change scheduled");
+    }
+
+    /// @notice The nested route needs MANAGEMENT: david (ACTION) queues the same call, the
+    ///         queue module refuses to auto-run a self-target for ACTION, and nothing changes.
+    function test_actionKeyCannotReachRecoveryConfig() public {
+        vm.prank(david);
+        IKeyExecutor(address(aliceIdentity))
+            .execute(
+                address(aliceIdentity),
+                0,
+                _recoveryModuleCall(abi.encodeWithSignature("setThreshold(uint64)", uint64(1)))
+            );
+        assertEq(recovery.threshold(address(aliceIdentity)), THRESHOLD, "ACTION key must not change the config");
+    }
+
+    /// @notice A dispatched call straight at the module is still rejected; only the account
+    ///         itself gets through the own-module guard.
+    function test_directDispatchToRecoveryStillBlocked() public {
+        bytes memory cancelCall = abi.encodeWithSignature(
+            "cancelRecovery(address,bytes32,bytes32,bytes)", address(aliceIdentity), bytes32(0), bytes32(0), bytes("")
+        );
+        bytes memory callData = abi.encodeCall(
+            IERC7579Execution.execute, (bytes32(0), abi.encodePacked(address(recovery), uint256(0), cancelCall))
+        );
+
+        vm.prank(ENTRY_POINT);
+        (bool ok, bytes memory ret) = address(aliceIdentity).call(callData);
+        assertFalse(ok, "dispatch into the recovery module must stay blocked");
+        assertEq(ret, abi.encodeWithSelector(Errors.OwnModuleTargetBlocked.selector, address(recovery)));
+    }
+
     // ---- helpers ----
+
+    /// @dev Wraps a call to the recovery module in an inner `execute`. Queue this at the
+    ///      identity with `to = identity` and the account calls `execute` on itself, and that
+    ///      self-call is allowed to target its own module.
+    function _recoveryModuleCall(bytes memory moduleCall) internal view returns (bytes memory) {
+        return abi.encodeCall(
+            IERC7579Execution.execute, (bytes32(0), abi.encodePacked(address(recovery), uint256(0), moduleCall))
+        );
+    }
 
     /// @dev Builds the SCHEDULE digest a guardian needs to sign. The domain we use
     ///      here is the identity's, not the module's, because OZ's _getTypedHash
