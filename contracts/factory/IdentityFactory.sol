@@ -107,6 +107,10 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         ///      keccak256(chainType, chainReference). Inbound messages from anyone
         ///      else are rejected. Manage via {setTrustedGateway}.
         mapping(address gateway => mapping(bytes32 originKey => bool trusted)) trustedGateways;
+        /// @dev Approved ERC-7913 verifiers for {linkAccount}. Signers longer than
+        ///      20 bytes only link when their verifier is listed here. Manage via
+        ///      {setTrustedVerifier}.
+        mapping(address verifier => bool trusted) trustedVerifiers;
         /// @dev Cross-chain link proposals awaiting identity-side confirmation.
         ///      Keyed by {_walletKey} so every encoding of a wallet shares one
         ///      pending slot. Cleared on {confirmCrossChainLink}.
@@ -212,10 +216,28 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     function linkAccount(bytes calldata account, bytes calldata signature, uint256 nonce, uint256 expiry) external {
         // `account` is an ERC-7930 envelope wrapping the wallet. Its layout is:
         //     [ chainType | chainReference | signer ]
-        // The signer bytes feed the signature check. The registry is keyed on the
-        // canonical re-encoding (see _walletKey), so padded variants of the same
-        // wallet all resolve to one entry.
-        (,, bytes calldata signer) = InteroperableAddress.parseV1Calldata(account);
+        // bytes feed the signature check. parseV1Calldata reverts on malformed input.
+        // The registry is keyed on the canonical re-encoding (see _walletKey), so padded
+        // variants of the same wallet all resolve to one entry.
+        (bytes2 chainType, bytes calldata chainReference, bytes calldata signer) =
+            InteroperableAddress.parseV1Calldata(account);
+
+        // The signature check below only proves control for EVM signers (EOA,
+        // ERC-1271, ERC-7913). A foreign-chain envelope proves nothing here, so it
+        // must come through the cross-chain path instead. 0x0000 is eip-155.
+        require(chainType == 0x0000, Errors.NonEvmAccount(account));
+
+        // The chain reference must name this chain: a signature verified here says
+        // nothing about the wallet at that address on another EVM chain, so
+        // envelopes for other chains must not link through the signature path.
+        require(keccak256(chainReference) == keccak256(_localChainReference()), Errors.AccountNotOnLocalChain(account));
+
+        // An ERC-7913 signer names its own verifier in its first 20 bytes, so the
+        // proof is self-certifying unless the verifier is admin-approved.
+        if (signer.length > 20) {
+            address verifier = address(bytes20(signer[:20]));
+            require(isTrustedVerifier(verifier), Errors.UntrustedVerifier(verifier));
+        }
 
         // expiry == 0 reverts (block.timestamp <= 0 is false). Forces callers to pick a window.
         require(block.timestamp <= expiry, Errors.ExpiredSignature(expiry));
@@ -287,6 +309,18 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         returns (bool)
     {
         return _storage().trustedGateways[gateway][_originKey(chainType, chainReference)];
+    }
+
+    /// @inheritdoc IIdentityFactory
+    function setTrustedVerifier(address verifier, bool trusted) external restricted {
+        require(verifier != address(0), Errors.ZeroAddress());
+        _storage().trustedVerifiers[verifier] = trusted;
+        emit TrustedVerifierSet(verifier, trusted);
+    }
+
+    /// @inheritdoc IIdentityFactory
+    function isTrustedVerifier(address verifier) public view returns (bool) {
+        return _storage().trustedVerifiers[verifier];
     }
 
     /// @inheritdoc IIdentityFactory
@@ -433,6 +467,12 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         (bool isMember, uint32 executionDelay) = IAccessManager(authority()).hasRole(policy.roleId, caller);
         require(isMember, Errors.NotAuthorizedForIdentityType(caller, _identityType, policy.roleId));
         require(executionDelay == 0, Errors.DelayedRoleNotSupported(caller, policy.roleId, executionDelay));
+    }
+
+    /// @dev `block.chainid` encoded as an ERC-7930 chain reference. Round-trips
+    ///      through the library so the encoding is exactly the one it emits.
+    function _localChainReference() private view returns (bytes memory chainReference) {
+        (, chainReference,) = InteroperableAddress.parseV1(InteroperableAddress.formatEvmV1(block.chainid));
     }
 
     /// @dev {_walletKey} cast to address. Used as the nonce key so OZ Nonces
