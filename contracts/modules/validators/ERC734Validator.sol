@@ -652,9 +652,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
             Structs.Claim({ topic: topic, scheme: scheme, issuer: issuer, signature: signature, data: data, uri: uri });
 
         if (s.claimsByTopic[topic].add(claimId)) {
-            emit ClaimAdded(claimId, topic, scheme, issuer, signature, data, uri);
+            emit ClaimAdded(account, claimId, topic, scheme, issuer, signature, data, uri);
         } else {
-            emit ClaimChanged(claimId, topic, scheme, issuer, signature, data, uri);
+            emit ClaimChanged(account, claimId, topic, scheme, issuer, signature, data, uri);
         }
     }
 
@@ -704,7 +704,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         _store().registries[c.issuer].revokedDigests[digest] = true;
 
         s.claimsByTopic[topic].remove(_claimId);
-        emit ClaimRemoved(_claimId, topic, c.scheme, c.issuer, c.signature, c.data, c.uri);
+        emit ClaimRemoved(account, _claimId, topic, c.scheme, c.issuer, c.signature, c.data, c.uri);
         delete s.claims[_claimId];
 
         return true;
