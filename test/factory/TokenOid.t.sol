@@ -98,8 +98,8 @@ contract TokenOidTest is Test {
             identity,
             "Token should map to identity"
         );
-        bytes[] memory accs = setup.idFactory.getAccounts(identity);
-        assertEq(accs.length, 1, "Asset identity has exactly one wallet");
+        assertEq(setup.idFactory.getAccountsCount(identity), 1, "Asset identity has exactly one wallet");
+        bytes[] memory accs = setup.idFactory.getAccounts(identity, 0, 1);
         (, address tokenFromAcc) = InteroperableAddress.parseEvmV1(accs[0]);
         assertEq(tokenFromAcc, token, "Identity's sole wallet is the token");
     }
@@ -167,8 +167,8 @@ contract TokenOidTest is Test {
 
         address tokenIdentityAddr = setup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, alice));
         assertTrue(tokenIdentityAddr != address(0));
-        bytes[] memory accs = setup.idFactory.getAccounts(tokenIdentityAddr);
-        assertEq(accs.length, 1);
+        assertEq(setup.idFactory.getAccountsCount(tokenIdentityAddr), 1);
+        bytes[] memory accs = setup.idFactory.getAccounts(tokenIdentityAddr, 0, 1);
         (, address aliceFromAcc) = InteroperableAddress.parseEvmV1(accs[0]);
         assertEq(aliceFromAcc, alice);
 

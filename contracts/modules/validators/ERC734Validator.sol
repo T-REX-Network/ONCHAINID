@@ -32,6 +32,7 @@ import { KeyPurposes } from "../../libraries/KeyPurposes.sol";
 import { KeyTypes } from "../../libraries/KeyTypes.sol";
 import { IReputationRegistry } from "../../reputation/IReputationRegistry.sol";
 import { Structs } from "../../storage/Structs.sol";
+import { SafeCalldataBatch } from "../../vendor/utils/SafeCalldataBatch.sol";
 import { ERC7579Validator } from "./ERC7579Validator.sol";
 
 /// @title ERC734Validator
@@ -103,6 +104,8 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     error KeyTypeMismatch(bytes32 keyHash);
     /// @dev The purpose is outside the ERC-734 range 1..6.
     error InvalidPurpose(uint256 purpose);
+    /// @dev The grantee is this module itself. See the guard in {_addKey}.
+    error ModuleCannotBeKey();
 
     event KeyAdded(address indexed account, bytes32 indexed keyHash, uint256 indexed purpose, uint256 keyType);
     event KeyRemoved(address indexed account, bytes32 indexed keyHash, uint256 indexed purpose);
@@ -427,8 +430,11 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         }
 
         if (callType == ERC7579Utils.CALLTYPE_BATCH) {
-            // Every call in the batch must pass. The weakest-authorized call gates the batch.
-            Execution[] calldata batch = ERC7579Utils.decodeBatch(executionCalldata);
+            // Every call in the batch must pass. {SafeCalldataBatch} keeps the batch in calldata but
+            // validates each entry against the slice bounds, so a backward offset can't point past
+            // the batch and make us read a different target than the account runs. The account
+            // decodes the same way, so the two checks always agree.
+            Execution[] calldata batch = SafeCalldataBatch.decodeBatch(executionCalldata);
             for (uint256 i = 0; i < batch.length; i++) {
                 if (!_targetAllowed(account, keyHash, batch[i].target)) return false;
             }
@@ -494,12 +500,18 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     /// @dev ERC-7913 dispatch: 20-byte signer = EOA/1271, longer = verifier+key. Uses the
     ///      ECDSA path directly instead of `SignatureChecker.isValidSignatureNow(bytes,...)` to
     ///      avoid its `signer.code.length` check, which violates ERC-7562 bundler validation rules.
+    ///      That only helps the EOA fast path: a contract signer still falls through to the
+    ///      ERC-1271 external call below, so ERC-1271 signers do incur an external call during
+    ///      user-op validation.
+    ///      Single definition of a valid signature for the whole module: the key path and the claim
+    ///      path both go through here, so a signer that gains code (EIP-7702) can't be judged valid
+    ///      by one and invalid by the other.
     function _verify(bytes memory signer, bytes32 hash, bytes memory signature) internal view returns (bool) {
         if (signer.length == 20) {
             address signerAddr = address(bytes20(signer));
-            // Try ECDSA first: the common EOA case needs no external call, and this keeps the
-            // 4337 validation path free of an external call to an arbitrary signer (ERC-7562).
-            // Only a contract signer, whose sig isn't a valid ECDSA sig, falls through to 1271.
+            // Try ECDSA first: the common EOA case resolves with no external call at all.
+            // A contract signer, whose sig isn't a valid ECDSA sig, falls through to 1271,
+            // which does staticcall the signer — the no-external-call property is EOA-only.
             (address recovered, ECDSA.RecoverError err,) = ECDSA.tryRecover(hash, signature);
             if (err == ECDSA.RecoverError.NoError && recovered == signerAddr) return true;
             return SignatureChecker.isValidERC1271SignatureNow(signerAddr, hash, signature);
@@ -514,8 +526,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         // arbitrary user op cannot even execute it with an unregistered verifier.
         (bool success, bytes memory result) =
             verifier.staticcall(abi.encodeCall(IERC7913SignatureVerifier.verify, (key, hash, signature)));
-        // The length check is not strictly needed (a short result casts to zero-padded bytes32
-        // and fails the compare), but it keeps the intent obvious.
+        // The length check is required: nothing here ABI-decodes the returndata, and
+        // bytes-to-bytes32 pads on the RIGHT, so a verifier returning the 4 raw magic bytes
+        // would otherwise pass the compare. Verifiers must ABI-encode their bytes4 return.
         return success && result.length >= 32 && bytes32(result) == bytes32(IERC7913SignatureVerifier.verify.selector);
     }
 
@@ -528,13 +541,20 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     ) internal {
         // An ERC-7913 signer is at least 20 bytes (a 20-byte EOA/1271 address, or verifier+key).
         // Checked here so every caller (onInstall, addKey) is covered by a single guard.
-        require(signerData.length >= 20, InvalidSignerLength());
+        require(signerData.length >= 20 && signerData.length <= Structs.MAX_SIGNER_DATA_LENGTH, InvalidSignerLength());
+        require(clientData.length <= Structs.MAX_CLIENT_DATA_LENGTH, Errors.ClientDataTooLong());
 
         // The module owns every ERC-734 purpose (1..6). Reject anything out of range.
         require(_isValidPurpose(purpose), InvalidPurpose(purpose));
 
         // keyHash is derived from signerData, so the record always commits to its own bytes.
         bytes32 keyHash = keccak256(signerData);
+
+        // This module is one shared singleton, and addClaim treats its own address as "the call
+        // came from addClaimTo". A key granted to the module itself would act as a claim key for
+        // every issuer at once, so reject it here instead of trusting admins to never grant one.
+        // This also makes initialize revert if this module is installed with a non-zero purpose.
+        require(keyHash != hashAddress(address(this)), ModuleCannotBeKey());
         AccountRegistry storage registry = _store().registries[account];
         Key storage key = registry.keys[keyHash];
 
@@ -569,6 +589,11 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     // The claim registry, folded into this module so keys and claims share one contract. Claim
     // state lives per account in the same registry as the keys. Reached via the account's fallback,
     // so msg.sender is the identity and _msgSender() is the off-chain caller (ERC-2771 tail).
+    //
+    // So the key holder has to call these directly. If the call arrives any other way, for example
+    // relayed by the EntryPoint or dispatched by the account itself through an executor, nothing is
+    // appended, the recovered caller holds no claim key, and the call is refused. These entry
+    // points cannot be used through a meta-transaction.
 
     /// @inheritdoc IERC735
     function addClaim(
@@ -582,7 +607,22 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         // CLAIM_SIGNER or CLAIM_ADDER can add a claim. Self-issued claims still need a real
         // signature (checked by isClaimValid in _addClaim), so CLAIM_ADDER cannot fake
         // self-attestations.
-        _requireClaimKey(msg.sender, _msgSender(), false);
+        address caller = _msgSender();
+        // If the caller is this module itself, the call came from {addClaimTo}: the module made
+        // the outbound call, so the target's fallback appended the module's own address as the
+        // ERC-2771 caller. addClaimTo already checked that a MANAGEMENT key of `_issuer` started
+        // the flow and that a CLAIM_SIGNER of `_issuer` signed the claim, so the claim-key check
+        // below runs against `_issuer` instead.
+        //
+        // {addClaimTo} is the only path that can produce this caller. The other candidates are
+        // closed: `execute(module, ...)` is blocked by the account's own-module guard
+        // (Errors.OwnModuleTargetBlocked in SmartAccount), a direct call to the module with a
+        // forged calldata tail only reaches the caller's own registry entry (msg.sender selects
+        // the registry), and every other outbound call this module makes is a staticcall. As a
+        // last line of defense, {_addKey} rejects the module's own address as a grantee. A new
+        // state-changing outbound call added to this module must revisit this rebind.
+        if (caller == address(this)) caller = _issuer;
+        _requireClaimKey(msg.sender, caller, false);
         return _addClaim(msg.sender, _topic, _scheme, _issuer, _signature, _data, _uri);
     }
 
@@ -628,6 +668,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         // removeClaim reads a claim's topic and treats 0 as "no such claim". So a claim stored
         // under topic 0 could never be removed. Reject it up front.
         require(topic != 0, Errors.InvalidClaimTopic());
+        require(signature.length <= Structs.MAX_CLAIM_SIGNATURE_LENGTH, Errors.ClaimSignatureTooLong());
+        require(data.payload.length <= Structs.MAX_CLAIM_PAYLOAD_LENGTH, Errors.ClaimPayloadTooLong());
+        require(bytes(uri).length <= Structs.MAX_CLAIM_URI_LENGTH, Errors.ClaimUriTooLong());
         require(IClaimIssuer(issuer).isClaimValid(IIdentity(account), topic, signature, data), Errors.InvalidClaim());
 
         AccountRegistry storage s = _store().registries[account];
@@ -636,9 +679,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
             Structs.Claim({ topic: topic, scheme: scheme, issuer: issuer, signature: signature, data: data, uri: uri });
 
         if (s.claimsByTopic[topic].add(claimId)) {
-            emit ClaimAdded(claimId, topic, scheme, issuer, signature, data, uri);
+            emit ClaimAdded(account, claimId, topic, scheme, issuer, signature, data, uri);
         } else {
-            emit ClaimChanged(claimId, topic, scheme, issuer, signature, data, uri);
+            emit ClaimChanged(account, claimId, topic, scheme, issuer, signature, data, uri);
         }
     }
 
@@ -667,8 +710,8 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     }
 
     /// @inheritdoc IERC735
-    /// @dev Marks the removed claim's digest revoked, so the same (issuer, topic, ClaimData) can't
-    ///      be re-added; the issuer must sign a fresh claim to re-attest.
+    /// @dev Marks the removed claim's digest revoked. Issuers backed by this module then refuse
+    ///      the same (issuer, topic, ClaimData) and must sign a fresh claim to re-attest.
     function removeClaim(bytes32 _claimId) public returns (bool success) {
         address account = msg.sender;
         // CLAIM_ADDER cannot remove; only CLAIM_SIGNER (or self-call) is accepted here.
@@ -680,14 +723,15 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         require(topic != 0, Errors.ClaimNotRegistered(_claimId));
 
         // Revoke the digest on both the holder's and the issuer's sets so _getClaimStatus (which
-        // reads the issuer's set) blocks re-adding the same bytes.
+        // reads the issuer's set) blocks re-adding the same bytes. Marking an already marked
+        // digest is fine: an outside issuer can accept the same claim again, and that one still
+        // has to be removable. The topic check above already rejects a double removal.
         bytes32 digest = _getClaimDigest(c.issuer, account, topic, c.data);
-        require(!s.revokedDigests[digest], Errors.ClaimAlreadyRevoked());
         s.revokedDigests[digest] = true;
         _store().registries[c.issuer].revokedDigests[digest] = true;
 
         s.claimsByTopic[topic].remove(_claimId);
-        emit ClaimRemoved(_claimId, topic, c.scheme, c.issuer, c.signature, c.data, c.uri);
+        emit ClaimRemoved(account, _claimId, topic, c.scheme, c.issuer, c.signature, c.data, c.uri);
         delete s.claims[_claimId];
 
         return true;
@@ -771,7 +815,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     }
 
     /// @notice Verify a claim then write it to the target identity via its `addClaim`. The target
-    ///         must have the calling issuer added as a CLAIM_SIGNER key.
+    ///         must have granted the calling issuer identity a CLAIM_SIGNER or CLAIM_ADDER key.
     function addClaimTo(
         uint256 _topic,
         uint256 _scheme,
@@ -788,6 +832,10 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
             Errors.InvalidClaim()
         );
 
+        // This call lands back in {addClaim} on the target, with this module as the ERC-2771
+        // caller. addClaim detects that and checks the target's claim keys against `account`,
+        // passed here as the issuer. Keep this the module's only state-changing external call
+        // to an arbitrary address; the issuer rebinding in addClaim depends on it.
         _identity.addClaim(_topic, _scheme, account, _signature, _data, _uri);
         emit ClaimAddedTo(address(_identity), _topic, _signature, _data);
     }
@@ -844,7 +892,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         if (!keyHasPurpose(account, keccak256(signer), KeyPurposes.CLAIM_SIGNER)) {
             return IClaimIssuer.ClaimStatus.NotIssued;
         }
-        if (!SignatureChecker.isValidSignatureNow(signer, digest, rawSig)) {
+        if (!_verify(signer, digest, rawSig)) {
             return IClaimIssuer.ClaimStatus.BadSignature;
         }
         return IClaimIssuer.ClaimStatus.Valid;
@@ -870,8 +918,12 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
 
     /// @dev When reached through the account's ERC-7579 fallback, msg.sender is the identity and
     ///      the real caller is the last 20 bytes of calldata (ERC-2771).
+    /// @dev The length check only says a tail could fit, not that one was actually appended. On a
+    ///      path that skips the fallback the last 20 bytes are just ABI arguments, so the caller
+    ///      reads back as some address that holds no key and the call is refused. We ask for a
+    ///      selector plus the tail, so a call too short to carry one uses `msg.sender` instead.
     function _msgSender() internal view returns (address sender) {
-        if (msg.data.length >= 20) {
+        if (msg.data.length >= 24) {
             // solhint-disable-next-line no-inline-assembly
             assembly ("memory-safe") {
                 sender := shr(96, calldataload(sub(calldatasize(), 20)))
