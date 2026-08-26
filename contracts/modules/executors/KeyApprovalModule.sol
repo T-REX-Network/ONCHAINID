@@ -14,11 +14,11 @@ import { Errors } from "../../libraries/Errors.sol";
 import { hashAddress } from "../../libraries/Hashing.sol";
 import { KeyPurposes } from "../../libraries/KeyPurposes.sol";
 
-/// @dev Minimal view of the account: the factory that deployed it. Used to keep the factory's
-///      wallet-binding calls management-grade in the auto-approval rule.
+/// @dev Minimal view of the account: does a target need MANAGEMENT (self or factory)?
+///      See {SmartAccount.isManagementTarget}.
 interface IIdentityAccount {
 
-    function identityFactory() external view returns (address);
+    function isManagementTarget(address target) external view returns (bool);
 
 }
 
@@ -125,8 +125,11 @@ contract KeyApprovalModule is IERC7579Module {
         }
     }
 
-    /// @notice Approve (or reject) a queued execution. Self-targeted calls require MANAGEMENT;
-    ///         external targets require ACTION.
+    /// @notice Approve (or reject) a queued execution. Management-grade targets (the account, its
+    ///         factory, or the key registry) require MANAGEMENT; other external targets require ACTION.
+    /// @dev    This gate is target-level (MANAGEMENT vs ACTION). Per-selector claim granularity (e.g.
+    ///         addClaim needing only CLAIM_SIGNER) is handled by the claim branch in `_canAutoApprove`
+    ///         and the account's fallback dispatch, not here.
     function approve(uint256 _id, bool _shouldApprove) external returns (bool success) {
         // 1. Resolve account + ERC-2771 caller, fetch the queued request.
         address account = msg.sender;
@@ -138,11 +141,11 @@ contract KeyApprovalModule is IERC7579Module {
         require(_id < state.executionNonce, Errors.InvalidRequestId());
         require(!execution.executed, Errors.RequestAlreadyExecuted());
 
-        // 3. Authorize the approver. Self-call ⇒ MANAGEMENT; external target ⇒ ACTION.
-        // OZ `ERC7579Utils._call` rewrites `to == address(0)` to the account before dispatch,
-        // so a queued `to=0` request runs as a self-call. Match that here before branching.
-        address executionTo = execution.to == address(0) ? account : execution.to;
-        if (executionTo == account) {
+        // 3. Authorize the approver. A management-grade target (the account, its factory, or the
+        // key registry) needs MANAGEMENT; other external targets need ACTION. Without this, an ACTION
+        // key could approve a queued factory call (e.g. terminally revoke a wallet) or a registry
+        // call (e.g. grant itself a MANAGEMENT key), dispatched under the module's MANAGEMENT key.
+        if (IIdentityAccount(account).isManagementTarget(execution.to)) {
             require(
                 IERC734(account).keyHasPurpose(callerKeyHash, KeyPurposes.MANAGEMENT),
                 Errors.SenderDoesNotHaveManagementKey()
@@ -205,11 +208,9 @@ contract KeyApprovalModule is IERC7579Module {
             return false;
         }
 
-        // The factory's wallet-binding calls (linkAccount, revokeAccount, confirmCrossChainLink)
-        // change the identity's own bindings and are management-grade. MANAGEMENT already returned
-        // above, so a non-MANAGEMENT key targeting the factory is refused here rather than
-        // auto-approved as an ordinary external call.
-        if (to == IIdentityAccount(account).identityFactory()) return false;
+        // A management-grade target (the factory or the key registry) never auto-approves for a
+        // non-MANAGEMENT key; MANAGEMENT already returned above.
+        if (IIdentityAccount(account).isManagementTarget(to)) return false;
 
         // External target: ACTION keys can dispatch directly.
         if (to != account && IERC734(account).keyHasPurpose(keyHash, KeyPurposes.ACTION)) return true;
