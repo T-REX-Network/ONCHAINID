@@ -71,9 +71,11 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     }
 
     /// @dev ERC-734 key registry plus ERC-735 claim state, scoped to one account. `allKeys` is
-    ///      the membership index backing `keyHasPurpose` and the getters. `claims` /
-    ///      `claimsByTopic` / `revokedDigests` hold the claim registry (see the claims section
-    ///      below).
+    ///      the membership index backing `keyHasPurpose` and the getters. `byPurpose` enumerates
+    ///      keys per purpose, with one exception: MODULE keys are kept out of the MANAGEMENT set
+    ///      (see {_addKey}), so that set holds signer keys only. Module keys still appear under
+    ///      every other purpose. `claims` / `claimsByTopic` / `revokedDigests` hold the claim
+    ///      registry (see the claims section below).
     struct AccountRegistry {
         mapping(bytes32 keyHash => Key) keys;
         mapping(uint256 purpose => EnumerableSet.Bytes32Set) byPurpose;
@@ -195,14 +197,17 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         _addKey(msg.sender, signerData, clientData, purpose, keyType);
     }
 
-    /// @notice Remove a purpose from a key for the caller. The last MANAGEMENT key cannot be
-    ///         removed. Deletes the record once its last purpose is gone.
+    /// @notice Remove a purpose from a key for the caller. The last MANAGEMENT key that can
+    ///         sign cannot be removed. Deletes the record once its last purpose is gone.
+    /// @dev The MANAGEMENT index only holds signer keys (see {_addKey}), so its length is the
+    ///      manager count. The guard is skipped for MODULE keys: they hold no signing
+    ///      authority, so removing them can never strand the identity.
     function removeKey(bytes32 keyHash, uint256 purpose) external {
         AccountRegistry storage registry = _store().registries[msg.sender];
         require(registry.allKeys.contains(keyHash), KeyNotRegistered(keyHash));
         Key storage key = registry.keys[keyHash];
 
-        if (purpose == KeyPurposes.MANAGEMENT) {
+        if (purpose == KeyPurposes.MANAGEMENT && key.keyType != KeyTypes.MODULE) {
             require(registry.byPurpose[KeyPurposes.MANAGEMENT].length() > 1, CannotRemoveLastManagementKey());
         }
         // Revert if the key doesn't have this purpose.
@@ -255,7 +260,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     }
 
     /// @notice Key hashes with `purpose` on `account`. Returns the full set. Use the
-    ///         `(account, purpose, start, end)` overload for large sets.
+    ///         `(account, purpose, start, end)` overload for large sets. For MANAGEMENT the set
+    ///         holds signer keys only; MODULE keys are left out (see {_addKey}). Use
+    ///         {keyHasPurpose} to check a module key's authority.
     function getKeysByPurpose(address account, uint256 purpose) public view returns (bytes32[] memory) {
         return _getKeysByPurpose(account, purpose, 0, type(uint64).max);
     }
@@ -320,7 +327,8 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     }
 
     /// @notice ERC-734 getKeysByPurpose for the calling account. Returns the full set. Use the
-    ///         `(_purpose, start, end)` overload for large sets.
+    ///         `(_purpose, start, end)` overload for large sets. For MANAGEMENT the set holds
+    ///         signer keys only; MODULE keys are left out (see {_addKey}).
     function getKeysByPurpose(uint256 _purpose) external view returns (bytes32[] memory) {
         return _getKeysByPurpose(msg.sender, _purpose, 0, type(uint64).max);
     }
@@ -551,7 +559,15 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         }
 
         require(key.purposes.add(purpose), KeyAlreadyRegistered(keyHash));
-        registry.byPurpose[purpose].add(keyHash);
+        // Module keys never enter the MANAGEMENT index. They cannot sign (the validator
+        // rejects MODULE keys), so they must not count as managers. The last-manager guard
+        // in removeKey and the factory's post-deploy check both rely on this index.
+        // keyHasPurpose reads the key's own purpose set, so module authority is unchanged.
+        // MANAGEMENT is the only purpose treated this way: its enumeration gates last-key
+        // removal. Module keys still index under every other purpose.
+        if (purpose != KeyPurposes.MANAGEMENT || key.keyType != KeyTypes.MODULE) {
+            registry.byPurpose[purpose].add(keyHash);
+        }
         emit KeyAdded(account, keyHash, purpose, keyType);
     }
 
