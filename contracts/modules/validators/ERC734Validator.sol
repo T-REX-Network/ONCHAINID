@@ -32,6 +32,7 @@ import { KeyPurposes } from "../../libraries/KeyPurposes.sol";
 import { KeyTypes } from "../../libraries/KeyTypes.sol";
 import { IReputationRegistry } from "../../reputation/IReputationRegistry.sol";
 import { Structs } from "../../storage/Structs.sol";
+import { SafeCalldataBatch } from "../../vendor/utils/SafeCalldataBatch.sol";
 import { ERC7579Validator } from "./ERC7579Validator.sol";
 
 /// @title ERC734Validator
@@ -70,9 +71,11 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     }
 
     /// @dev ERC-734 key registry plus ERC-735 claim state, scoped to one account. `allKeys` is
-    ///      the membership index backing `keyHasPurpose` and the getters. `claims` /
-    ///      `claimsByTopic` / `revokedDigests` hold the claim registry (see the claims section
-    ///      below).
+    ///      the membership index backing `keyHasPurpose` and the getters. `byPurpose` enumerates
+    ///      keys per purpose, with one exception: MODULE keys are kept out of the MANAGEMENT set
+    ///      (see {_addKey}), so that set holds signer keys only. Module keys still appear under
+    ///      every other purpose. `claims` / `claimsByTopic` / `revokedDigests` hold the claim
+    ///      registry (see the claims section below).
     struct AccountRegistry {
         mapping(bytes32 keyHash => Key) keys;
         mapping(uint256 purpose => EnumerableSet.Bytes32Set) byPurpose;
@@ -194,14 +197,17 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         _addKey(msg.sender, signerData, clientData, purpose, keyType);
     }
 
-    /// @notice Remove a purpose from a key for the caller. The last MANAGEMENT key cannot be
-    ///         removed. Deletes the record once its last purpose is gone.
+    /// @notice Remove a purpose from a key for the caller. The last MANAGEMENT key that can
+    ///         sign cannot be removed. Deletes the record once its last purpose is gone.
+    /// @dev The MANAGEMENT index only holds signer keys (see {_addKey}), so its length is the
+    ///      manager count. The guard is skipped for MODULE keys: they hold no signing
+    ///      authority, so removing them can never strand the identity.
     function removeKey(bytes32 keyHash, uint256 purpose) external {
         AccountRegistry storage registry = _store().registries[msg.sender];
         require(registry.allKeys.contains(keyHash), KeyNotRegistered(keyHash));
         Key storage key = registry.keys[keyHash];
 
-        if (purpose == KeyPurposes.MANAGEMENT) {
+        if (purpose == KeyPurposes.MANAGEMENT && key.keyType != KeyTypes.MODULE) {
             require(registry.byPurpose[KeyPurposes.MANAGEMENT].length() > 1, CannotRemoveLastManagementKey());
         }
         // Revert if the key doesn't have this purpose.
@@ -254,7 +260,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     }
 
     /// @notice Key hashes with `purpose` on `account`. Returns the full set. Use the
-    ///         `(account, purpose, start, end)` overload for large sets.
+    ///         `(account, purpose, start, end)` overload for large sets. For MANAGEMENT the set
+    ///         holds signer keys only; MODULE keys are left out (see {_addKey}). Use
+    ///         {keyHasPurpose} to check a module key's authority.
     function getKeysByPurpose(address account, uint256 purpose) public view returns (bytes32[] memory) {
         return _getKeysByPurpose(account, purpose, 0, type(uint64).max);
     }
@@ -319,7 +327,8 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     }
 
     /// @notice ERC-734 getKeysByPurpose for the calling account. Returns the full set. Use the
-    ///         `(_purpose, start, end)` overload for large sets.
+    ///         `(_purpose, start, end)` overload for large sets. For MANAGEMENT the set holds
+    ///         signer keys only; MODULE keys are left out (see {_addKey}).
     function getKeysByPurpose(uint256 _purpose) external view returns (bytes32[] memory) {
         return _getKeysByPurpose(msg.sender, _purpose, 0, type(uint64).max);
     }
@@ -419,8 +428,11 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         }
 
         if (callType == ERC7579Utils.CALLTYPE_BATCH) {
-            // Every call in the batch must pass. The weakest-authorized call gates the batch.
-            Execution[] calldata batch = ERC7579Utils.decodeBatch(executionCalldata);
+            // Every call in the batch must pass. {SafeCalldataBatch} keeps the batch in calldata but
+            // validates each entry against the slice bounds, so a backward offset can't point past
+            // the batch and make us read a different target than the account runs. The account
+            // decodes the same way, so the two checks always agree.
+            Execution[] calldata batch = SafeCalldataBatch.decodeBatch(executionCalldata);
             for (uint256 i = 0; i < batch.length; i++) {
                 if (!_targetAllowed(account, keyHash, batch[i].target)) return false;
             }
@@ -486,6 +498,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     /// @dev ERC-7913 dispatch: 20-byte signer = EOA/1271, longer = verifier+key. Uses the
     ///      ECDSA path directly instead of `SignatureChecker.isValidSignatureNow(bytes,...)` to
     ///      avoid its `signer.code.length` check, which violates ERC-7562 bundler validation rules.
+    ///      Single definition of a valid signature for the whole module: the key path and the claim
+    ///      path both go through here, so a signer that gains code (EIP-7702) can't be judged valid
+    ///      by one and invalid by the other.
     function _verify(bytes memory signer, bytes32 hash, bytes memory signature) internal view returns (bool) {
         if (signer.length == 20) {
             address signerAddr = address(bytes20(signer));
@@ -540,7 +555,15 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         }
 
         require(key.purposes.add(purpose), KeyAlreadyRegistered(keyHash));
-        registry.byPurpose[purpose].add(keyHash);
+        // Module keys never enter the MANAGEMENT index. They cannot sign (the validator
+        // rejects MODULE keys), so they must not count as managers. The last-manager guard
+        // in removeKey and the factory's post-deploy check both rely on this index.
+        // keyHasPurpose reads the key's own purpose set, so module authority is unchanged.
+        // MANAGEMENT is the only purpose treated this way: its enumeration gates last-key
+        // removal. Module keys still index under every other purpose.
+        if (purpose != KeyPurposes.MANAGEMENT || key.keyType != KeyTypes.MODULE) {
+            registry.byPurpose[purpose].add(keyHash);
+        }
         emit KeyAdded(account, keyHash, purpose, keyType);
     }
 
@@ -553,6 +576,11 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     // The claim registry, folded into this module so keys and claims share one contract. Claim
     // state lives per account in the same registry as the keys. Reached via the account's fallback,
     // so msg.sender is the identity and _msgSender() is the off-chain caller (ERC-2771 tail).
+    //
+    // So the key holder has to call these directly. If the call arrives any other way, for example
+    // relayed by the EntryPoint or dispatched by the account itself through an executor, nothing is
+    // appended, the recovered caller holds no claim key, and the call is refused. These entry
+    // points cannot be used through a meta-transaction.
 
     /// @inheritdoc IERC735
     function addClaim(
@@ -651,8 +679,8 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     }
 
     /// @inheritdoc IERC735
-    /// @dev Marks the removed claim's digest revoked, so the same (issuer, topic, ClaimData) can't
-    ///      be re-added; the issuer must sign a fresh claim to re-attest.
+    /// @dev Marks the removed claim's digest revoked. Issuers backed by this module then refuse
+    ///      the same (issuer, topic, ClaimData) and must sign a fresh claim to re-attest.
     function removeClaim(bytes32 _claimId) public returns (bool success) {
         address account = msg.sender;
         // CLAIM_ADDER cannot remove; only CLAIM_SIGNER (or self-call) is accepted here.
@@ -664,9 +692,10 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         require(topic != 0, Errors.ClaimNotRegistered(_claimId));
 
         // Revoke the digest on both the holder's and the issuer's sets so _getClaimStatus (which
-        // reads the issuer's set) blocks re-adding the same bytes.
+        // reads the issuer's set) blocks re-adding the same bytes. Marking an already marked
+        // digest is fine: an outside issuer can accept the same claim again, and that one still
+        // has to be removable. The topic check above already rejects a double removal.
         bytes32 digest = _getClaimDigest(c.issuer, account, topic, c.data);
-        require(!s.revokedDigests[digest], Errors.ClaimAlreadyRevoked());
         s.revokedDigests[digest] = true;
         _store().registries[c.issuer].revokedDigests[digest] = true;
 
@@ -828,7 +857,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         if (!keyHasPurpose(account, keccak256(signer), KeyPurposes.CLAIM_SIGNER)) {
             return IClaimIssuer.ClaimStatus.NotIssued;
         }
-        if (!SignatureChecker.isValidSignatureNow(signer, digest, rawSig)) {
+        if (!_verify(signer, digest, rawSig)) {
             return IClaimIssuer.ClaimStatus.BadSignature;
         }
         return IClaimIssuer.ClaimStatus.Valid;
@@ -854,8 +883,12 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
 
     /// @dev When reached through the account's ERC-7579 fallback, msg.sender is the identity and
     ///      the real caller is the last 20 bytes of calldata (ERC-2771).
+    /// @dev The length check only says a tail could fit, not that one was actually appended. On a
+    ///      path that skips the fallback the last 20 bytes are just ABI arguments, so the caller
+    ///      reads back as some address that holds no key and the call is refused. We ask for a
+    ///      selector plus the tail, so a call too short to carry one uses `msg.sender` instead.
     function _msgSender() internal view returns (address sender) {
-        if (msg.data.length >= 20) {
+        if (msg.data.length >= 24) {
             // solhint-disable-next-line no-inline-assembly
             assembly ("memory-safe") {
                 sender := shr(96, calldataload(sub(calldatasize(), 20)))
