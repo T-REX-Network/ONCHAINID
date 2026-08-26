@@ -1729,7 +1729,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
         vm.prank(assetIdentity);
         vm.expectRevert(abi.encodeWithSelector(Errors.CannotLinkToAssetIdentity.selector, assetIdentity));
-        onchainidSetup.idFactory.confirmCrossChainLink(solanaEnv);
+        onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, true);
     }
 
     /// @notice A byte string that is not a valid ERC-7930 envelope fails at delivery,

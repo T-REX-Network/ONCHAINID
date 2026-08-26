@@ -192,7 +192,7 @@ interface IIdentityFactory {
     ///         must be eip-155 and the chain reference must be the local chain id in
     ///         minimal big-endian form: the signature check cannot prove control on any
     ///         other chain, so envelopes for non-EVM or foreign EVM chains revert and
-    ///         go through {confirmCrossChainLink} instead. Malformed envelopes revert.
+    ///         go through {settlePendingCrossChainLink} instead. Malformed envelopes revert.
     /// @param signature EIP-712 signature produced by `account` over
     ///         `LinkAccount(bytes account,address identity,uint256 nonce,uint256 expiry)`.
     /// @param nonce current nonce for `account` (see {nonceForAccount}).
