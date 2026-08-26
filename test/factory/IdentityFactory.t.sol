@@ -468,6 +468,18 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertTrue(first != second, "different bootstrap config must land at a different address");
     }
 
+    function test_createIdentityFor_revertWhenKeyHashDoesNotMatchSignerData() public {
+        // The deploy salt commits to keyHash, so a tampered hash must fail the deploy
+        // instead of landing the same key at a different address.
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(david);
+        keys[0].keyHash = keccak256(abi.encodePacked(carol));
+
+        vm.prank(deployer);
+        vm.expectRevert(Errors.InvalidSignerData.selector);
+        onchainidSetup.idFactory
+            .createIdentityFor(david, IdentityTypes.INDIVIDUAL, "tamperedHash", keys, _defaultModules());
+    }
+
     function test_createIdentity_revertWhenAccountAlreadyBoundElsewhere() public {
         bytes memory aliceAcc = InteroperableAddress.formatEvmV1(block.chainid, alice);
         vm.prank(deployer);
