@@ -171,6 +171,13 @@ contract Identity is Initializable, SmartAccount, ERC165 {
         return _getIdentityMetadata().identityType;
     }
 
+    /// @notice The Initializable version stored on this contract. On an implementation whose
+    ///         constructor ran `_disableInitializers` this is `type(uint64).max`. The factory
+    ///         reads it before a beacon upgrade to reject an unlocked implementation.
+    function initializedVersion() external view returns (uint64) {
+        return _getInitializedVersion();
+    }
+
     /// @notice ERC-7579 account identifier.
     function accountId() public view virtual override returns (string memory) {
         return string.concat("trex.onchainid.identity.v", _VERSION);

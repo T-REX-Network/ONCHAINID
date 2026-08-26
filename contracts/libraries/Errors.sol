@@ -237,6 +237,21 @@ library Errors {
     ///         deployed the beacon at its predetermined slot.
     error BeaconNotInitialized();
 
+    /// @notice The candidate beacon implementation has no code.
+    error ImplementationNotAContract(address implementation);
+
+    /// @notice The candidate beacon implementation does not name this factory as its
+    ///         enshrined {IdentityFactory}.
+    error ImplementationFactoryMismatch(address implementation);
+
+    /// @notice The candidate beacon implementation still has its initializers open, so it
+    ///         could be initialized directly instead of only behind a proxy.
+    error ImplementationInitializersNotDisabled(address implementation);
+
+    /// @notice The candidate beacon implementation names a different registry module than
+    ///         the one every deployed identity already holds its keys in.
+    error ImplementationRegistryMismatch(address expected, address actual);
+
     /// @notice The candidate beacon implementation reports a different version than the one
     ///         the upgrader committed to in {IdentityFactory.upgradeBeacon}.
     error ImplementationVersionMismatch(string expected, string actual);

@@ -161,6 +161,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     function initializeBeacon(address implementation) external restricted {
         require(implementation != address(0), Errors.ZeroAddress());
         require(beacon.code.length == 0, Errors.BeaconAlreadyInitialized());
+        _checkImplementation(implementation, address(0));
         // Own the beacon from the factory. Upgrades then go through {upgradeBeacon}, which the
         // factory's live authority gates, so ownership never has to be re-transferred on an
         // authority rotation.
@@ -175,6 +176,8 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     /// @inheritdoc IIdentityFactory
     function upgradeBeacon(address newImplementation, string calldata expectedVersion) external restricted {
         require(newImplementation != address(0), Errors.ZeroAddress());
+        _checkImplementation(newImplementation, UpgradeableBeacon(beacon).implementation());
+
         // The version string is compiled into the implementation. Without this check, a build
         // that forgot the version bump would leave every identity reporting a stale release.
         string memory actualVersion = Identity(payable(newImplementation)).version();
@@ -184,6 +187,31 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         );
         UpgradeableBeacon(beacon).upgradeTo(newImplementation);
         emit BeaconUpgraded(newImplementation);
+    }
+
+    /// @dev Shape check for an implementation about to sit behind the beacon. An identity's
+    ///      trust anchors are implementation immutables, not proxy storage, so swapping the
+    ///      implementation silently re-points every deployed identity at whatever registry the
+    ///      new one names. Require the candidate to answer for this factory, to keep the
+    ///      outgoing registry when there is one, and to have its own initializers locked.
+    ///      `current` is the zero address on the initial deploy, where there is nothing to
+    ///      stay continuous with.
+    function _checkImplementation(address implementation, address current) private view {
+        require(implementation.code.length != 0, Errors.ImplementationNotAContract(implementation));
+        require(
+            Identity(payable(implementation)).identityFactory() == address(this),
+            Errors.ImplementationFactoryMismatch(implementation)
+        );
+        require(
+            Identity(payable(implementation)).initializedVersion() == type(uint64).max,
+            Errors.ImplementationInitializersNotDisabled(implementation)
+        );
+
+        if (current != address(0)) {
+            address expected = Identity(payable(current)).registryModule();
+            address actual = Identity(payable(implementation)).registryModule();
+            require(actual == expected, Errors.ImplementationRegistryMismatch(expected, actual));
+        }
     }
 
     /// @inheritdoc IIdentityFactory
