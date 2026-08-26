@@ -658,8 +658,9 @@ contract SmartAccountTest is OnchainIDSetup {
     }
 
     /// @notice Ernest's r3230643398 shape: a CLAIM_ADDER-only key must not be able to dispatch
-    ///         an arbitrary external call. The executor-as-key path mirrors what `_validateUserOp`
-    ///         would do for a UserOp signer with the same purpose.
+    ///         an arbitrary external call. The executor-as-key path mirrors the scoping
+    ///         {ERC734Validator} applies to a UserOp signer with the same purpose — the
+    ///         account itself only purpose-checks executor callers.
     function test_executeFromExecutor_claimAdderExecutor_cannotCallExternal() public {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
@@ -912,7 +913,8 @@ contract SmartAccountTest is OnchainIDSetup {
     }
 
     /// @notice Happy path: ACTION key signs a UserOp that calls an external target.
-    ///         All three gates pass (validator + ACTION purpose + per-target rule).
+    ///         All three gates pass, all inside the installed {ERC734Validator}:
+    ///         signature + ACTION membership + per-target rule.
     function test_validateUserOp_actionKey_externalTarget_succeeds() public {
         Counter counter = new Counter();
         bytes memory innerCall = abi.encodeCall(Counter.increment, ());
@@ -946,11 +948,10 @@ contract SmartAccountTest is OnchainIDSetup {
         );
     }
 
-    /// @notice A validator that is installed but NOT granted ACTION cannot authorize
-    ///         a userOp against an external target. Under "validators-as-keys" the
-    ///         per-target rule is checked against `hashAddress(validator)`, not
-    ///         against the recovered signer, so an unauthorized validator fails
-    ///         even when its signature is cryptographically valid.
+    /// @notice A validator that is installed but NOT granted any purpose can still
+    ///         authorize a userOp against an external target: the account performs no
+    ///         ERC-734 purpose check on the user-op path, so the installed validator
+    ///         alone decides whether the signature authorizes the call.
     /// @dev Documents the same trade-off from the validator-authorization angle. Previously
     ///      the account required the installed validator to hold an ACTION purpose to act.
     ///      That check moved out of the account: the OZ base only dispatches to an installed
