@@ -374,10 +374,13 @@ contract EASClaimIssuerTest is OnchainIDSetup {
     ///         from it. A claim added from an attestation stays removable after EAS revocation.
     function test_removeClaim_worksForDomainlessIssuer() public {
         bytes32 uid = _attestValid(address(aliceIdentity));
+        // The envelope has to mirror the attestation: same issue time, no expiry, no payload.
+        Structs.ClaimData memory mirrored =
+            Structs.ClaimData({ issuedAt: IEAS(EAS_ADDR).getAttestation(uid).time, validUntil: 0, payload: hex"" });
 
         vm.prank(carol);
         bytes32 claimId = IIdentity(address(aliceIdentity))
-            .addClaim(TOPIC, 1, address(adapter), _encodeUid(uid), emptyData, "https://example.com/eas");
+            .addClaim(TOPIC, 1, address(adapter), _encodeUid(uid), mirrored, "https://example.com/eas");
 
         // Attester kills the attestation at the source, then the holder drops the local record.
         _revoke(uid);
