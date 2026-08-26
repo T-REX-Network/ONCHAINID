@@ -28,7 +28,7 @@ Each identity is a modular account. Extra behaviour — claims, execution rules,
 The identity is built in layers. Each layer has one job:
 
 - **`Identity`** — the concrete contract that gets deployed. It wires the pieces below together and runs a single, one-shot setup step when the proxy is created.
-- **`SmartAccount`** — the ERC-7579 modular account. It decides who is allowed to run transactions and install or remove modules, using the key registry for authorization.
+- **`SmartAccount`** — the ERC-7579 modular account. It gates module install and removal on the key registry's `MANAGEMENT` purpose and purpose-checks calls coming from installed executors; user operations are authorized by the installed validator, which the account trusts to scope its own signers.
 - **`KeyManager`** — the ERC-734 key registry. It is the single source of truth for which key holds which purpose. Every other part of the system reads keys from here.
 
 Claims (ERC-735) are **not** built into `Identity`. They are served by an installed module (`ERC734Validator`) and reached through the account's fallback handler. If no module is installed to answer them, calling a claim function reverts.

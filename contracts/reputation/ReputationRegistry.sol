@@ -58,7 +58,7 @@ contract ReputationRegistry is IReputationRegistry, AccessManaged {
 
     function _storage() private pure returns (ReputationRegistryStorage storage $) {
         bytes32 slot = _REPUTATION_REGISTRY_STORAGE_SLOT;
-        assembly {
+        assembly ("memory-safe") {
             $.slot := slot
         }
     }
