@@ -10,11 +10,32 @@ pragma solidity ^0.8.28;
  *      callers can `IKeyExecutor(address(identity)).execute(...)` without forcing the
  *      account contract itself to declare these as concrete methods. At the wire level
  *      these selectors are identical to the original ERC-734 selectors, so on-chain
- *      consumers and indexers continue to interpret them as ERC-734 calls.
+ *      consumers keep calling them as ERC-734 calls.
+ *
+ *      The lifecycle events below are NOT the canonical ERC-734 ones: the queue module is a
+ *      singleton emitting on its own address for every identity that installs it, so each
+ *      event carries `address indexed account` (the identity) as its first field. Indexers
+ *      must filter on that field, not on the emitter.
  *
  *      See {KeyApprovalModule} for the implementation and the auto-approval rule table.
  */
 interface IKeyExecutor {
+
+    /// @dev Emitted when an identity queues an execution via {execute}.
+    event ExecutionRequested(
+        address indexed account, uint256 indexed executionId, address indexed to, uint256 value, bytes data
+    );
+
+    /// @dev Emitted when an execution is approved (or rejected) via {approve}.
+    event Approved(address indexed account, uint256 indexed executionId, bool approved);
+
+    /// @dev Emitted when an approved execution successfully dispatches through the account.
+    event Executed(address indexed account, uint256 indexed executionId, address indexed to, uint256 value, bytes data);
+
+    /// @dev Emitted when an approved execution reverts inside the account.
+    event ExecutionFailed(
+        address indexed account, uint256 indexed executionId, address indexed to, uint256 value, bytes data
+    );
 
     /**
      * @notice Queue (and possibly auto-execute) a call from the identity.

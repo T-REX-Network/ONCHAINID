@@ -541,7 +541,8 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     ) internal {
         // An ERC-7913 signer is at least 20 bytes (a 20-byte EOA/1271 address, or verifier+key).
         // Checked here so every caller (onInstall, addKey) is covered by a single guard.
-        require(signerData.length >= 20, InvalidSignerLength());
+        require(signerData.length >= 20 && signerData.length <= Structs.MAX_SIGNER_DATA_LENGTH, InvalidSignerLength());
+        require(clientData.length <= Structs.MAX_CLIENT_DATA_LENGTH, Errors.ClientDataTooLong());
 
         // The module owns every ERC-734 purpose (1..6). Reject anything out of range.
         require(_isValidPurpose(purpose), InvalidPurpose(purpose));
@@ -667,6 +668,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         // removeClaim reads a claim's topic and treats 0 as "no such claim". So a claim stored
         // under topic 0 could never be removed. Reject it up front.
         require(topic != 0, Errors.InvalidClaimTopic());
+        require(signature.length <= Structs.MAX_CLAIM_SIGNATURE_LENGTH, Errors.ClaimSignatureTooLong());
+        require(data.payload.length <= Structs.MAX_CLAIM_PAYLOAD_LENGTH, Errors.ClaimPayloadTooLong());
+        require(bytes(uri).length <= Structs.MAX_CLAIM_URI_LENGTH, Errors.ClaimUriTooLong());
         require(IClaimIssuer(issuer).isClaimValid(IIdentity(account), topic, signature, data), Errors.InvalidClaim());
 
         AccountRegistry storage s = _store().registries[account];
@@ -675,9 +679,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
             Structs.Claim({ topic: topic, scheme: scheme, issuer: issuer, signature: signature, data: data, uri: uri });
 
         if (s.claimsByTopic[topic].add(claimId)) {
-            emit ClaimAdded(claimId, topic, scheme, issuer, signature, data, uri);
+            emit ClaimAdded(account, claimId, topic, scheme, issuer, signature, data, uri);
         } else {
-            emit ClaimChanged(claimId, topic, scheme, issuer, signature, data, uri);
+            emit ClaimChanged(account, claimId, topic, scheme, issuer, signature, data, uri);
         }
     }
 
@@ -727,7 +731,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         _store().registries[c.issuer].revokedDigests[digest] = true;
 
         s.claimsByTopic[topic].remove(_claimId);
-        emit ClaimRemoved(_claimId, topic, c.scheme, c.issuer, c.signature, c.data, c.uri);
+        emit ClaimRemoved(account, _claimId, topic, c.scheme, c.issuer, c.signature, c.data, c.uri);
         delete s.claims[_claimId];
 
         return true;

@@ -6,10 +6,15 @@ import { Structs } from "../storage/Structs.sol";
 /**
  * @dev interface of the ERC735 (Claim Holder) standard as defined in the EIP.
  *
- * Note on ABI: this interface follows the EIP-735 shape, with one OnchainID-specific
- * adjustment: the claim's signed payload (`data`) is structured as `Structs.ClaimData`
- * (`issuedAt`, `validUntil`, `payload`) instead of raw bytes. This makes typed-data
- * signing legible to wallets and lets claims carry time bounds without convention.
+ * Note on ABI: this interface follows the EIP-735 shape, with two OnchainID-specific
+ * adjustments. The claim's signed payload (`data`) is structured as `Structs.ClaimData`
+ * (`issuedAt`, `validUntil`, `payload`) instead of raw bytes, which makes typed-data
+ * signing legible to wallets and lets claims carry time bounds without convention. And
+ * the events carry the subject identity as their first indexed field: the claim registry
+ * is served by a module singleton shared across identities, so neither the emitter
+ * address nor `claimId` (derived from `(issuer, topic)` alone) can attribute a log to an
+ * identity. `claimId` is unindexed to make room — it stays filterable through the
+ * indexed `topic` and `issuer` it is derived from.
  */
 interface IERC735 {
 
@@ -19,7 +24,8 @@ interface IERC735 {
      * Specification: MUST be triggered when a claim was successfully added.
      */
     event ClaimAdded(
-        bytes32 indexed claimId,
+        address indexed identity,
+        bytes32 claimId,
         uint256 indexed topic,
         uint256 scheme,
         address indexed issuer,
@@ -34,7 +40,8 @@ interface IERC735 {
      * Specification: MUST be triggered when removeClaim was successfully called.
      */
     event ClaimRemoved(
-        bytes32 indexed claimId,
+        address indexed identity,
+        bytes32 claimId,
         uint256 indexed topic,
         uint256 scheme,
         address indexed issuer,
@@ -49,7 +56,8 @@ interface IERC735 {
      * Specification: MUST be triggered when addClaim was successfully called on an existing claimId.
      */
     event ClaimChanged(
-        bytes32 indexed claimId,
+        address indexed identity,
+        bytes32 claimId,
         uint256 indexed topic,
         uint256 scheme,
         address indexed issuer,
