@@ -22,8 +22,9 @@ import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 
 /// @title SmartAccount
 /// @notice ERC-7579 modular account that uses the ERC-734 key registry from {KeyManager}.
-///         Signature checks happen in the installed validator; the per-target rule for
-///         user ops runs here.
+///         Signature checks happen in the installed validator, and the account does not
+///         re-check a user op the validator accepted; the per-target purpose rule in
+///         {_authorizeCall} applies to executor callers only.
 abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 {
 
     /// @notice Install a module. Gated on MANAGEMENT.
@@ -162,6 +163,8 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
 
     /// @dev The purpose an executor's key needs for a target. Management-grade targets need
     ///      MANAGEMENT; any other target needs ACTION. MANAGEMENT satisfies every purpose check.
+    ///      The factory is management-grade because its wallet-binding calls (linkAccount,
+    ///      revokeAccount, settlePendingCrossChainLink) change the identity's own bindings.
     function _isKeyAuthorizedToCallTarget(bytes32 keyHash, address target) private view returns (bool) {
         uint256 requiredPurpose = isManagementTarget(target) ? KeyPurposes.MANAGEMENT : KeyPurposes.ACTION;
         return _moduleKeyHasPurpose(keyHash, requiredPurpose);

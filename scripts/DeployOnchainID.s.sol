@@ -5,16 +5,28 @@ import { Script, console } from "forge-std/Script.sol";
 
 import { AccessManager } from "@openzeppelin/contracts/access/manager/AccessManager.sol";
 import {
+    MODULE_TYPE_EXECUTOR,
+    MODULE_TYPE_FALLBACK,
+    MODULE_TYPE_VALIDATOR
+} from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import {
     ERC7913WebAuthnVerifier
 } from "@openzeppelin/contracts/utils/cryptography/verifiers/ERC7913WebAuthnVerifier.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IdentityUtilities } from "contracts/IdentityUtilities.sol";
 import { IdentityFactory } from "contracts/factory/IdentityFactory.sol";
+import { IClaimIssuer } from "contracts/interface/IClaimIssuer.sol";
+import { IERC734 } from "contracts/interface/IERC734.sol";
+import { IERC735 } from "contracts/interface/IERC735.sol";
+import { IIdentity } from "contracts/interface/IIdentity.sol";
+import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
+import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
 import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
 import { IdentityUtilitiesProxy } from "contracts/proxy/IdentityUtilitiesProxy.sol";
 import { ReputationRegistry } from "contracts/reputation/ReputationRegistry.sol";
+import { Structs } from "contracts/storage/Structs.sol";
 
 /**
  * @title DeployOnchainID
@@ -30,15 +42,22 @@ import { ReputationRegistry } from "contracts/reputation/ReputationRegistry.sol"
  *   7. Identity implementation (needs the validator — its enshrined registry immutable)
  *   8. factory.initializeBeacon (deploys the UpgradeableBeacon at the committed slot)
  *   9. AccessManager role wiring (per-identity-type role mapping)
+ *  10. Module bundle registered per identity type on the factory
  *
  * Usage:
  *   forge script scripts/DeployOnchainID.s.sol --rpc-url <RPC> --private-key <PK> --broadcast --verify
  */
 contract DeployOnchainID is Script {
 
-    /// @dev Conventional, deployer-chosen role ids. Names are labeled on-chain via
-    ///      {AccessManager.labelRole} for explorer/dashboard discoverability.
+    // Role ids used below. Labeled on-chain via AccessManager.labelRole. Each one gates
+    // createIdentityFor for one identity type.
+
+    /// @dev Can create ASSET and SMART_CONTRACT identities. These can't sign, so the role
+    ///      is their only gate. Keep it off PUBLIC_ROLE.
     uint64 internal constant ROLE_TOKEN_FACTORY = 1;
+
+    /// @dev Can create CLAIM_ISSUER identities. The issuer ends up managing its own
+    ///      identity, so this only controls who may onboard one.
     uint64 internal constant ROLE_CLAIM_ISSUER_ADMIN = 2;
     uint64 internal constant ROLE_BEACON_UPGRADER = 3;
 
@@ -46,6 +65,15 @@ contract DeployOnchainID is Script {
     ///      identity at once, so it is scheduled first and only executable after the delay,
     ///      which gives holders a window to see it coming and the admin a window to cancel.
     uint32 internal constant BEACON_UPGRADE_DELAY = 2 days;
+
+    /// @dev Can create PUBLIC_AUTHORITY identities. Kept off PUBLIC_ROLE because an
+    ///      authority may not have a key to sign with.
+    uint64 internal constant ROLE_PUBLIC_AUTHORITY = 3;
+
+    /// @dev Can create INDIVIDUAL, CORPORATE, IOT and AI_AGENT identities for a third
+    ///      party. Third-party onboarding stays with named issuers because bindings are
+    ///      sticky; self-deploy remains open for these types.
+    uint64 internal constant ROLE_ISSUER = 4;
 
     function run() external {
         vm.startBroadcast();
@@ -60,10 +88,10 @@ contract DeployOnchainID is Script {
         console.log("IdentityUtilities implementation:", address(utilitiesImpl));
         console.log("IdentityUtilities proxy:", address(utilitiesProxy));
 
-        // 2. KeyApprovalModule (the legacy ERC-734 execute/approve queue, no deps). Callers
-        //    include it in their `_modules` array on `createIdentity` to opt into the legacy
-        //    ERC-734 execute/approve queue. The ERC-735 claim surface lives in the
-        //    ERC734Validator deployed below, installed as claim fallbacks.
+        // 2. KeyApprovalModule (the legacy ERC-734 execute/approve queue, no deps). It is
+        //    part of the module bundle registered per identity type in step 10. The ERC-735
+        //    claim surface lives in the ERC734Validator deployed below, installed as claim
+        //    fallbacks.
         KeyApprovalModule keyApprovalModule = new KeyApprovalModule();
         console.log("KeyApprovalModule:", address(keyApprovalModule));
 
@@ -78,6 +106,8 @@ contract DeployOnchainID is Script {
         am.labelRole(ROLE_TOKEN_FACTORY, "TOKEN_FACTORY");
         am.labelRole(ROLE_CLAIM_ISSUER_ADMIN, "CLAIM_ISSUER_ADMIN");
         am.labelRole(ROLE_BEACON_UPGRADER, "BEACON_UPGRADER");
+        am.labelRole(ROLE_PUBLIC_AUTHORITY, "PUBLIC_AUTHORITY");
+        am.labelRole(ROLE_ISSUER, "ISSUER");
 
         // 4. IdentityFactory. The beacon cannot exist yet (it needs the Identity
         //    implementation, which needs the validator, which needs this factory), so the
@@ -121,34 +151,75 @@ contract DeployOnchainID is Script {
         am.grantRole(ROLE_BEACON_UPGRADER, deployer, BEACON_UPGRADE_DELAY);
 
         // ===== 9. Per-identity-type deploy policy =====
-        // Each type carries a policy: an AM role id (gates createIdentityFor) and a
-        // selfDeployable flag (gates createIdentity). Unregistered types revert from
-        // both entry points.
+        // Each type carries a policy: an AM role id (gates createIdentityFor), a
+        // selfDeployable flag (gates createIdentity) and a singleBinding flag (the
+        // identity keeps the one account set at deploy; link/revoke are blocked).
+        // Unregistered types revert from both entry points.
         //
         // Contract-shaped types (ASSET, SMART_CONTRACT, PUBLIC_AUTHORITY) opt out of
         // self-deploy because their identity represents a contract, not msg.sender.
         // CLAIM_ISSUER also opts out so the admin role on createIdentityFor is not
         // bypassable via self-deploy.
-        uint64 publicRole = am.PUBLIC_ROLE();
+        // Gated for createIdentityFor; self-deploy disabled. ASSET and SMART_CONTRACT are
+        // single-binding: the bound contract can't sign, so the role must not be
+        // PUBLIC_ROLE or anyone could bind a contract to keys they alone hold. Both use the
+        // token-factory role.
+        idFactory.setIdentityTypePolicy(IdentityTypes.ASSET, ROLE_TOKEN_FACTORY, false, true);
+        idFactory.setIdentityTypePolicy(IdentityTypes.SMART_CONTRACT, ROLE_TOKEN_FACTORY, false, true);
+        idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, ROLE_CLAIM_ISSUER_ADMIN, false, false);
 
-        // Gated for createIdentityFor; self-deploy disabled.
-        idFactory.setIdentityTypePolicy(IdentityTypes.ASSET, ROLE_TOKEN_FACTORY, false);
-        idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, ROLE_CLAIM_ISSUER_ADMIN, false);
+        // Self-deploy is open for every type below: the caller is the account, so there is
+        // nothing to abuse. createIdentityFor is what the role gates.
+        //
+        // INDIVIDUAL third-party onboarding goes through ROLE_ISSUER. Bindings are sticky,
+        // so an open createIdentityFor would let a stranger bind a wallet to an identity
+        // its owner never asked for, blocking that wallet from any other identity. Users
+        // who want an identity without an issuer can still self-deploy.
+        idFactory.setIdentityTypePolicy(IdentityTypes.INDIVIDUAL, ROLE_ISSUER, true, false);
 
-        // Open for createIdentityFor; self-deploy enabled (EOA-shaped types).
-        idFactory.setIdentityTypePolicy(IdentityTypes.INDIVIDUAL, publicRole, true);
-        idFactory.setIdentityTypePolicy(IdentityTypes.CORPORATE, publicRole, true);
-        idFactory.setIdentityTypePolicy(IdentityTypes.IOT, publicRole, true);
-        idFactory.setIdentityTypePolicy(IdentityTypes.AI_AGENT, publicRole, true);
+        // Restricted for createIdentityFor. These are signing entities, a company multisig,
+        // a provisioned device, an agent key, so they keep the sole management guarantee.
+        // But nobody onboards them from a wallet themselves, a registrar does it, so only
+        // named issuers may deploy for them.
+        idFactory.setIdentityTypePolicy(IdentityTypes.CORPORATE, ROLE_ISSUER, true, false);
+        idFactory.setIdentityTypePolicy(IdentityTypes.IOT, ROLE_ISSUER, true, false);
+        idFactory.setIdentityTypePolicy(IdentityTypes.AI_AGENT, ROLE_ISSUER, true, false);
 
-        // Open for createIdentityFor; self-deploy disabled (contract-shaped /
-        // institutional types).
-        idFactory.setIdentityTypePolicy(IdentityTypes.SMART_CONTRACT, publicRole, false);
-        idFactory.setIdentityTypePolicy(IdentityTypes.PUBLIC_AUTHORITY, publicRole, false);
+        // Restricted for createIdentityFor; self-deploy disabled. A public authority is an
+        // institution, a regulator or a court, onboarded by an operator rather than by
+        // itself. Not single binding: an authority that controls a multisig holds a key and
+        // may link more than one wallet.
+        idFactory.setIdentityTypePolicy(IdentityTypes.PUBLIC_AUTHORITY, ROLE_PUBLIC_AUTHORITY, false, false);
 
-        // 10. ERC-7913 WebAuthn Verifier (stateless — verifies P-256 WebAuthn assertions on-chain)
+        // ===== 10. Modules registered per identity type =====
+        // Callers pass no modules. Every identity installs exactly what is registered for
+        // its type here, which is what lets createIdentityFor promise that the account
+        // manages its own identity: a caller cannot slip in a module of its own and act
+        // through it. Changing the setup later is a parameter update through the AM, not an
+        // upgrade. All types start on the same standard bundle.
+        Structs.ModuleInstall[] memory standardModules =
+            _standardModules(address(keyApprovalModule), address(signatureValidator));
+        uint256[8] memory allTypes = [
+            IdentityTypes.ASSET,
+            IdentityTypes.INDIVIDUAL,
+            IdentityTypes.CORPORATE,
+            IdentityTypes.IOT,
+            IdentityTypes.CLAIM_ISSUER,
+            IdentityTypes.SMART_CONTRACT,
+            IdentityTypes.PUBLIC_AUTHORITY,
+            IdentityTypes.AI_AGENT
+        ];
+        for (uint256 i = 0; i < allTypes.length; i++) {
+            idFactory.setIdentityTypeModules(allTypes[i], standardModules);
+        }
+
+        // 11. ERC-7913 WebAuthn Verifier (stateless — verifies P-256 WebAuthn assertions on-chain)
         ERC7913WebAuthnVerifier webAuthnVerifier = new ERC7913WebAuthnVerifier();
         console.log("ERC7913WebAuthnVerifier:", address(webAuthnVerifier));
+
+        // Approve it for linkAccount: ERC-7913 signers only link through a
+        // verifier on this list.
+        idFactory.setTrustedVerifier(address(webAuthnVerifier), true);
 
         vm.stopBroadcast();
 
@@ -165,6 +236,50 @@ contract DeployOnchainID is Script {
         console.log("KeyApprovalModule:      ", address(keyApprovalModule));
         console.log("ERC7913WebAuthnVerifier:", address(webAuthnVerifier));
         console.log("=========================================");
+    }
+
+    /// @dev The standard module bundle every type starts with: the merged ERC734Validator
+    ///      as validator (empty initData, so the MANAGEMENT key comes from the deploy's
+    ///      keys), the KeyApprovalModule execute/approve queue, and the fallback surface for
+    ///      the ERC-734 getters and ERC-735 claim methods, all served by the merged
+    ///      validator. Only the queue executor carries a purpose. It needs MANAGEMENT to
+    ///      dispatch self targeted calls once an execution is approved.
+    function _standardModules(address keyApprovalModule, address validator)
+        private
+        pure
+        returns (Structs.ModuleInstall[] memory installs)
+    {
+        installs = new Structs.ModuleInstall[](20);
+        installs[0] =
+            Structs.ModuleInstall({ moduleType: MODULE_TYPE_VALIDATOR, module: validator, initData: "", purpose: 0 });
+        installs[1] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_EXECUTOR, module: keyApprovalModule, initData: "", purpose: KeyPurposes.MANAGEMENT
+        });
+        installs[2] = _fallback(keyApprovalModule, IKeyExecutor.execute.selector);
+        installs[3] = _fallback(keyApprovalModule, IKeyExecutor.approve.selector);
+        installs[4] = _fallback(keyApprovalModule, IKeyExecutor.getCurrentNonce.selector);
+        installs[5] =
+            Structs.ModuleInstall({ moduleType: MODULE_TYPE_EXECUTOR, module: validator, initData: "", purpose: 0 });
+        installs[6] = _fallback(validator, IERC735.addClaim.selector);
+        installs[7] = _fallback(validator, IERC735.removeClaim.selector);
+        installs[8] = _fallback(validator, IERC735.getClaim.selector);
+        installs[9] = _fallback(validator, IERC735.getClaimIdsByTopic.selector);
+        installs[10] = _fallback(validator, IIdentity.isClaimValid.selector);
+        installs[11] = _fallback(validator, IIdentity.getClaimHash.selector);
+        installs[12] = _fallback(validator, IClaimIssuer.revokeClaimByDigest.selector);
+        installs[13] = _fallback(validator, IClaimIssuer.isDigestRevoked.selector);
+        installs[14] = _fallback(validator, IClaimIssuer.addClaimTo.selector);
+        installs[15] = _fallback(validator, ERC734Validator.addClaimByTrustedIssuer.selector);
+        installs[16] = _fallback(validator, IERC734.keyHasPurpose.selector);
+        installs[17] = _fallback(validator, IERC734.getKey.selector);
+        installs[18] = _fallback(validator, IERC734.getKeyPurposes.selector);
+        installs[19] = _fallback(validator, IERC734.getKeysByPurpose.selector);
+    }
+
+    function _fallback(address module, bytes4 selector) private pure returns (Structs.ModuleInstall memory) {
+        return Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK, module: module, initData: abi.encodePacked(selector), purpose: 0
+        });
     }
 
 }
