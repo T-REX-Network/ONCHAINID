@@ -21,6 +21,7 @@ import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
+import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 
 import { ClaimSignerHelper } from "./helpers/ClaimSignerHelper.sol";
@@ -41,8 +42,8 @@ contract SmartAccountTest is OnchainIDSetup {
     }
 
     /// @notice A CLAIM_SIGNER key must not be able to call self-targeted `addKey` through
-    ///         execute(): the queue module's auto-approval is bounded to claim selectors only,
-    ///         and explicit approval of a self-call requires MANAGEMENT.
+    ///         execute(): a self-call never auto-approves below MANAGEMENT, and explicit
+    ///         approval of a self-call requires MANAGEMENT too.
     function test_execute_selfCall_byClaimSigner_does_not_escalate_to_addKey() public {
         bytes32 evilKey = keccak256("evil-management-key");
         bytes memory addKeyData = abi.encodeWithSignature(
@@ -55,6 +56,73 @@ contract SmartAccountTest is OnchainIDSetup {
 
         (,, bytes32 storedKey) = IERC734(address(aliceIdentity)).getKey(evilKey);
         assertEq(storedKey, bytes32(0), "CLAIM_SIGNER must not escalate to MANAGEMENT via execute/addKey");
+    }
+
+    /// @notice A self-targeted addClaim queued by a CLAIM_SIGNER does not auto-approve. It used to
+    ///         look like it did: the rule matched, the call dispatched, then the claim registry saw
+    ///         the account as the caller instead of the signer and reverted, which the queue caught
+    ///         and reported as ExecutionFailed. The caller saw a successful transaction and no
+    ///         claim. Now the request just stays queued, and the direct call is the way to add it.
+    function test_execute_selfCall_byClaimSigner_doesNotAutoApprove_addClaim() public {
+        uint256 topic = 42;
+        Structs.ClaimData memory data =
+            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: abi.encode("verified") });
+
+        // Self-issued claim: aliceIdentity is the issuer and carol's CLAIM_SIGNER key signs it.
+        bytes memory sig =
+            ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(aliceIdentity), topic, data);
+        bytes32 claimId = ClaimSignerHelper.computeClaimId(address(aliceIdentity), topic);
+
+        bytes memory addClaimData =
+            abi.encodeCall(IERC735.addClaim, (topic, 1, address(aliceIdentity), sig, data, "uri"));
+
+        vm.prank(carol);
+        uint256 executionId = IKeyExecutor(address(aliceIdentity)).execute(address(aliceIdentity), 0, addClaimData);
+
+        (uint256 queuedTopic,,,,,) = IERC735(address(aliceIdentity)).getClaim(claimId);
+        assertEq(queuedTopic, 0, "self-targeted addClaim must not run from the queue");
+
+        KeyApprovalModule.Execution memory queued =
+            onchainidSetup.keyApprovalModule.getExecutionData(address(aliceIdentity), executionId);
+        assertFalse(queued.executed, "request should still be pending, not marked executed");
+        assertFalse(queued.approved, "request should not be approved");
+
+        // The direct call is the supported route and still works for the same claim.
+        vm.prank(carol);
+        IERC735(address(aliceIdentity)).addClaim(topic, 1, address(aliceIdentity), sig, data, "uri");
+
+        (uint256 directTopic,,,,,) = IERC735(address(aliceIdentity)).getClaim(claimId);
+        assertEq(directTopic, topic, "direct addClaim should store the claim");
+    }
+
+    /// @notice Removing the self-target auto-approve rule must not touch what claim keys can do on
+    ///         the direct path. CLAIM_ADDER adds a claim signed by a CLAIM_SIGNER, and still cannot
+    ///         remove one.
+    function test_claimAdder_addsAndCannotRemove_onDirectPath() public {
+        address adder = makeAddr("claim-adder");
+        vm.prank(alice);
+        aliceIdentity.addKeyWithData(
+            ClaimSignerHelper.addressToKey(adder), KeyPurposes.CLAIM_ADDER, KeyTypes.ECDSA, abi.encodePacked(adder), ""
+        );
+
+        uint256 topic = 7001;
+        Structs.ClaimData memory data =
+            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: abi.encode("kyc") });
+
+        // carol holds CLAIM_SIGNER and signs; the adder submits.
+        bytes memory sig =
+            ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(aliceIdentity), topic, data);
+
+        vm.prank(adder);
+        IERC735(address(aliceIdentity)).addClaim(topic, 1, address(aliceIdentity), sig, data, "uri");
+
+        bytes32 claimId = ClaimSignerHelper.computeClaimId(address(aliceIdentity), topic);
+        (uint256 got,,,,,) = IERC735(address(aliceIdentity)).getClaim(claimId);
+        assertEq(got, topic, "CLAIM_ADDER must still be able to add claims");
+
+        vm.prank(adder);
+        vm.expectRevert(Errors.SenderDoesNotHaveClaimSignerKey.selector);
+        IERC735(address(aliceIdentity)).removeClaim(claimId);
     }
 
     /// You can't remove the last MANAGEMENT key. If you could, nothing would satisfy

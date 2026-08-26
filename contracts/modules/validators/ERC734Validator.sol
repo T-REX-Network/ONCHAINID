@@ -560,6 +560,11 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     // The claim registry, folded into this module so keys and claims share one contract. Claim
     // state lives per account in the same registry as the keys. Reached via the account's fallback,
     // so msg.sender is the identity and _msgSender() is the off-chain caller (ERC-2771 tail).
+    //
+    // So the key holder has to call these directly. If the call arrives any other way, for example
+    // relayed by the EntryPoint or dispatched by the account itself through an executor, nothing is
+    // appended, the recovered caller holds no claim key, and the call is refused. These entry
+    // points cannot be used through a meta-transaction.
 
     /// @inheritdoc IERC735
     function addClaim(
@@ -862,8 +867,12 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
 
     /// @dev When reached through the account's ERC-7579 fallback, msg.sender is the identity and
     ///      the real caller is the last 20 bytes of calldata (ERC-2771).
+    /// @dev The length check only says a tail could fit, not that one was actually appended. On a
+    ///      path that skips the fallback the last 20 bytes are just ABI arguments, so the caller
+    ///      reads back as some address that holds no key and the call is refused. We ask for a
+    ///      selector plus the tail, so a call too short to carry one uses `msg.sender` instead.
     function _msgSender() internal view returns (address sender) {
-        if (msg.data.length >= 20) {
+        if (msg.data.length >= 24) {
             // solhint-disable-next-line no-inline-assembly
             assembly ("memory-safe") {
                 sender := shr(96, calldataload(sub(calldatasize(), 20)))
