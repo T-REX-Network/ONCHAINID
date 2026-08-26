@@ -33,7 +33,10 @@ contract ProxyTest is OnchainIDSetup {
             signerData: signer,
             clientData: ""
         });
+        return _initDataWithKeys(idType, keys);
+    }
 
+    function _initDataWithKeys(uint256 idType, Structs.KeyParam[] memory keys) internal view returns (bytes memory) {
         address validator = address(onchainidSetup.signatureValidator);
         Structs.ModuleInstall[] memory modules = new Structs.ModuleInstall[](5);
         // Empty initData: the MANAGEMENT key is seeded from `keys` above, so seeding it again in
@@ -79,6 +82,20 @@ contract ProxyTest is OnchainIDSetup {
 
         vm.expectRevert(OZErrors.FailedCall.selector);
         new BeaconProxy(address(b), _initData(IdentityTypes.INDIVIDUAL));
+    }
+
+    function test_revertBecauseKeyHashDoesNotMatchSignerData() public {
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
+        keys[0] = Structs.KeyParam({
+            keyHash: keccak256(abi.encodePacked(bob)),
+            purpose: KeyPurposes.MANAGEMENT,
+            keyType: KeyTypes.ECDSA,
+            signerData: abi.encodePacked(alice),
+            clientData: ""
+        });
+
+        vm.expectRevert(Errors.InvalidSignerData.selector);
+        new BeaconProxy(address(onchainidSetup.beacon), _initDataWithKeys(IdentityTypes.INDIVIDUAL, keys));
     }
 
     function test_preventCreatingBeaconWithZeroImplementation() public {
