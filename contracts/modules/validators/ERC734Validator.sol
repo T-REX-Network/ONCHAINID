@@ -490,6 +490,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     /// @dev ERC-7913 dispatch: 20-byte signer = EOA/1271, longer = verifier+key. Uses the
     ///      ECDSA path directly instead of `SignatureChecker.isValidSignatureNow(bytes,...)` to
     ///      avoid its `signer.code.length` check, which violates ERC-7562 bundler validation rules.
+    ///      Single definition of a valid signature for the whole module: the key path and the claim
+    ///      path both go through here, so a signer that gains code (EIP-7702) can't be judged valid
+    ///      by one and invalid by the other.
     function _verify(bytes memory signer, bytes32 hash, bytes memory signature) internal view returns (bool) {
         if (signer.length == 20) {
             address signerAddr = address(bytes20(signer));
@@ -832,7 +835,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         if (!keyHasPurpose(account, keccak256(signer), KeyPurposes.CLAIM_SIGNER)) {
             return IClaimIssuer.ClaimStatus.NotIssued;
         }
-        if (!SignatureChecker.isValidSignatureNow(signer, digest, rawSig)) {
+        if (!_verify(signer, digest, rawSig)) {
             return IClaimIssuer.ClaimStatus.BadSignature;
         }
         return IClaimIssuer.ClaimStatus.Valid;
