@@ -41,6 +41,16 @@ import {
 ///             execArgs = abi.encodePacked(uint32 delay, uint32 expiration)
 ///             msigArgs = abi.encode(bytes[] guardians, uint64 threshold, uint64[] weights)
 ///
+/// @dev    How the identity cancels and reconfigures.
+///         The owner path of `cancelRecovery` and the setters for guardians,
+///         threshold, weights, delay and expiration only accept the account
+///         as caller. To reach them, the account calls `execute` on itself
+///         with an inner `execute` that targets this module. The outer call
+///         needs MANAGEMENT like any self-targeted execution, and the inner
+///         call is allowed because {SmartAccount} lets the account call its
+///         own modules. Guardians keep their own quorum-signed
+///         `cancelRecovery` path.
+///
 /// @dev    What recovery actually does.
 ///         `executeRecovery` dispatches whatever ERC-7579 execution the guardians
 ///         signed. The canonical recovery payload is a self-targeted

@@ -226,7 +226,8 @@ library Errors {
 
     /// @notice A dispatched call targeted one of the account's own modules (an installed executor,
     ///         or the fallback handler for the call's selector). Module functions are reached via
-    ///         the account's fallback dispatch, never via `execute(module, ...)`.
+    ///         the account's fallback dispatch, never via `execute(module, ...)`. The only caller
+    ///         allowed to do this is the account itself.
     error OwnModuleTargetBlocked(address target);
 
     /// @notice An installed executor or fallback handler tried to dispatch a call whose target
