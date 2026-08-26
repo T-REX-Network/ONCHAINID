@@ -5,9 +5,14 @@ import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 import { MockERC1271Wallet } from "../mocks/MockERC1271Wallet.sol";
 import { MockERC7786Gateway } from "../mocks/MockERC7786Gateway.sol";
+import { MockLyingERC734Getter } from "../mocks/MockLyingERC734Getter.sol";
 import { Constants } from "../utils/Constants.sol";
 import { AccessManager } from "@openzeppelin/contracts/access/manager/AccessManager.sol";
-import { MODULE_TYPE_FALLBACK, MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import {
+    MODULE_TYPE_EXECUTOR,
+    MODULE_TYPE_FALLBACK,
+    MODULE_TYPE_VALIDATOR
+} from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { UpgradeableBeacon } from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import { Errors as OZErrors } from "@openzeppelin/contracts/utils/Errors.sol";
 import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
@@ -49,40 +54,16 @@ contract IdentityFactoryTest is OnchainIDSetup {
     }
 
     /// @dev Minimal module bundle that satisfies Identity.initialize's "needs a validator
-    ///      or an executor" invariant, plus the four ERC-734 getter fallbacks so the factory's
-    ///      post-deploy `getKeysByPurpose(MANAGEMENT)` check can be answered. The validator install
-    ///      carries empty initData: the MANAGEMENT key is seeded from the caller-supplied `keys`, so
-    ///      seeding it again in the validator's onInstall would collide (KeyAlreadyRegistered).
+    ///      or an executor" invariant. The validator install carries empty initData: the
+    ///      MANAGEMENT key is seeded from the caller-supplied `keys`, so seeding it again in
+    ///      the validator's onInstall would collide (KeyAlreadyRegistered). No getter fallback
+    ///      wiring is needed: the ERC-734 getters are plain functions on the account, and the
+    ///      factory's post-deploy MANAGEMENT check reads the enshrined registry directly.
     function _defaultModules() internal view returns (Structs.ModuleInstall[] memory mods) {
         address validator = address(onchainidSetup.signatureValidator);
-        mods = new Structs.ModuleInstall[](5);
+        mods = new Structs.ModuleInstall[](1);
         mods[0] =
             Structs.ModuleInstall({ moduleType: MODULE_TYPE_VALIDATOR, module: validator, initData: "", purpose: 0 });
-        // ERC-734 getter fallbacks served by the merged validator module.
-        mods[1] = Structs.ModuleInstall({
-            moduleType: MODULE_TYPE_FALLBACK,
-            module: validator,
-            initData: abi.encodePacked(IERC734.keyHasPurpose.selector),
-            purpose: 0
-        });
-        mods[2] = Structs.ModuleInstall({
-            moduleType: MODULE_TYPE_FALLBACK,
-            module: validator,
-            initData: abi.encodePacked(IERC734.getKey.selector),
-            purpose: 0
-        });
-        mods[3] = Structs.ModuleInstall({
-            moduleType: MODULE_TYPE_FALLBACK,
-            module: validator,
-            initData: abi.encodePacked(IERC734.getKeyPurposes.selector),
-            purpose: 0
-        });
-        mods[4] = Structs.ModuleInstall({
-            moduleType: MODULE_TYPE_FALLBACK,
-            module: validator,
-            initData: abi.encodePacked(IERC734.getKeysByPurpose.selector),
-            purpose: 0
-        });
     }
 
     function _domainSeparator(address verifyingContract) internal view returns (bytes32) {
@@ -598,9 +579,70 @@ contract IdentityFactoryTest is OnchainIDSetup {
         onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "salt1", keys, _defaultModules());
     }
 
+    /// @notice A deployer supplies a fallback handler for the `getKeysByPurpose(uint256)`
+    ///         selector that fabricates a MANAGEMENT key, while the enshrined registry holds
+    ///         none. The factory must not be fooled: its post-deploy check reads the registry
+    ///         directly, and the getter selectors are real functions on the account, so the
+    ///         installed handler is never consulted.
+    function test_revertWhenManagementKeyOnlyFakedByFallbackHandler() public {
+        MockLyingERC734Getter liar = new MockLyingERC734Getter();
+
+        Structs.ModuleInstall[] memory mods = new Structs.ModuleInstall[](2);
+        mods[0] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_VALIDATOR,
+            module: address(onchainidSetup.signatureValidator),
+            initData: "",
+            purpose: 0
+        });
+        mods[1] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: address(liar),
+            initData: abi.encodePacked(IERC734.getKeysByPurpose.selector),
+            purpose: 0
+        });
+
+        // No MANAGEMENT key anywhere in the real registry.
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
+        keys[0] = _makeECDSAKey(david, KeyPurposes.ACTION);
+
+        vm.prank(deployer);
+        vm.expectRevert(Errors.NoManagementKeyInKeys.selector);
+        onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "m04", keys, mods);
+    }
+
     /// @notice A module install with a MANAGEMENT purpose mints a MODULE key that cannot sign.
     ///         It stays out of the MANAGEMENT index, so the factory sees zero managers and
     ///         rejects the deploy.
+    /// @notice The MANAGEMENT holder is a module other than the registry, granted through the
+    ///         install `purpose` field. That mints a MODULE key, which cannot sign and so never
+    ///         enters the MANAGEMENT index (M-01). The factory reads that index straight off the
+    ///         enshrined registry, sees no manager, and rejects the deploy. Distinct from the
+    ///         registry-module case below, which is stopped earlier by the self-key guard.
+    function test_revertWhenOnlyManagementKeyIsAnInstalledModule() public {
+        Structs.ModuleInstall[] memory mods = new Structs.ModuleInstall[](2);
+        mods[0] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_VALIDATOR,
+            module: address(onchainidSetup.signatureValidator),
+            initData: "",
+            purpose: 0
+        });
+        // The executor, not the registry, carries MANAGEMENT: the only holder is a MODULE key.
+        mods[1] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_EXECUTOR,
+            module: address(onchainidSetup.keyApprovalModule),
+            initData: "",
+            purpose: KeyPurposes.MANAGEMENT
+        });
+
+        // No signer holds MANAGEMENT: david's own key is ACTION only.
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
+        keys[0] = _makeECDSAKey(david, KeyPurposes.ACTION);
+
+        vm.prank(deployer);
+        vm.expectRevert(Errors.NoManagementKeyInKeys.selector);
+        onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "modOnlyMgmt", keys, mods);
+    }
+
     function test_revertBecauseOnlyManagementKeyIsAModuleInstall() public {
         Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
         keys[0] = _makeECDSAKey(david, KeyPurposes.ACTION);
