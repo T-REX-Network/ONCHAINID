@@ -6,6 +6,7 @@ import { Errors } from "./libraries/Errors.sol";
 import { hashAddress } from "./libraries/Hashing.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
 import { ERC734Validator } from "./modules/validators/ERC734Validator.sol";
+import { SafeCalldataBatch } from "./vendor/utils/SafeCalldataBatch.sol";
 import {
     AccountERC7579Upgradeable
 } from "@openzeppelin/contracts-upgradeable/account/extensions/draft-AccountERC7579Upgradeable.sol";
@@ -101,8 +102,11 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
             address target = address(bytes20(executionCalldata[:20]));
             _authorizeCall(target, executionCalldata[52:], callerKeyHash, callerIsExecutor);
         } else if (callType == ERC7579Utils.CALLTYPE_BATCH) {
-            // Every call in the batch must pass.
-            Execution[] calldata batch = ERC7579Utils.decodeBatch(executionCalldata);
+            // Every call in the batch must pass. {SafeCalldataBatch} keeps the batch in calldata but
+            // validates each entry against the slice bounds, so a backward offset can't point past
+            // the batch and let us authorize a different target than we run. The validator decodes
+            // the same way, so the two checks always agree.
+            Execution[] calldata batch = SafeCalldataBatch.decodeBatch(executionCalldata);
             for (uint256 i = 0; i < batch.length; i++) {
                 _authorizeCall(batch[i].target, batch[i].callData, callerKeyHash, callerIsExecutor);
             }
@@ -139,14 +143,27 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         }
     }
 
-    /// @dev The purpose an executor's key needs for a target. Self-target and the factory both need
+    /// @dev The purpose an executor's key needs for a target. Management-grade targets need
     ///      MANAGEMENT; any other target needs ACTION. MANAGEMENT satisfies every purpose check.
-    ///      The factory is management-grade because its wallet-binding calls (linkAccount,
-    ///      revokeAccount, confirmCrossChainLink) change the identity's own bindings.
     function _isKeyAuthorizedToCallTarget(bytes32 keyHash, address target) private view returns (bool) {
-        bool managementTarget = target == address(this) || target == identityFactory();
-        uint256 requiredPurpose = managementTarget ? KeyPurposes.MANAGEMENT : KeyPurposes.ACTION;
+        uint256 requiredPurpose = isManagementTarget(target) ? KeyPurposes.MANAGEMENT : KeyPurposes.ACTION;
         return _moduleKeyHasPurpose(keyHash, requiredPurpose);
+    }
+
+    /// @notice Whether a call to `target` needs MANAGEMENT rather than ACTION. Management-grade
+    ///         targets are the account itself, its factory (whose wallet-binding calls change the
+    ///         identity's own bindings), and the enshrined key registry (whose addKey/removeKey run
+    ///         under the account and rewrite its own key set). Read by executor modules (e.g.
+    ///         {KeyApprovalModule}) so they match this dispatch guard.
+    /// @dev Target-level only (MANAGEMENT vs ACTION); it does not resolve per-selector granularity,
+    ///      so callers that host selector-specific purposes handle those separately.
+    /// @dev {ERC734Validator} keeps its own copy instead: calling the account during ERC-4337
+    ///      validation would break ERC-7562 bundler rules. It self-guards the registry there via
+    ///      `target == address(this)`.
+    function isManagementTarget(address target) public view returns (bool) {
+        // OZ aliases target 0 to the account before dispatch; match that so the checks agree.
+        if (target == address(0)) target = address(this);
+        return target == address(this) || target == identityFactory() || target == registryModule();
     }
 
     /// @notice The factory that deployed this identity. Implemented by the concrete account
