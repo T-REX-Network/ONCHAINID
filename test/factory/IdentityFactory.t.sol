@@ -542,6 +542,22 @@ contract IdentityFactoryTest is OnchainIDSetup {
         onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "salt1", keys, _defaultModules());
     }
 
+    /// @notice A module install with a MANAGEMENT purpose mints a MODULE key that cannot sign.
+    ///         It stays out of the MANAGEMENT index, so the factory sees zero managers and
+    ///         rejects the deploy.
+    function test_revertBecauseOnlyManagementKeyIsAModuleInstall() public {
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
+        keys[0] = _makeECDSAKey(david, KeyPurposes.ACTION);
+
+        Structs.ModuleInstall[] memory mods = _defaultModules();
+        // Grant the validator module MANAGEMENT: the only MANAGEMENT holder is now a MODULE key.
+        mods[0].purpose = KeyPurposes.MANAGEMENT;
+
+        vm.prank(deployer);
+        vm.expectRevert(Errors.NoManagementKeyInKeys.selector);
+        onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "modMgmt", keys, mods);
+    }
+
     // ============ createIdentityFor auto-link ============
 
     function test_createIdentity_autoLinksAccountAsActive() public {
