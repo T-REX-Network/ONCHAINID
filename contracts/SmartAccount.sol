@@ -12,7 +12,11 @@ import {
 } from "@openzeppelin/contracts-upgradeable/account/extensions/draft-AccountERC7579Upgradeable.sol";
 import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/ERC4337Utils.sol";
 import { CallType, ERC7579Utils, Mode } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
-import { Execution, MODULE_TYPE_EXECUTOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import {
+    Execution,
+    MODULE_TYPE_EXECUTOR,
+    MODULE_TYPE_FALLBACK
+} from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { Calldata } from "@openzeppelin/contracts/utils/Calldata.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 
@@ -64,20 +68,27 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
 
     /// @dev Strips every ERC-734 purpose the module holds, then runs the base uninstall.
     ///      Purposes are read from, and removed on, the enshrined registry module (self-calls).
+    ///      Fallback uninstalls don't strip: fallback handlers register per selector, so one
+    ///      module can hold several fallback installs (plus an executor one) all backed by a
+    ///      single MODULE key. Dropping one selector must not revoke the key that still
+    ///      authorizes the others; retiring a fallback-only module's key is an explicit
+    ///      {removeKey}.
     function _uninstallModule(uint256 moduleTypeId, address module, bytes memory deInitData) internal virtual override {
         // Take away the module's ERC-734 purposes first, then run the base uninstall (which calls
         // the module's onUninstall). Order matters: a module that still holds MANAGEMENT could use
         // its onUninstall callback to grant itself keys. Stripping first closes that window.
-        bytes32 moduleKey = hashAddress(module);
-        ERC734Validator registry = ERC734Validator(registryModule());
+        if (moduleTypeId != MODULE_TYPE_FALLBACK) {
+            bytes32 moduleKey = hashAddress(module);
+            ERC734Validator registry = ERC734Validator(registryModule());
 
-        // Drop each purpose the module holds. Snapshot first, since the set shrinks as we remove.
-        // At most the 6 ERC-734 purposes, so the loop is cheap. Skip if the module had no key.
-        (bytes memory signerData,) = registry.getKeyData(address(this), moduleKey);
-        if (signerData.length != 0) {
-            uint256[] memory purposes = registry.getKeyPurposes(address(this), moduleKey);
-            for (uint256 i = 0; i < purposes.length; i++) {
-                _removeKeyPurpose(moduleKey, purposes[i]);
+            // Drop each purpose the module holds. Snapshot first, since the set shrinks as we remove.
+            // At most the 6 ERC-734 purposes, so the loop is cheap. Skip if the module had no key.
+            (bytes memory signerData,) = registry.getKeyData(address(this), moduleKey);
+            if (signerData.length != 0) {
+                uint256[] memory purposes = registry.getKeyPurposes(address(this), moduleKey);
+                for (uint256 i = 0; i < purposes.length; i++) {
+                    _removeKeyPurpose(moduleKey, purposes[i]);
+                }
             }
         }
 
@@ -117,8 +128,9 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         return super._execute(mode, executionCalldata);
     }
 
-    /// @dev Authorizes one call: no dispatched call may target one of the account's own modules,
-    ///      and an executor caller needs a key purpose for the target.
+    /// @dev Authorizes one call: no dispatched call may target one of the account's own modules
+    ///      (unless the account itself is the caller), and an executor caller needs a key
+    ///      purpose for the target.
     function _authorizeCall(address target, bytes calldata inner, bytes32 callerKeyHash, bool callerIsExecutor)
         private
         view
@@ -131,9 +143,14 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         // through the account's fallback dispatch, which appends the real caller (ERC-2771 style);
         // `execute(module, ...)` skips that append, so the module would misread its caller.
         // `bytes4(inner)` zero-pads short/empty calldata, which matches no handler.
+        //
+        // Exception: the account itself may call its own modules. Some module functions only
+        // accept the account as caller (the recovery module's cancel and its config setters),
+        // and this is the only way to reach them. A self-call to `execute` always comes from a
+        // MANAGEMENT-authorized flow, so nothing is escalated.
         bool targetIsOwnModule = isModuleInstalled(MODULE_TYPE_EXECUTOR, target, Calldata.emptyBytes())
             || _fallbackHandler(bytes4(inner)) == target;
-        if (targetIsOwnModule) {
+        if (targetIsOwnModule && msg.sender != address(this)) {
             revert Errors.OwnModuleTargetBlocked(target);
         }
 
