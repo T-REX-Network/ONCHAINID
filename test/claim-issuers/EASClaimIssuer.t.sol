@@ -277,6 +277,19 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         );
     }
 
+    function test_isClaimValid_attestationExpired_atBoundary() public {
+        vm.warp(100);
+        // Expiry takes effect at the exact timestamp, not one block later.
+        bytes32 uid = _attestAs(attester, SCHEMA, address(aliceIdentity), uint64(block.timestamp + 10), hex"");
+        vm.warp(block.timestamp + 10);
+
+        assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData));
+        assertEq(
+            uint256(adapter.getClaimStatus(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData)),
+            uint256(IClaimIssuer.ClaimStatus.Expired)
+        );
+    }
+
     function test_isClaimValid_attestationMissing() public view {
         // A UID that was never issued by EAS.
         bytes32 uid = keccak256("never-issued");
@@ -316,6 +329,27 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         // `david` is a fresh EOA, never linked to alice or anyone.
         bytes32 uid = _attestValid(david);
         assertFalse(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, _encodeUid(uid), emptyData));
+    }
+
+    /// @notice An unlinked recipient resolves to the zero identity on the factory, so a query
+    ///         made for the zero identity must not match it.
+    function test_isClaimValid_zeroIdentityRejects() public {
+        // `david` is never linked, so `getIdentityIncludingRevoked` returns zero for him.
+        bytes32 uid = _attestValid(david);
+
+        assertFalse(adapter.isClaimValid(IIdentity(address(0)), TOPIC, _encodeUid(uid), emptyData));
+        assertEq(
+            uint256(adapter.getClaimStatus(IIdentity(address(0)), TOPIC, _encodeUid(uid), emptyData)),
+            uint256(IClaimIssuer.ClaimStatus.NotIssued)
+        );
+    }
+
+    /// @notice A linked wallet does not match the zero identity either.
+    function test_isClaimValid_zeroIdentityRejectsLinkedWallet() public {
+        _linkWalletToAlice(david, davidPk);
+        bytes32 uid = _attestValid(david);
+
+        assertFalse(adapter.isClaimValid(IIdentity(address(0)), TOPIC, _encodeUid(uid), emptyData));
     }
 
     /* ----- signature payload sanity ----- */

@@ -94,8 +94,10 @@ interface IIdentityFactory {
 
     /// @notice Upgrade the implementation every deployed identity delegates to. The factory
     ///         owns the beacon, so this is the only upgrade path, and it is gated by the
-    ///         factory's current authority. Restricted.
-    function upgradeBeacon(address newImplementation) external;
+    ///         factory's current authority. The candidate must report `expectedVersion` from
+    ///         {Identity.version}, so a build that forgot the version bump is rejected.
+    ///         Restricted.
+    function upgradeBeacon(address newImplementation, string calldata expectedVersion) external;
 
     /// @notice Self-deploy. Caller is the account being deployed for and is auto-linked
     ///         as the new identity's first wallet. Gated per type by `selfDeployable`:
