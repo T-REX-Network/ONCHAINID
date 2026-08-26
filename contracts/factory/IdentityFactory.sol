@@ -74,12 +74,14 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         bytes record;
     }
 
-    /// @dev Per-type deploy policy. `roleId == 0` means the type is unregistered;
-    ///      both deploy entry points revert. `selfDeployable` gates {createIdentity}.
-    ///      uint64 + bool pack into one storage slot.
+    /// @dev Per-type deploy policy. `registered` carries registration explicitly so
+    ///      `roleId == 0` (the AM's ADMIN_ROLE) stays usable as a type's required role.
+    ///      Unregistered types revert from both deploy entry points. `selfDeployable`
+    ///      gates {createIdentity}. uint64 + two bools pack into one storage slot.
     struct TypePolicy {
         uint64 roleId;
         bool selfDeployable;
+        bool registered;
     }
 
     /// @dev Pending cross-chain link proposed via ERC-7786. `identity` is the
@@ -99,7 +101,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         mapping(bytes32 walletKey => WalletEntry entry) wallets;
         mapping(address identity => EnumerableSet.Bytes32Set walletKeys) accounts;
         mapping(address identity => bool deployedByFactory) isFactoryIdentity;
-        /// @dev Per-type deploy policy. Unregistered types (`roleId == 0`) revert.
+        /// @dev Per-type deploy policy. Unregistered types revert.
         mapping(uint256 identityType => TypePolicy policy) typePolicies;
         /// @dev Gateways trusted per origin chain. The key is
         ///      keccak256(chainType, chainReference). Inbound messages from anyone
@@ -117,7 +119,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
 
     function _storage() private pure returns (IdentityFactoryStorage storage $) {
         bytes32 slot = _IDENTITY_FACTORY_STORAGE_SLOT;
-        assembly {
+        assembly ("memory-safe") {
             $.slot := slot
         }
     }
@@ -162,8 +164,14 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
 
     /// @inheritdoc IIdentityFactory
     function setIdentityTypePolicy(uint256 _identityType, uint64 _roleId, bool _selfDeployable) external restricted {
-        _storage().typePolicies[_identityType] = TypePolicy(_roleId, _selfDeployable);
+        _storage().typePolicies[_identityType] = TypePolicy(_roleId, _selfDeployable, true);
         emit IdentityTypePolicySet(_identityType, _roleId, _selfDeployable);
+    }
+
+    /// @inheritdoc IIdentityFactory
+    function removeIdentityTypePolicy(uint256 _identityType) external restricted {
+        delete _storage().typePolicies[_identityType];
+        emit IdentityTypePolicyRemoved(_identityType);
     }
 
     /// @inheritdoc IIdentityFactory
@@ -176,7 +184,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // Self-deploy is gated per type. Contract-shaped types like ASSET / SMART_CONTRACT
         // opt out because their identity represents a contract, not msg.sender.
         TypePolicy storage policy = _storage().typePolicies[_identityType];
-        require(policy.roleId != 0, Errors.UnknownIdentityType(_identityType));
+        require(policy.registered, Errors.UnknownIdentityType(_identityType));
         require(policy.selfDeployable, Errors.IdentityTypeNotSelfDeployable(_identityType));
 
         // Always store the wallet as an ERC-7930 envelope. If we stored raw 20-byte
@@ -386,13 +394,13 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     }
 
     /// @inheritdoc IIdentityFactory
-    function getAccounts(address identity) external view returns (bytes[] memory) {
-        return _accountsRange(identity, 0, _storage().accounts[identity].length());
+    function getAccounts(address identity, uint256 start, uint256 end) external view returns (bytes[] memory) {
+        return _accountsRange(identity, start, end);
     }
 
     /// @inheritdoc IIdentityFactory
-    function getAccounts(address identity, uint256 start, uint256 end) external view returns (bytes[] memory) {
-        return _accountsRange(identity, start, end);
+    function getAccountsCount(address identity) external view returns (uint256) {
+        return _storage().accounts[identity].length();
     }
 
     /// @inheritdoc IIdentityFactory
@@ -406,9 +414,13 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     }
 
     /// @inheritdoc IIdentityFactory
-    function getIdentityTypePolicy(uint256 _identityType) external view returns (uint64 roleId, bool selfDeployable) {
+    function getIdentityTypePolicy(uint256 _identityType)
+        external
+        view
+        returns (uint64 roleId, bool selfDeployable, bool registered)
+    {
         TypePolicy storage policy = _storage().typePolicies[_identityType];
-        return (policy.roleId, policy.selfDeployable);
+        return (policy.roleId, policy.selfDeployable, policy.registered);
     }
 
     /// @dev Per-type gate for {createIdentityFor}. Unknown types revert. Admin registers
@@ -416,11 +428,11 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     ///      Memberships carrying an AM execution delay are rejected rather than let the
     ///      delay be silently bypassed — the factory has no scheduling flow.
     function _checkTypeRole(uint256 _identityType, address caller) private view {
-        uint64 requiredRole = _storage().typePolicies[_identityType].roleId;
-        require(requiredRole != 0, Errors.UnknownIdentityType(_identityType));
-        (bool isMember, uint32 executionDelay) = IAccessManager(authority()).hasRole(requiredRole, caller);
-        require(isMember, Errors.NotAuthorizedForIdentityType(caller, _identityType, requiredRole));
-        require(executionDelay == 0, Errors.DelayedRoleNotSupported(caller, requiredRole, executionDelay));
+        TypePolicy storage policy = _storage().typePolicies[_identityType];
+        require(policy.registered, Errors.UnknownIdentityType(_identityType));
+        (bool isMember, uint32 executionDelay) = IAccessManager(authority()).hasRole(policy.roleId, caller);
+        require(isMember, Errors.NotAuthorizedForIdentityType(caller, _identityType, policy.roleId));
+        require(executionDelay == 0, Errors.DelayedRoleNotSupported(caller, policy.roleId, executionDelay));
     }
 
     /// @dev {_walletKey} cast to address. Used as the nonce key so OZ Nonces
@@ -450,7 +462,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // Asset identities are deployed for a token contract, always a 20-byte EVM address.
         // The token is auto-linked as the identity's sole wallet like any other signer;
         // the difference is the identity's `type`. Off-chain readers can recover the
-        // token by reading `getAccounts(identity)[0]` and checking `getIdentityType()`.
+        // token by reading `getAccounts(identity, 0, 1)[0]` and checking `getIdentityType()`.
         // The envelope is built by the factory itself, so the EVM shape is guaranteed;
         // the meaningful check here is just that the address inside is non-zero.
         if (_identityType == IdentityTypes.ASSET) {
@@ -514,7 +526,9 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
 
     /// @dev Revoke rule. Flips status to Revoked and drops the wallet from the active
     ///      set. identity + record stay so the binding is visible via
-    ///      getIdentityIncludingRevoked.
+    ///      getIdentityIncludingRevoked. Revoking the last wallet leaves the active set
+    ///      empty but the identity manageable: keys are a separate namespace, so a
+    ///      MANAGEMENT key can still link a fresh wallet.
     function _revokeAccount(bytes memory account, address identity) internal {
         account = _canonicalEnvelope(account);
         bytes32 key = keccak256(account);

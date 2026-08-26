@@ -267,7 +267,7 @@ contract KeyApprovalModule is IERC7579Module {
     function _msgSender() internal view returns (address sender) {
         if (msg.data.length >= 24) {
             // solhint-disable-next-line no-inline-assembly
-            assembly {
+            assembly ("memory-safe") {
                 sender := shr(96, calldataload(sub(calldatasize(), 20)))
             }
         } else {

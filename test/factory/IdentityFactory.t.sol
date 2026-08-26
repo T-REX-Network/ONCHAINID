@@ -383,10 +383,65 @@ contract IdentityFactoryTest is OnchainIDSetup {
         vm.expectEmit(true, true, false, true, address(onchainidSetup.idFactory));
         emit IIdentityFactory.IdentityTypePolicySet(IdentityTypes.CLAIM_ISSUER, 123, false);
         onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 123, false);
-        (uint64 roleId, bool selfDeployable) =
+        (uint64 roleId, bool selfDeployable, bool registered) =
             onchainidSetup.idFactory.getIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER);
         assertEq(roleId, 123);
         assertEq(selfDeployable, false);
+        assertTrue(registered);
+    }
+
+    /// @notice Registration is tracked separately from the role, so the AM's ADMIN_ROLE
+    ///         (id 0) can gate a type like any other role.
+    function test_setIdentityTypePolicy_adminRoleUsableAsTypeRole() public {
+        vm.prank(deployer);
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 0, false);
+
+        // deployer is the AM admin, so it holds role 0; anyone else is rejected.
+        vm.prank(alice);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Errors.NotAuthorizedForIdentityType.selector, alice, IdentityTypes.CLAIM_ISSUER, uint64(0)
+            )
+        );
+        onchainidSetup.idFactory
+            .createIdentityFor(
+                david, IdentityTypes.CLAIM_ISSUER, "adminGated", _makeSingleMgmtKeys(david), _defaultModules()
+            );
+
+        vm.prank(deployer);
+        address identityAddr = onchainidSetup.idFactory
+            .createIdentityFor(
+                david, IdentityTypes.CLAIM_ISSUER, "adminGated", _makeSingleMgmtKeys(david), _defaultModules()
+            );
+        assertTrue(identityAddr != address(0));
+    }
+
+    function test_removeIdentityTypePolicy_unregistersType() public {
+        vm.prank(deployer);
+        vm.expectEmit(true, false, false, true, address(onchainidSetup.idFactory));
+        emit IIdentityFactory.IdentityTypePolicyRemoved(IdentityTypes.INDIVIDUAL);
+        onchainidSetup.idFactory.removeIdentityTypePolicy(IdentityTypes.INDIVIDUAL);
+
+        (,, bool registered) = onchainidSetup.idFactory.getIdentityTypePolicy(IdentityTypes.INDIVIDUAL);
+        assertFalse(registered);
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(Errors.UnknownIdentityType.selector, IdentityTypes.INDIVIDUAL));
+        onchainidSetup.idFactory
+            .createIdentity(IdentityTypes.INDIVIDUAL, "removed", _makeSingleMgmtKeys(alice), _defaultModules());
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(Errors.UnknownIdentityType.selector, IdentityTypes.INDIVIDUAL));
+        onchainidSetup.idFactory
+            .createIdentityFor(
+                david, IdentityTypes.INDIVIDUAL, "removed", _makeSingleMgmtKeys(david), _defaultModules()
+            );
+    }
+
+    function test_removeIdentityTypePolicy_revertForNonAdmin() public {
+        vm.prank(alice);
+        vm.expectRevert(); // AccessManagerUnauthorizedAccount
+        onchainidSetup.idFactory.removeIdentityTypePolicy(IdentityTypes.INDIVIDUAL);
     }
 
     function test_setIdentityTypePolicy_revertForNonAdmin() public {
@@ -572,8 +627,8 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertEq(
             uint256(onchainidSetup.idFactory.getAccountStatus(davidAcc)), uint256(IIdentityFactory.AccountStatus.Active)
         );
-        bytes[] memory accs = onchainidSetup.idFactory.getAccounts(identityAddr);
-        assertEq(accs.length, 1);
+        assertEq(onchainidSetup.idFactory.getAccountsCount(identityAddr), 1);
+        bytes[] memory accs = onchainidSetup.idFactory.getAccounts(identityAddr, 0, 1);
         assertEq(keccak256(accs[0]), keccak256(davidAcc));
     }
 
@@ -721,8 +776,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertEq(bound, address(aliceIdentity));
         assertEq(uint256(status), uint256(IIdentityFactory.AccountStatus.Revoked));
 
-        bytes[] memory active = onchainidSetup.idFactory.getAccounts(address(aliceIdentity));
-        assertEq(active.length, 1);
+        assertEq(onchainidSetup.idFactory.getAccountsCount(address(aliceIdentity)), 1);
     }
 
     /// @notice Wallet-binding calls into the factory are management-grade. An ACTION key driving
@@ -815,11 +869,18 @@ contract IdentityFactoryTest is OnchainIDSetup {
         uint256 nc = onchainidSetup.idFactory.nonceForAccount(carolAcc);
         _execLink(aliceIdentity, alice, carolAcc, _signLink(carolPk, carolAcc, address(aliceIdentity), nc, ex), nc, ex);
 
-        bytes[] memory all = onchainidSetup.idFactory.getAccounts(address(aliceIdentity));
+        uint256 count = onchainidSetup.idFactory.getAccountsCount(address(aliceIdentity));
+        assertEq(count, 3);
+
+        bytes[] memory all = onchainidSetup.idFactory.getAccounts(address(aliceIdentity), 0, count);
         assertEq(all.length, 3);
 
         bytes[] memory page = onchainidSetup.idFactory.getAccounts(address(aliceIdentity), 1, 3);
         assertEq(page.length, 2);
+
+        // out-of-range bounds are clamped, not reverted
+        bytes[] memory clamped = onchainidSetup.idFactory.getAccounts(address(aliceIdentity), 0, type(uint256).max);
+        assertEq(clamped.length, 3);
     }
 
     // ============ unified token + wallet resolution ============
