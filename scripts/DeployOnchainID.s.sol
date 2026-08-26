@@ -50,9 +50,7 @@ contract DeployOnchainID is Script {
 
         // 1. IdentityUtilities implementation + proxy
         IdentityUtilities utilitiesImpl = new IdentityUtilities();
-        IdentityUtilitiesProxy utilitiesProxy = new IdentityUtilitiesProxy(
-            address(utilitiesImpl), abi.encodeCall(IdentityUtilities.initialize, (deployer))
-        );
+        IdentityUtilitiesProxy utilitiesProxy = new IdentityUtilitiesProxy(address(utilitiesImpl), deployer);
         console.log("IdentityUtilities implementation:", address(utilitiesImpl));
         console.log("IdentityUtilities proxy:", address(utilitiesProxy));
 
@@ -138,6 +136,10 @@ contract DeployOnchainID is Script {
         // 10. ERC-7913 WebAuthn Verifier (stateless — verifies P-256 WebAuthn assertions on-chain)
         ERC7913WebAuthnVerifier webAuthnVerifier = new ERC7913WebAuthnVerifier();
         console.log("ERC7913WebAuthnVerifier:", address(webAuthnVerifier));
+
+        // Approve it for linkAccount: ERC-7913 signers only link through a
+        // verifier on this list.
+        idFactory.setTrustedVerifier(address(webAuthnVerifier), true);
 
         vm.stopBroadcast();
 

@@ -28,6 +28,15 @@ library Errors {
     /// @param requiredRole the AM role id required for that type.
     error NotAuthorizedForIdentityType(address caller, uint256 identityType, uint64 requiredRole);
 
+    /// @notice Reverts when the caller holds the type role but with a non-zero AM
+    ///         execution delay. The factory has no scheduling flow, so instead of
+    ///         silently ignoring the delay the call is rejected — grant per-type
+    ///         roles with a zero execution delay.
+    /// @param caller the address that attempted the deployment.
+    /// @param requiredRole the AM role id required for that type.
+    /// @param executionDelay the delay the caller's membership carries.
+    error DelayedRoleNotSupported(address caller, uint64 requiredRole, uint32 executionDelay);
+
     /// @notice Reverts when a deploy is attempted for a type the admin has not registered.
     ///         Admin enables a type by calling `setIdentityTypePolicy`. Use the AM's
     ///         `PUBLIC_ROLE` for open types.
@@ -111,6 +120,27 @@ library Errors {
     ///         Local wallets link through {linkAccount} with a signature.
     error CrossChainLinkForLocalWallet(bytes wallet);
 
+    /// @notice Reverts when {linkAccount} gets an envelope whose chain type is not
+    ///         eip-155. The signature path can only verify EVM signers; foreign
+    ///         wallets go through the ERC-7786 cross-chain path.
+    error NonEvmAccount(bytes account);
+
+    /// @notice Reverts when {linkAccount} gets an eip-155 envelope whose chain
+    ///         reference is not this chain's id in minimal big-endian form. The
+    ///         signature path can only prove control on the local chain; wallets on
+    ///         other EVM chains go through the ERC-7786 cross-chain path.
+    error AccountNotOnLocalChain(bytes account);
+
+    /// @notice Reverts when an ERC-7913 signer names a verifier that admin has not
+    ///         approved via {setTrustedVerifier}. Without the list, a caller could
+    ///         ship a verifier that accepts anything and self-certify the link.
+    error UntrustedVerifier(address verifier);
+
+    /// @notice Reverts when a wallet envelope encodes its eip-155 chain reference
+    ///         with leading zero padding. The same chainid has one minimal
+    ///         encoding and the registry only accepts that one.
+    error NonCanonicalAccount(bytes account);
+
     /* ----- Verifier ----- */
 
     /// @notice The claim topic already exists.
@@ -159,6 +189,20 @@ library Errors {
     ///         below the consumer's claim-add threshold.
     error ReputationBelowClaimAddThreshold(address identity, uint256 score, uint256 threshold);
 
+    /* ----- ERC734Validator field caps (see {Structs}) ----- */
+
+    /// @notice Reverts when a key's clientData exceeds {Structs.MAX_CLIENT_DATA_LENGTH}.
+    error ClientDataTooLong();
+
+    /// @notice Reverts when a claim's signature exceeds {Structs.MAX_CLAIM_SIGNATURE_LENGTH}.
+    error ClaimSignatureTooLong();
+
+    /// @notice Reverts when a claim's payload exceeds {Structs.MAX_CLAIM_PAYLOAD_LENGTH}.
+    error ClaimPayloadTooLong();
+
+    /// @notice Reverts when a claim's uri exceeds {Structs.MAX_CLAIM_URI_LENGTH}.
+    error ClaimUriTooLong();
+
     /* ----- Identity ----- */
 
     /// @notice {IdentityFactory.initializeBeacon} was called but the beacon is already deployed.
@@ -167,6 +211,10 @@ library Errors {
     /// @notice Identity deployment was attempted before {IdentityFactory.initializeBeacon}
     ///         deployed the beacon at its predetermined slot.
     error BeaconNotInitialized();
+
+    /// @notice The candidate beacon implementation reports a different version than the one
+    ///         the upgrader committed to in {IdentityFactory.upgradeBeacon}.
+    error ImplementationVersionMismatch(string expected, string actual);
 
     /// @notice The sender does not have the management key.
     error SenderDoesNotHaveManagementKey();
@@ -230,7 +278,8 @@ library Errors {
 
     /// @notice A dispatched call targeted one of the account's own modules (an installed executor,
     ///         or the fallback handler for the call's selector). Module functions are reached via
-    ///         the account's fallback dispatch, never via `execute(module, ...)`.
+    ///         the account's fallback dispatch, never via `execute(module, ...)`. The only caller
+    ///         allowed to do this is the account itself.
     error OwnModuleTargetBlocked(address target);
 
     /// @notice An installed executor or fallback handler tried to dispatch a call whose target
