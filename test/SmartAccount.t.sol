@@ -271,6 +271,60 @@ contract SmartAccountTest is OnchainIDSetup {
         aliceIdentity.addKey(newKey, KeyPurposes.MANAGEMENT, KeyTypes.ECDSA);
     }
 
+    /// Fallback handlers register per selector, so KAM holds four installs backed by one
+    /// MODULE key. Dropping a single read-only selector must not strip that key: the
+    /// executor install and the other handlers still rely on it.
+    function test_uninstallModule_fallbackSelector_keepsModulePurposes() public {
+        address kam = address(onchainidSetup.keyApprovalModule);
+        bytes32 moduleKey = keccak256(abi.encodePacked(kam));
+
+        vm.prank(alice);
+        aliceIdentity.uninstallModule(
+            MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.getCurrentNonce.selector)
+        );
+
+        // The selector is unwired...
+        vm.expectRevert();
+        IKeyExecutor(address(aliceIdentity)).getCurrentNonce();
+
+        // ...but the module keeps its MANAGEMENT registration and stays an executor.
+        assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(moduleKey, KeyPurposes.MANAGEMENT),
+            "fallback uninstall must not strip the module's key"
+        );
+        assertTrue(
+            aliceIdentity.isModuleInstalled(MODULE_TYPE_EXECUTOR, kam, ""), "executor install should be untouched"
+        );
+
+        // The remaining execute handler still dispatches through the executor.
+        Counter counter = new Counter();
+        vm.prank(david);
+        IKeyExecutor(address(aliceIdentity)).execute(address(counter), 0, abi.encodeCall(Counter.increment, ()));
+        assertEq(counter.count(), 1, "executor dispatch should keep working after the selector drop");
+    }
+
+    /// When the module's key is the only MANAGEMENT holder, the old strip-everything path
+    /// hit `CannotRemoveLastManagementKey` and the handler could not be uninstalled at all.
+    /// Fallback uninstalls no longer touch keys, so the drop goes through.
+    function test_uninstallModule_fallbackSelector_whenModuleIsLastManagement_succeeds() public {
+        address kam = address(onchainidSetup.keyApprovalModule);
+        bytes32 aliceKey = keccak256(abi.encodePacked(alice));
+
+        // Leave KAM as the sole MANAGEMENT key.
+        vm.prank(alice);
+        aliceIdentity.removeKey(aliceKey, KeyPurposes.MANAGEMENT);
+
+        vm.prank(kam);
+        aliceIdentity.uninstallModule(
+            MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.getCurrentNonce.selector)
+        );
+
+        assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(keccak256(abi.encodePacked(kam)), KeyPurposes.MANAGEMENT),
+            "the last MANAGEMENT key survives the selector drop"
+        );
+    }
+
     /// @notice A MANAGEMENT-purpose module cannot use its onUninstall callback to grant itself a
     ///         key. The account strips the module's purposes before running onUninstall, so by the
     ///         time the callback re-enters addKey the module holds no MANAGEMENT and the grant fails.
