@@ -121,7 +121,7 @@ library Errors {
     ///         is not currently part of the calling identity's active set.
     error WalletNotLinkedToIdentity(bytes wallet);
 
-    /// @notice Reverts when the caller of {confirmCrossChainLink} does not match the
+    /// @notice Reverts when the caller of {settlePendingCrossChainLink} does not match the
     ///         identity recorded in the pending proposal. `recorded` is `address(0)`
     ///         if no proposal exists for the wallet.
     error PendingCrossChainLinkIdentityMismatch(bytes wallet, address caller, address recorded);

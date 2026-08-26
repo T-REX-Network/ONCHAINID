@@ -102,7 +102,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     ///      ONCHAINID on this chain that the wallet has named. The wallet half of
     ///      proof-of-control comes from the authenticated inbound message; the
     ///      identity half comes later when the identity itself calls
-    ///      {confirmCrossChainLink}. Until then the link is not active.
+    ///      {settlePendingCrossChainLink}. Until then the link is not active.
     struct PendingLink {
         address identity;
         uint256 expiry;
@@ -127,7 +127,8 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         mapping(address verifier => bool trusted) trustedVerifiers;
         /// @dev Cross-chain link proposals awaiting identity-side confirmation.
         ///      Keyed by {_walletKey} so every encoding of a wallet shares one
-        ///      pending slot. Cleared on {confirmCrossChainLink}.
+        ///      pending slot. Cleared on {settlePendingCrossChainLink}, whether the
+        ///      identity accepts or declines.
         mapping(bytes32 walletKey => PendingLink proposal) pendingLinks;
         /// @dev Modules installed on every identity of a given type, set by the admin via
         ///      {setIdentityTypeModules}. Deploy callers pass no modules. This is what makes
@@ -389,9 +390,9 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     }
 
     /// @inheritdoc IIdentityFactory
-    function confirmCrossChainLink(bytes calldata account) external {
+    function settlePendingCrossChainLink(bytes calldata account, bool accept) external {
         // The wallet named an identity when it sent the cross-chain message. Only
-        // that identity gets to finalize the link. Anyone else calling here is
+        // that identity gets to settle the proposal. Anyone else calling here is
         // rejected. The identity reaches us via its own execution path, so a
         // MANAGEMENT key on the identity is what actually signs this off.
         bytes32 key = _walletKey(account);
@@ -402,9 +403,18 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
             pending.identity == msg.sender,
             Errors.PendingCrossChainLinkIdentityMismatch(account, msg.sender, pending.identity)
         );
-        require(block.timestamp <= pending.expiry, Errors.PendingCrossChainLinkExpired(pending.expiry));
 
         delete _storage().pendingLinks[key];
+
+        // Declining is allowed at any time, expired or not. Accepting is the only
+        // other way a slot gets cleared and it reverts once past expiry, so without
+        // this a proposal nobody accepted in time would sit here forever.
+        if (!accept) {
+            emit CrossChainLinkRejected(account, msg.sender, pending.expiry);
+            return;
+        }
+
+        require(block.timestamp <= pending.expiry, Errors.PendingCrossChainLinkExpired(pending.expiry));
         _linkAccount(account, msg.sender);
         emit CrossChainLinkConfirmed(account, msg.sender);
     }

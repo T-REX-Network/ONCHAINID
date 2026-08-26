@@ -1536,7 +1536,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
         // Identity confirms — wallet is now actively linked.
         vm.prank(address(aliceIdentity));
-        onchainidSetup.idFactory.confirmCrossChainLink(solanaEnv);
+        onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, true);
 
         assertEq(onchainidSetup.idFactory.getIdentity(solanaEnv), address(aliceIdentity));
         // Pending entry cleared.
@@ -1596,7 +1596,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
     }
 
     /// @notice Only the identity named in the proposal can finalize it. A different
-    ///         identity calling confirmCrossChainLink is rejected — that's the
+    ///         identity calling settlePendingCrossChainLink is rejected — that's the
     ///         identity-ownership half of the proof.
     function test_crossChain_wrongIdentityConfirmRejected() public {
         MockERC7786Gateway gateway = _deployTrustedGateway();
@@ -1615,7 +1615,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
                 address(aliceIdentity)
             )
         );
-        onchainidSetup.idFactory.confirmCrossChainLink(solanaEnv);
+        onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, true);
     }
 
     /// @notice Once the wallet is linked (or revoked), a fresh inbound proposal for
@@ -1629,7 +1629,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
         gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(5)), solanaEnv, payload);
         vm.prank(address(aliceIdentity));
-        onchainidSetup.idFactory.confirmCrossChainLink(solanaEnv);
+        onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, true);
 
         // A second proposal for the same wallet (different receiveId) is now blocked
         // because the wallet entry status is Active, not None.
@@ -1681,7 +1681,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
         gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(10)), solanaEnv, payload);
         vm.prank(address(aliceIdentity));
-        onchainidSetup.idFactory.confirmCrossChainLink(solanaEnv);
+        onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, true);
 
         // The sender must equal the envelope, so both carry the padding; the
         // canonical wallet key is what blocks the second proposal.
@@ -1709,7 +1709,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
         vm.prank(address(aliceIdentity));
         vm.expectRevert(abi.encodeWithSelector(Errors.PendingCrossChainLinkExpired.selector, expiry));
-        onchainidSetup.idFactory.confirmCrossChainLink(solanaEnv);
+        onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, true);
     }
 
     /// @notice A contract-bound (ASSET) identity cannot gain extra wallets through
@@ -1729,7 +1729,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
         vm.prank(assetIdentity);
         vm.expectRevert(abi.encodeWithSelector(Errors.CannotLinkToAssetIdentity.selector, assetIdentity));
-        onchainidSetup.idFactory.confirmCrossChainLink(solanaEnv);
+        onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, true);
     }
 
     /// @notice A byte string that is not a valid ERC-7930 envelope fails at delivery,
@@ -1803,6 +1803,89 @@ contract IdentityFactoryTest is OnchainIDSetup {
         (address id, uint256 exp) = onchainidSetup.idFactory.getPendingCrossChainLink(unknownEnv);
         assertEq(id, address(0));
         assertEq(exp, 0);
+    }
+
+    /// @notice The named identity can decline a proposal it does not want. The entry is
+    ///         deleted, no binding is created, and the wallet stays free to be proposed
+    ///         again later.
+    function test_crossChain_settlePendingRejectClearsProposal() public {
+        MockERC7786Gateway gateway = _deployTrustedGateway();
+        bytes memory solanaEnv = _nonEvmEnvelope(makeAddr("solanaSignerDeclined"));
+        uint256 expiry = block.timestamp + 1 hours;
+        bytes memory payload = _crossChainPayload(solanaEnv, address(aliceIdentity), expiry);
+        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(10)), solanaEnv, payload);
+
+        vm.expectEmit(true, true, true, true);
+        emit IIdentityFactory.CrossChainLinkRejected(solanaEnv, address(aliceIdentity), expiry);
+        vm.prank(address(aliceIdentity));
+        onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, false);
+
+        (address id, uint256 exp) = onchainidSetup.idFactory.getPendingCrossChainLink(solanaEnv);
+        assertEq(id, address(0));
+        assertEq(exp, 0);
+        assertEq(onchainidSetup.idFactory.getIdentity(solanaEnv), address(0), "decline creates no binding");
+
+        // Entry status is still None, so a fresh proposal for the same wallet is accepted.
+        gateway.deliver(
+            address(onchainidSetup.idFactory),
+            bytes32(uint256(11)),
+            solanaEnv,
+            _crossChainPayload(solanaEnv, address(aliceIdentity), block.timestamp + 1 hours)
+        );
+        (address reId,) = onchainidSetup.idFactory.getPendingCrossChainLink(solanaEnv);
+        assertEq(reId, address(aliceIdentity), "wallet can be proposed again after a decline");
+    }
+
+    /// @notice Declining works after expiry too. That's the whole point: accepting is
+    ///         barred once lapsed, so without this an abandoned proposal would have no
+    ///         way out of storage.
+    function test_crossChain_settlePendingRejectWorksAfterExpiry() public {
+        MockERC7786Gateway gateway = _deployTrustedGateway();
+        bytes memory solanaEnv = _nonEvmEnvelope(makeAddr("solanaSignerAbandoned"));
+        uint256 expiry = block.timestamp + 1 hours;
+        bytes memory payload = _crossChainPayload(solanaEnv, address(aliceIdentity), expiry);
+        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(12)), solanaEnv, payload);
+
+        vm.warp(expiry + 1);
+
+        // Accepting is barred once expired...
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(abi.encodeWithSelector(Errors.PendingCrossChainLinkExpired.selector, expiry));
+        onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, true);
+
+        // ...but declining still clears the slot.
+        vm.prank(address(aliceIdentity));
+        onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, false);
+
+        (address id, uint256 exp) = onchainidSetup.idFactory.getPendingCrossChainLink(solanaEnv);
+        assertEq(id, address(0));
+        assertEq(exp, 0);
+    }
+
+    /// @notice Declining is caller-gated the same way accepting is. A stranger cannot
+    ///         wipe a proposal out from under the identity that is about to accept it.
+    function test_crossChain_settlePendingRejectRejectsWrongCaller() public {
+        MockERC7786Gateway gateway = _deployTrustedGateway();
+        bytes memory solanaEnv = _nonEvmEnvelope(makeAddr("solanaSignerGriefTarget"));
+        uint256 expiry = block.timestamp + 1 hours;
+        bytes memory payload = _crossChainPayload(solanaEnv, address(aliceIdentity), expiry);
+        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(13)), solanaEnv, payload);
+
+        vm.prank(address(bobIdentity));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Errors.PendingCrossChainLinkIdentityMismatch.selector,
+                solanaEnv,
+                address(bobIdentity),
+                address(aliceIdentity)
+            )
+        );
+        onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, false);
+
+        // Proposal survived and Alice can still accept it.
+        vm.prank(address(aliceIdentity));
+        onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, true);
+        assertEq(onchainidSetup.idFactory.getIdentity(solanaEnv), address(aliceIdentity));
     }
 
     // ============ createIdentityFor with new identity types ============

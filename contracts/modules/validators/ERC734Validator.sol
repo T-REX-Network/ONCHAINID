@@ -465,7 +465,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         if (target == address(this)) return false;
 
         // Factory-guard: the factory's wallet-binding calls (linkAccount, revokeAccount,
-        // confirmCrossChainLink) change the identity's own bindings and are management-grade.
+        // settlePendingCrossChainLink) change the identity's own bindings and are management-grade.
         // The factory is an external target, so without this an ACTION key could, for example,
         // terminally revoke one of the identity's wallets. MANAGEMENT already passed, so reject.
         if (target == address(factory)) return false;

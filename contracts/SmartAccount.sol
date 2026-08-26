@@ -163,6 +163,8 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
 
     /// @dev The purpose an executor's key needs for a target. Management-grade targets need
     ///      MANAGEMENT; any other target needs ACTION. MANAGEMENT satisfies every purpose check.
+    ///      The factory is management-grade because its wallet-binding calls (linkAccount,
+    ///      revokeAccount, settlePendingCrossChainLink) change the identity's own bindings.
     function _isKeyAuthorizedToCallTarget(bytes32 keyHash, address target) private view returns (bool) {
         uint256 requiredPurpose = isManagementTarget(target) ? KeyPurposes.MANAGEMENT : KeyPurposes.ACTION;
         return _moduleKeyHasPurpose(keyHash, requiredPurpose);
