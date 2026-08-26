@@ -104,7 +104,6 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     error KeyTypeMismatch(bytes32 keyHash);
     /// @dev The purpose is outside the ERC-734 range 1..6.
     error InvalidPurpose(uint256 purpose);
-
     event KeyAdded(address indexed account, bytes32 indexed keyHash, uint256 indexed purpose, uint256 keyType);
     event KeyRemoved(address indexed account, bytes32 indexed keyHash, uint256 indexed purpose);
 
@@ -539,7 +538,8 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     ) internal {
         // An ERC-7913 signer is at least 20 bytes (a 20-byte EOA/1271 address, or verifier+key).
         // Checked here so every caller (onInstall, addKey) is covered by a single guard.
-        require(signerData.length >= 20, InvalidSignerLength());
+        require(signerData.length >= 20 && signerData.length <= Structs.MAX_SIGNER_DATA_LENGTH, InvalidSignerLength());
+        require(clientData.length <= Structs.MAX_CLIENT_DATA_LENGTH, Errors.ClientDataTooLong());
 
         // The module owns every ERC-734 purpose (1..6). Reject anything out of range.
         require(_isValidPurpose(purpose), InvalidPurpose(purpose));
@@ -644,6 +644,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         // removeClaim reads a claim's topic and treats 0 as "no such claim". So a claim stored
         // under topic 0 could never be removed. Reject it up front.
         require(topic != 0, Errors.InvalidClaimTopic());
+        require(signature.length <= Structs.MAX_CLAIM_SIGNATURE_LENGTH, Errors.ClaimSignatureTooLong());
+        require(data.payload.length <= Structs.MAX_CLAIM_PAYLOAD_LENGTH, Errors.ClaimPayloadTooLong());
+        require(bytes(uri).length <= Structs.MAX_CLAIM_URI_LENGTH, Errors.ClaimUriTooLong());
         require(IClaimIssuer(issuer).isClaimValid(IIdentity(account), topic, signature, data), Errors.InvalidClaim());
 
         AccountRegistry storage s = _store().registries[account];

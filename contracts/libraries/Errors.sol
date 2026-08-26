@@ -169,6 +169,20 @@ library Errors {
     ///         below the consumer's claim-add threshold.
     error ReputationBelowClaimAddThreshold(address identity, uint256 score, uint256 threshold);
 
+    /* ----- ERC734Validator field caps (see {Structs}) ----- */
+
+    /// @notice Reverts when a key's clientData exceeds {Structs.MAX_CLIENT_DATA_LENGTH}.
+    error ClientDataTooLong();
+
+    /// @notice Reverts when a claim's signature exceeds {Structs.MAX_CLAIM_SIGNATURE_LENGTH}.
+    error ClaimSignatureTooLong();
+
+    /// @notice Reverts when a claim's payload exceeds {Structs.MAX_CLAIM_PAYLOAD_LENGTH}.
+    error ClaimPayloadTooLong();
+
+    /// @notice Reverts when a claim's uri exceeds {Structs.MAX_CLAIM_URI_LENGTH}.
+    error ClaimUriTooLong();
+
     /* ----- Identity ----- */
 
     /// @notice {IdentityFactory.initializeBeacon} was called but the beacon is already deployed.
