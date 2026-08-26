@@ -21,6 +21,8 @@ import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
+import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
+import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 
 import { ClaimSignerHelper } from "./helpers/ClaimSignerHelper.sol";
@@ -41,8 +43,8 @@ contract SmartAccountTest is OnchainIDSetup {
     }
 
     /// @notice A CLAIM_SIGNER key must not be able to call self-targeted `addKey` through
-    ///         execute(): the queue module's auto-approval is bounded to claim selectors only,
-    ///         and explicit approval of a self-call requires MANAGEMENT.
+    ///         execute(): a self-call never auto-approves below MANAGEMENT, and explicit
+    ///         approval of a self-call requires MANAGEMENT too.
     function test_execute_selfCall_byClaimSigner_does_not_escalate_to_addKey() public {
         bytes32 evilKey = keccak256("evil-management-key");
         bytes memory addKeyData = abi.encodeWithSignature(
@@ -55,6 +57,73 @@ contract SmartAccountTest is OnchainIDSetup {
 
         (,, bytes32 storedKey) = IERC734(address(aliceIdentity)).getKey(evilKey);
         assertEq(storedKey, bytes32(0), "CLAIM_SIGNER must not escalate to MANAGEMENT via execute/addKey");
+    }
+
+    /// @notice A self-targeted addClaim queued by a CLAIM_SIGNER does not auto-approve. It used to
+    ///         look like it did: the rule matched, the call dispatched, then the claim registry saw
+    ///         the account as the caller instead of the signer and reverted, which the queue caught
+    ///         and reported as ExecutionFailed. The caller saw a successful transaction and no
+    ///         claim. Now the request just stays queued, and the direct call is the way to add it.
+    function test_execute_selfCall_byClaimSigner_doesNotAutoApprove_addClaim() public {
+        uint256 topic = 42;
+        Structs.ClaimData memory data =
+            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: abi.encode("verified") });
+
+        // Self-issued claim: aliceIdentity is the issuer and carol's CLAIM_SIGNER key signs it.
+        bytes memory sig =
+            ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(aliceIdentity), topic, data);
+        bytes32 claimId = ClaimSignerHelper.computeClaimId(address(aliceIdentity), topic);
+
+        bytes memory addClaimData =
+            abi.encodeCall(IERC735.addClaim, (topic, 1, address(aliceIdentity), sig, data, "uri"));
+
+        vm.prank(carol);
+        uint256 executionId = IKeyExecutor(address(aliceIdentity)).execute(address(aliceIdentity), 0, addClaimData);
+
+        (uint256 queuedTopic,,,,,) = IERC735(address(aliceIdentity)).getClaim(claimId);
+        assertEq(queuedTopic, 0, "self-targeted addClaim must not run from the queue");
+
+        KeyApprovalModule.Execution memory queued =
+            onchainidSetup.keyApprovalModule.getExecutionData(address(aliceIdentity), executionId);
+        assertFalse(queued.executed, "request should still be pending, not marked executed");
+        assertFalse(queued.approved, "request should not be approved");
+
+        // The direct call is the supported route and still works for the same claim.
+        vm.prank(carol);
+        IERC735(address(aliceIdentity)).addClaim(topic, 1, address(aliceIdentity), sig, data, "uri");
+
+        (uint256 directTopic,,,,,) = IERC735(address(aliceIdentity)).getClaim(claimId);
+        assertEq(directTopic, topic, "direct addClaim should store the claim");
+    }
+
+    /// @notice Removing the self-target auto-approve rule must not touch what claim keys can do on
+    ///         the direct path. CLAIM_ADDER adds a claim signed by a CLAIM_SIGNER, and still cannot
+    ///         remove one.
+    function test_claimAdder_addsAndCannotRemove_onDirectPath() public {
+        address adder = makeAddr("claim-adder");
+        vm.prank(alice);
+        aliceIdentity.addKeyWithData(
+            ClaimSignerHelper.addressToKey(adder), KeyPurposes.CLAIM_ADDER, KeyTypes.ECDSA, abi.encodePacked(adder), ""
+        );
+
+        uint256 topic = 7001;
+        Structs.ClaimData memory data =
+            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: abi.encode("kyc") });
+
+        // carol holds CLAIM_SIGNER and signs; the adder submits.
+        bytes memory sig =
+            ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(aliceIdentity), topic, data);
+
+        vm.prank(adder);
+        IERC735(address(aliceIdentity)).addClaim(topic, 1, address(aliceIdentity), sig, data, "uri");
+
+        bytes32 claimId = ClaimSignerHelper.computeClaimId(address(aliceIdentity), topic);
+        (uint256 got,,,,,) = IERC735(address(aliceIdentity)).getClaim(claimId);
+        assertEq(got, topic, "CLAIM_ADDER must still be able to add claims");
+
+        vm.prank(adder);
+        vm.expectRevert(Errors.SenderDoesNotHaveClaimSignerKey.selector);
+        IERC735(address(aliceIdentity)).removeClaim(claimId);
     }
 
     /// You can't remove the last MANAGEMENT key. If you could, nothing would satisfy
@@ -76,6 +145,65 @@ contract SmartAccountTest is OnchainIDSetup {
         vm.prank(alice);
         vm.expectRevert(Errors.CannotRemoveLastManagementKey.selector);
         aliceIdentity.removeKey(aliceKey, KeyPurposes.MANAGEMENT);
+    }
+
+    /// @notice The KeyApprovalModule holds MANAGEMENT as a MODULE key, which cannot sign.
+    ///         It does not count toward the last-manager guard, so alice is the only real
+    ///         manager and removing her MANAGEMENT purpose must revert.
+    function test_removeKey_lastSigningManagementKey_revertsDespiteModuleKey() public {
+        bytes32 aliceKey = keccak256(abi.encodePacked(alice));
+        bytes32 moduleKey = keccak256(abi.encodePacked(address(onchainidSetup.keyApprovalModule)));
+
+        // The module holds MANAGEMENT (executor gating reads this).
+        assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(moduleKey, KeyPurposes.MANAGEMENT),
+            "module key holds MANAGEMENT"
+        );
+        // But the MANAGEMENT index only counts signers, so alice is the last manager.
+        assertEq(
+            IERC734(address(aliceIdentity)).getKeysByPurpose(KeyPurposes.MANAGEMENT).length,
+            1,
+            "MANAGEMENT index counts signer keys only"
+        );
+
+        vm.prank(alice);
+        vm.expectRevert(Errors.CannotRemoveLastManagementKey.selector);
+        aliceIdentity.removeKey(aliceKey, KeyPurposes.MANAGEMENT);
+    }
+
+    /// @notice A MODULE key granted MANAGEMENT keeps its authority through keyHasPurpose but
+    ///         never shows up in the MANAGEMENT enumeration. Both sides asserted directly so a
+    ///         refactor of the index can't silently drop either one.
+    function test_moduleManagementKey_hasPurposeButNotEnumerated() public view {
+        bytes32 moduleKey = keccak256(abi.encodePacked(address(onchainidSetup.keyApprovalModule)));
+
+        assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(moduleKey, KeyPurposes.MANAGEMENT),
+            "module key holds MANAGEMENT"
+        );
+
+        bytes32[] memory managers = IERC734(address(aliceIdentity)).getKeysByPurpose(KeyPurposes.MANAGEMENT);
+        for (uint256 i = 0; i < managers.length; i++) {
+            assertTrue(managers[i] != moduleKey, "module key must not be enumerated as a manager");
+        }
+    }
+
+    /// @notice The guard is skipped for MODULE keys, so a module's registration can always
+    ///         be dropped and uninstall keeps working.
+    function test_removeKey_moduleManagementKey_alwaysRemovable() public {
+        bytes32 aliceKey = keccak256(abi.encodePacked(alice));
+        bytes32 moduleKey = keccak256(abi.encodePacked(address(onchainidSetup.keyApprovalModule)));
+
+        vm.prank(alice);
+        aliceIdentity.removeKey(moduleKey, KeyPurposes.MANAGEMENT);
+
+        assertFalse(
+            IERC734(address(aliceIdentity)).keyHasPurpose(moduleKey, KeyPurposes.MANAGEMENT),
+            "module registration dropped"
+        );
+        assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(aliceKey, KeyPurposes.MANAGEMENT), "alice still manages"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -269,6 +397,72 @@ contract SmartAccountTest is OnchainIDSetup {
         vm.prank(carol);
         vm.expectRevert(Errors.SenderDoesNotHaveManagementKey.selector);
         aliceIdentity.addKey(newKey, KeyPurposes.MANAGEMENT, KeyTypes.ECDSA);
+    }
+
+    /// Fallback handlers register per selector, so KAM holds four installs backed by one
+    /// MODULE key. Dropping a single read-only selector must not strip that key: the
+    /// executor install and the other handlers still rely on it.
+    function test_uninstallModule_fallbackSelector_keepsModulePurposes() public {
+        address kam = address(onchainidSetup.keyApprovalModule);
+        bytes32 moduleKey = keccak256(abi.encodePacked(kam));
+
+        vm.prank(alice);
+        aliceIdentity.uninstallModule(
+            MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.getCurrentNonce.selector)
+        );
+
+        // The selector is unwired...
+        vm.expectRevert();
+        IKeyExecutor(address(aliceIdentity)).getCurrentNonce();
+
+        // ...but the module keeps its MANAGEMENT registration and stays an executor.
+        assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(moduleKey, KeyPurposes.MANAGEMENT),
+            "fallback uninstall must not strip the module's key"
+        );
+        assertTrue(
+            aliceIdentity.isModuleInstalled(MODULE_TYPE_EXECUTOR, kam, ""), "executor install should be untouched"
+        );
+
+        // The remaining execute handler still dispatches through the executor.
+        Counter counter = new Counter();
+        vm.prank(david);
+        IKeyExecutor(address(aliceIdentity)).execute(address(counter), 0, abi.encodeCall(Counter.increment, ()));
+        assertEq(counter.count(), 1, "executor dispatch should keep working after the selector drop");
+    }
+
+    /// A module key never counts towards MANAGEMENT, so KAM holding MANAGEMENT does not keep
+    /// alice's key removable: hers is the only one the index sees, and the last-manager guard
+    /// rejects the removal. The identity therefore cannot reach a state where a module is the
+    /// sole manager.
+    function test_removeKey_lastSignerManagement_revertsEvenWhenModuleHoldsManagement() public {
+        address kam = address(onchainidSetup.keyApprovalModule);
+        bytes32 aliceKey = keccak256(abi.encodePacked(alice));
+
+        assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(keccak256(abi.encodePacked(kam)), KeyPurposes.MANAGEMENT),
+            "KAM holds MANAGEMENT authority"
+        );
+
+        vm.prank(alice);
+        vm.expectRevert(ERC734Validator.CannotRemoveLastManagementKey.selector);
+        aliceIdentity.removeKey(aliceKey, KeyPurposes.MANAGEMENT);
+    }
+
+    /// A fallback selector drop leaves the module's key alone even when the caller is the module
+    /// itself. This is the L-06 property, checked from the module's own call frame.
+    function test_uninstallModule_fallbackSelector_calledByModule_keepsItsKey() public {
+        address kam = address(onchainidSetup.keyApprovalModule);
+
+        vm.prank(kam);
+        aliceIdentity.uninstallModule(
+            MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.getCurrentNonce.selector)
+        );
+
+        assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(keccak256(abi.encodePacked(kam)), KeyPurposes.MANAGEMENT),
+            "the module's key survives the selector drop"
+        );
     }
 
     /// @notice A MANAGEMENT-purpose module cannot use its onUninstall callback to grant itself a

@@ -122,11 +122,51 @@ contract ExecutionsTest is OnchainIDSetup {
 
         vm.deal(david, 5 ether);
         vm.prank(david);
-        IKeyExecutor(address(aliceIdentity)).execute{ value: 5 ether }(address(bad), 5 ether, "");
+        uint256 id = IKeyExecutor(address(aliceIdentity)).execute{ value: 5 ether }(address(bad), 5 ether, "");
 
         assertEq(address(aliceIdentity).balance, 5 ether, "identity keeps the 5 ETH");
         assertEq(kam.balance, 0, "module empty");
         assertEq(address(bad).balance, 0, "reverting target received nothing");
+
+        // The request is closed either way, but the outcome must not read as a success.
+        KeyApprovalModule.Execution memory exec =
+            onchainidSetup.keyApprovalModule.getExecutionData(address(aliceIdentity), id);
+        assertTrue(exec.executed, "attempted and closed");
+        assertFalse(exec.succeeded, "failed dispatch must not report success");
+    }
+
+    /// @notice A dispatch that lands records `succeeded`, so a reader can tell it apart from
+    ///         the failed and rejected requests that also carry `executed`.
+    function test_execute_successRecordsSucceeded() public {
+        ETHReceiver receiver = new ETHReceiver();
+
+        vm.deal(address(aliceIdentity), 1 ether);
+        vm.prank(david);
+        uint256 id = IKeyExecutor(address(aliceIdentity)).execute(address(receiver), 1 ether, "");
+
+        KeyApprovalModule.Execution memory exec =
+            onchainidSetup.keyApprovalModule.getExecutionData(address(aliceIdentity), id);
+        assertTrue(exec.executed, "attempted and closed");
+        assertTrue(exec.succeeded, "dispatch landed");
+    }
+
+    /// @notice A rejected request closes without ever dispatching, so it is not a success either.
+    function test_approve_rejectionIsNotASuccess() public {
+        address proposer = makeAddr("proposerRejected");
+        _grantProposer(proposer);
+
+        vm.prank(proposer);
+        uint256 id = IKeyExecutor(address(aliceIdentity)).execute(address(0xBEEF), 0, "");
+
+        // david holds ACTION, which is the approve gate for an external target.
+        vm.prank(david);
+        IKeyExecutor(address(aliceIdentity)).approve(id, false);
+
+        KeyApprovalModule.Execution memory exec =
+            onchainidSetup.keyApprovalModule.getExecutionData(address(aliceIdentity), id);
+        assertTrue(exec.executed, "rejection closes the request");
+        assertFalse(exec.approved, "rejected");
+        assertFalse(exec.succeeded, "never dispatched");
     }
 
     // -----------------------------------------------------------------------
