@@ -107,6 +107,11 @@ library Errors {
     ///         past its `expiry`.
     error PendingCrossChainLinkExpired(uint256 expiry);
 
+    /// @notice Reverts when a wallet envelope encodes its eip-155 chain reference
+    ///         with leading zero padding. The same chainid has one minimal
+    ///         encoding and the registry only accepts that one.
+    error NonCanonicalAccount(bytes account);
+
     /* ----- Verifier ----- */
 
     /// @notice The claim topic already exists.
