@@ -396,11 +396,14 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
 
     /// @dev Per-type gate for {createIdentityFor}. Unknown types revert. Admin registers
     ///      a type with `setIdentityTypePolicy` (use the AM's `PUBLIC_ROLE` for open types).
+    ///      Memberships carrying an AM execution delay are rejected rather than let the
+    ///      delay be silently bypassed — the factory has no scheduling flow.
     function _checkTypeRole(uint256 _identityType, address caller) private view {
         uint64 requiredRole = _storage().typePolicies[_identityType].roleId;
         require(requiredRole != 0, Errors.UnknownIdentityType(_identityType));
-        (bool isMember,) = IAccessManager(authority()).hasRole(requiredRole, caller);
+        (bool isMember, uint32 executionDelay) = IAccessManager(authority()).hasRole(requiredRole, caller);
         require(isMember, Errors.NotAuthorizedForIdentityType(caller, _identityType, requiredRole));
+        require(executionDelay == 0, Errors.DelayedRoleNotSupported(caller, requiredRole, executionDelay));
     }
 
     /// @dev {_walletKey} cast to address. Used as the nonce key so OZ Nonces

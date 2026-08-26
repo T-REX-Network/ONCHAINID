@@ -28,6 +28,15 @@ library Errors {
     /// @param requiredRole the AM role id required for that type.
     error NotAuthorizedForIdentityType(address caller, uint256 identityType, uint64 requiredRole);
 
+    /// @notice Reverts when the caller holds the type role but with a non-zero AM
+    ///         execution delay. The factory has no scheduling flow, so instead of
+    ///         silently ignoring the delay the call is rejected — grant per-type
+    ///         roles with a zero execution delay.
+    /// @param caller the address that attempted the deployment.
+    /// @param requiredRole the AM role id required for that type.
+    /// @param executionDelay the delay the caller's membership carries.
+    error DelayedRoleNotSupported(address caller, uint64 requiredRole, uint32 executionDelay);
+
     /// @notice Reverts when a deploy is attempted for a type the admin has not registered.
     ///         Admin enables a type by calling `setIdentityTypePolicy`. Use the AM's
     ///         `PUBLIC_ROLE` for open types.
