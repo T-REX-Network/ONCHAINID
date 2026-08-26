@@ -44,9 +44,8 @@ contract KeysTest is OnchainIDSetup {
     function test_RetrieveExistingKeysWithGivenPurpose() public view {
         bytes32[] memory keys = IERC734(address(aliceIdentity)).getKeysByPurpose(KeyPurposes.MANAGEMENT);
 
-        // Alice is one MANAGEMENT key; the auto-installed KeyApprovalModule is registered
-        // as another (its address is hashed and stored as a key so that dispatches through
-        // it are gated by the same ERC-734 purpose rule as any other key).
+        // Alice is a MANAGEMENT key. The KeyApprovalModule also holds MANAGEMENT but as a
+        // MODULE key it cannot sign, so it is left out of this enumeration.
         bool aliceFound = false;
         for (uint256 i = 0; i < keys.length; i++) {
             if (keys[i] == aliceKeyHash) {
