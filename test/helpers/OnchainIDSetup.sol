@@ -95,8 +95,8 @@ contract OnchainIDSetup is Test {
         claimIssuer = Identity(payable(claimIssuerAddr));
 
         // No validator install on the issuer: the merged module's `isClaimValid` verifies the
-        // claim signature directly via `SignatureChecker` (ERC-7913 dispatch). It does not
-        // round-trip through any installed validator on the issuer.
+        // claim signature directly via `_verify` (ERC-7913 dispatch), the same routine the key
+        // path uses. It does not round-trip through any installed validator on the issuer.
 
         // Create alice identity via factory
         vm.prank(deployer);

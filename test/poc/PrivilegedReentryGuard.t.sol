@@ -32,7 +32,8 @@ contract PocCounter {
 
 /// @title Own-module re-entry guard
 /// @notice The account must never let a call it dispatches land on one of its own installed
-///         modules, no matter who drives it. Module functions are reached via the account's
+///         modules, unless the account itself is the caller (see
+///         {test_selfCall_canTargetOwnModules}). Module functions are reached via the account's
 ///         fallback dispatch, which appends the real caller; `execute(module, ...)` skips that
 ///         append. The headline case: an ACTION signer must not be able to route a user op
 ///         through the installed {KeyApprovalModule} executor to grant itself MANAGEMENT.
@@ -219,24 +220,34 @@ contract PrivilegedReentryGuardTest is OnchainIDSetup {
         assertEq(counter.count(), 1, "ordinary external ACTION call must still run");
     }
 
-    /// @notice The own-module guard is unconditional: even the account itself cannot dispatch
-    ///         `execute` into one of its own modules. Key changes go through the MANAGEMENT-gated
-    ///         entry points (addKey and friends); module functions go through the fallback dispatch.
-    function test_selfCall_cannotTargetModule() public {
+    /// @notice The own-module guard exempts the account itself: a self-call may target an
+    ///         installed module. That is how the account runs module functions that only accept
+    ///         the account as caller, like the recovery module's cancel. Getting the account to
+    ///         self-call `execute` requires MANAGEMENT on every route, so nothing is escalated.
+    ///         The full nested flow is covered in test/modules/recovery/RecoveryModule.t.sol.
+    function test_selfCall_canTargetOwnModules() public {
         bytes memory addKeyData =
             abi.encodeCall(ERC734Validator.addKey, (abi.encodePacked(bob), "", KeyPurposes.ACTION, KeyTypes.ECDSA));
 
-        // Fallback-handler target: the validator serves addKey via the fallback dispatch.
+        // Registry module target: the call goes through and lands on the validator, which sees
+        // the account as caller, the same shape as KeyManager's own self-call forwarding.
         vm.prank(address(aliceIdentity));
-        (bool ok, bytes memory ret) = address(aliceIdentity).call(_singleExecute(address(validator), addKeyData));
-        assertFalse(ok, "self-call into a fallback handler module must be blocked");
-        assertEq(ret, abi.encodeWithSelector(Errors.OwnModuleTargetBlocked.selector, address(validator)));
+        (bool ok,) = address(aliceIdentity).call(_singleExecute(address(validator), addKeyData));
+        assertTrue(ok, "self-call into the registry module must pass the guard");
+        assertTrue(
+            validator.keyHasPurpose(address(aliceIdentity), keccak256(abi.encodePacked(bob)), KeyPurposes.ACTION),
+            "the call must actually reach the module"
+        );
 
         // Executor target.
         vm.prank(address(aliceIdentity));
-        (ok, ret) = address(aliceIdentity).call(_singleExecute(address(kam), addKeyData));
-        assertFalse(ok, "self-call into an executor module must be blocked");
-        assertEq(ret, abi.encodeWithSelector(Errors.OwnModuleTargetBlocked.selector, address(kam)));
+        (ok,) = address(aliceIdentity)
+            .call(
+                _singleExecute(
+                    address(kam), abi.encodeCall(KeyApprovalModule.getExecutionData, (address(aliceIdentity), 0))
+                )
+            );
+        assertTrue(ok, "self-call into an installed executor must pass the guard");
     }
 
     // --- validators-as-keys trust model (documented, not a gap) ---------
