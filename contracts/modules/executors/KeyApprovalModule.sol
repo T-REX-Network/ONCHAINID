@@ -63,6 +63,9 @@ contract KeyApprovalModule is IERC7579Module {
         bytes data;
         bool approved;
         bool executed;
+        // `executed` only says the request was attempted and is closed; it is set on a failed
+        // dispatch and on a rejection too. This is the one that says the call actually landed.
+        bool succeeded;
     }
 
     /// @dev Storage shared across all identities that install this module singleton.
@@ -120,7 +123,7 @@ contract KeyApprovalModule is IERC7579Module {
         AccountState storage state = _state[account];
         executionId = state.executionNonce++;
         state.executions[executionId] =
-            Execution({ to: _to, value: _value, data: _data, approved: false, executed: false });
+            Execution({ to: _to, value: _value, data: _data, approved: false, executed: false, succeeded: false });
 
         emit ExecutionRequested(account, executionId, _to, _value, _data);
 
@@ -226,6 +229,9 @@ contract KeyApprovalModule is IERC7579Module {
     /// @dev Dispatches via `executeFromExecutor`, which spends `execution.value` from the
     ///      identity's balance. try/catch so a failed dispatch emits `ExecutionFailed`
     ///      instead of reverting.
+    /// @dev `executed`/`approved` are written before the dispatch on purpose: they are what stops
+    ///      the target re-entering {approve} on the same id. They therefore cannot double as a
+    ///      success flag, so the outcome is recorded separately in `succeeded`.
     function _runApproved(address account, uint256 executionId) internal returns (bool success) {
         Execution storage execution = _state[account].executions[executionId];
 
@@ -241,6 +247,7 @@ contract KeyApprovalModule is IERC7579Module {
         bytes memory executionCalldata = abi.encodePacked(to, value, data);
 
         try IERC7579Execution(account).executeFromExecutor(mode, executionCalldata) returns (bytes[] memory) {
+            execution.succeeded = true;
             emit Executed(account, executionId, to, value, data);
             return true;
         } catch {
