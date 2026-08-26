@@ -177,8 +177,8 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         return false;
     }
 
-    /// @dev Live status resolution. Missing config, missing attestation, wrong schema,
-    ///      or unaccepted attester map to `NotIssued`. Bad UID payload maps to
+    /// @dev Live status resolution. Zero identity, missing config, missing attestation,
+    ///      wrong schema, or unaccepted attester map to `NotIssued`. Bad UID payload maps to
     ///      `BadSignature`. EAS revocation and expiry map to `Revoked` and `Expired`.
     ///      Recipient binding to `_identity` (self or any linked wallet, regardless of
     ///      factory status) maps to `Valid`. Wallet status is ignored on purpose; see
@@ -193,6 +193,10 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         view
         returns (ClaimStatus)
     {
+        // The zero identity holds no claims. Without this, an unlinked recipient resolves to
+        // zero on the wallet branch below and matches it.
+        if (address(_identity) == address(0)) return ClaimStatus.NotIssued;
+
         bytes32 schema = getSchemaForTopic(topic);
         if (schema == bytes32(0)) return ClaimStatus.NotIssued;
 
@@ -209,7 +213,7 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         }
 
         if (attestation.revocationTime != 0) return ClaimStatus.Revoked;
-        if (attestation.expirationTime != 0 && block.timestamp > attestation.expirationTime) {
+        if (attestation.expirationTime != 0 && block.timestamp >= attestation.expirationTime) {
             return ClaimStatus.Expired;
         }
 
