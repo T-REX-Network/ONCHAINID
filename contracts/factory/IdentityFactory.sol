@@ -122,6 +122,9 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     }
 
     /// @param initialAuthority AccessManager that backs every `restricted` function here.
+    /// @dev The EIP-712 domain version "1" is baked into every wallet link signature made
+    ///      against this factory. It is not a release marker and does not follow the identity
+    ///      implementation version.
     constructor(address initialAuthority) AccessManaged(initialAuthority) EIP712("IdentityFactory", "1") {
         require(initialAuthority != address(0), Errors.ZeroAddress());
         beacon = Create3.computeAddress(_BEACON_SALT);
@@ -143,8 +146,15 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     }
 
     /// @inheritdoc IIdentityFactory
-    function upgradeBeacon(address newImplementation) external restricted {
+    function upgradeBeacon(address newImplementation, string calldata expectedVersion) external restricted {
         require(newImplementation != address(0), Errors.ZeroAddress());
+        // The version string is compiled into the implementation. Without this check, a build
+        // that forgot the version bump would leave every identity reporting a stale release.
+        string memory actualVersion = Identity(payable(newImplementation)).version();
+        require(
+            keccak256(bytes(actualVersion)) == keccak256(bytes(expectedVersion)),
+            Errors.ImplementationVersionMismatch(expectedVersion, actualVersion)
+        );
         UpgradeableBeacon(beacon).upgradeTo(newImplementation);
         emit BeaconUpgraded(newImplementation);
     }

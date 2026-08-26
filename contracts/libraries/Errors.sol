@@ -178,6 +178,10 @@ library Errors {
     ///         deployed the beacon at its predetermined slot.
     error BeaconNotInitialized();
 
+    /// @notice The candidate beacon implementation reports a different version than the one
+    ///         the upgrader committed to in {IdentityFactory.upgradeBeacon}.
+    error ImplementationVersionMismatch(string expected, string actual);
+
     /// @notice The sender does not have the management key.
     error SenderDoesNotHaveManagementKey();
 
