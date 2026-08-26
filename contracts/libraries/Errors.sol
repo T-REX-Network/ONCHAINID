@@ -107,6 +107,11 @@ library Errors {
     ///         past its `expiry`.
     error PendingCrossChainLinkExpired(uint256 expiry);
 
+    /// @notice Reverts when a wallet envelope encodes its eip-155 chain reference
+    ///         with leading zero padding. The same chainid has one minimal
+    ///         encoding and the registry only accepts that one.
+    error NonCanonicalAccount(bytes account);
+
     /* ----- Verifier ----- */
 
     /// @notice The claim topic already exists.
@@ -226,7 +231,8 @@ library Errors {
 
     /// @notice A dispatched call targeted one of the account's own modules (an installed executor,
     ///         or the fallback handler for the call's selector). Module functions are reached via
-    ///         the account's fallback dispatch, never via `execute(module, ...)`.
+    ///         the account's fallback dispatch, never via `execute(module, ...)`. The only caller
+    ///         allowed to do this is the account itself.
     error OwnModuleTargetBlocked(address target);
 
     /// @notice An installed executor or fallback handler tried to dispatch a call whose target
