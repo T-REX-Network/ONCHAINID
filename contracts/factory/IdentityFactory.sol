@@ -101,9 +101,10 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         mapping(address identity => bool deployedByFactory) isFactoryIdentity;
         /// @dev Per-type deploy policy. Unregistered types (`roleId == 0`) revert.
         mapping(uint256 identityType => TypePolicy policy) typePolicies;
-        /// @dev Authorized ERC-7786 destination gateways. Inbound messages from
-        ///      anyone else are rejected. Manage via {setTrustedGateway}.
-        mapping(address gateway => bool trusted) trustedGateways;
+        /// @dev Gateways trusted per origin chain. The key is
+        ///      keccak256(chainType, chainReference). Inbound messages from anyone
+        ///      else are rejected. Manage via {setTrustedGateway}.
+        mapping(address gateway => mapping(bytes32 originKey => bool trusted)) trustedGateways;
         /// @dev Cross-chain link proposals awaiting identity-side confirmation.
         ///      Keyed by {_walletKey} so every encoding of a wallet shares one
         ///      pending slot. Cleared on {confirmCrossChainLink}.
@@ -262,15 +263,22 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     // ============ ERC-7786 — cross-chain wallet linking ============
 
     /// @inheritdoc IIdentityFactory
-    function setTrustedGateway(address gateway, bool trusted) external restricted {
+    function setTrustedGateway(address gateway, bytes2 chainType, bytes calldata chainReference, bool trusted)
+        external
+        restricted
+    {
         require(gateway != address(0), Errors.ZeroAddress());
-        _storage().trustedGateways[gateway] = trusted;
-        emit TrustedGatewaySet(gateway, trusted);
+        _storage().trustedGateways[gateway][_originKey(chainType, chainReference)] = trusted;
+        emit TrustedGatewaySet(gateway, chainType, chainReference, trusted);
     }
 
     /// @inheritdoc IIdentityFactory
-    function isTrustedGateway(address gateway) external view returns (bool) {
-        return _storage().trustedGateways[gateway];
+    function isTrustedGateway(address gateway, bytes2 chainType, bytes calldata chainReference)
+        external
+        view
+        returns (bool)
+    {
+        return _storage().trustedGateways[gateway][_originKey(chainType, chainReference)];
     }
 
     /// @inheritdoc IIdentityFactory
@@ -300,19 +308,18 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         emit CrossChainLinkConfirmed(account, msg.sender);
     }
 
-    /// @dev ERC-7786 gateway authorization. The factory delegates trust to its
-    ///      AccessManager: only addresses the AM admin has whitelisted via
-    ///      {setTrustedGateway} can deliver inbound messages.
-    function _isAuthorizedGateway(
-        address gateway,
-        bytes calldata /* sender */
-    )
-        internal
-        view
-        override
-        returns (bool)
-    {
-        return _storage().trustedGateways[gateway];
+    /// @dev ERC-7786 gateway authorization. The gateway must be trusted for the
+    ///      origin chain encoded in `sender`, so trusting it for one chain does
+    ///      not let it deliver from another.
+    function _isAuthorizedGateway(address gateway, bytes calldata sender) internal view override returns (bool) {
+        (bool success, bytes2 chainType, bytes calldata chainReference,) =
+            InteroperableAddress.tryParseV1Calldata(sender);
+        return success && _storage().trustedGateways[gateway][_originKey(chainType, chainReference)];
+    }
+
+    /// @dev Storage key for one origin chain.
+    function _originKey(bytes2 chainType, bytes calldata chainReference) private pure returns (bytes32) {
+        return keccak256(abi.encodePacked(chainType, chainReference));
     }
 
     /// @dev Decode an inbound cross-chain link proposal and stage it as pending.
