@@ -28,6 +28,15 @@ library Errors {
     /// @param requiredRole the AM role id required for that type.
     error NotAuthorizedForIdentityType(address caller, uint256 identityType, uint64 requiredRole);
 
+    /// @notice Reverts when the caller holds the type role but with a non-zero AM
+    ///         execution delay. The factory has no scheduling flow, so instead of
+    ///         silently ignoring the delay the call is rejected — grant per-type
+    ///         roles with a zero execution delay.
+    /// @param caller the address that attempted the deployment.
+    /// @param requiredRole the AM role id required for that type.
+    /// @param executionDelay the delay the caller's membership carries.
+    error DelayedRoleNotSupported(address caller, uint64 requiredRole, uint32 executionDelay);
+
     /// @notice Reverts when a deploy is attempted for a type the admin has not registered.
     ///         Admin enables a type by calling `setIdentityTypePolicy`. Use the AM's
     ///         `PUBLIC_ROLE` for open types.
@@ -106,6 +115,11 @@ library Errors {
     /// @notice Reverts when a cross-chain link proposal is delivered or confirmed
     ///         past its `expiry`.
     error PendingCrossChainLinkExpired(uint256 expiry);
+
+    /// @notice Reverts when a wallet envelope encodes its eip-155 chain reference
+    ///         with leading zero padding. The same chainid has one minimal
+    ///         encoding and the registry only accepts that one.
+    error NonCanonicalAccount(bytes account);
 
     /* ----- Verifier ----- */
 
@@ -230,7 +244,8 @@ library Errors {
 
     /// @notice A dispatched call targeted one of the account's own modules (an installed executor,
     ///         or the fallback handler for the call's selector). Module functions are reached via
-    ///         the account's fallback dispatch, never via `execute(module, ...)`.
+    ///         the account's fallback dispatch, never via `execute(module, ...)`. The only caller
+    ///         allowed to do this is the account itself.
     error OwnModuleTargetBlocked(address target);
 
     /// @notice An installed executor or fallback handler tried to dispatch a call whose target
