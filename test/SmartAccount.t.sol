@@ -22,6 +22,7 @@ import { Errors } from "contracts/libraries/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
+import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 
 import { ClaimSignerHelper } from "./helpers/ClaimSignerHelper.sol";
@@ -430,16 +431,28 @@ contract SmartAccountTest is OnchainIDSetup {
         assertEq(counter.count(), 1, "executor dispatch should keep working after the selector drop");
     }
 
-    /// When the module's key is the only MANAGEMENT holder, the old strip-everything path
-    /// hit `CannotRemoveLastManagementKey` and the handler could not be uninstalled at all.
-    /// Fallback uninstalls no longer touch keys, so the drop goes through.
-    function test_uninstallModule_fallbackSelector_whenModuleIsLastManagement_succeeds() public {
+    /// A module key never counts towards MANAGEMENT, so KAM holding MANAGEMENT does not keep
+    /// alice's key removable: hers is the only one the index sees, and the last-manager guard
+    /// rejects the removal. The identity therefore cannot reach a state where a module is the
+    /// sole manager.
+    function test_removeKey_lastSignerManagement_revertsEvenWhenModuleHoldsManagement() public {
         address kam = address(onchainidSetup.keyApprovalModule);
         bytes32 aliceKey = keccak256(abi.encodePacked(alice));
 
-        // Leave KAM as the sole MANAGEMENT key.
+        assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(keccak256(abi.encodePacked(kam)), KeyPurposes.MANAGEMENT),
+            "KAM holds MANAGEMENT authority"
+        );
+
         vm.prank(alice);
+        vm.expectRevert(ERC734Validator.CannotRemoveLastManagementKey.selector);
         aliceIdentity.removeKey(aliceKey, KeyPurposes.MANAGEMENT);
+    }
+
+    /// A fallback selector drop leaves the module's key alone even when the caller is the module
+    /// itself. This is the L-06 property, checked from the module's own call frame.
+    function test_uninstallModule_fallbackSelector_calledByModule_keepsItsKey() public {
+        address kam = address(onchainidSetup.keyApprovalModule);
 
         vm.prank(kam);
         aliceIdentity.uninstallModule(
@@ -448,7 +461,7 @@ contract SmartAccountTest is OnchainIDSetup {
 
         assertTrue(
             IERC734(address(aliceIdentity)).keyHasPurpose(keccak256(abi.encodePacked(kam)), KeyPurposes.MANAGEMENT),
-            "the last MANAGEMENT key survives the selector drop"
+            "the module's key survives the selector drop"
         );
     }
 
