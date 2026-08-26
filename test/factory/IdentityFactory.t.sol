@@ -21,6 +21,7 @@ import { Errors } from "contracts/libraries/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
+import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 import { Vm } from "forge-std/Vm.sol";
 import { RevertingIdentity } from "test/mocks/RevertingIdentity.sol";
@@ -608,8 +609,10 @@ contract IdentityFactoryTest is OnchainIDSetup {
         // Grant the validator module MANAGEMENT: the only MANAGEMENT holder is now a MODULE key.
         mods[0].purpose = KeyPurposes.MANAGEMENT;
 
+        // mods[0] is the registry module itself, so the self-key guard rejects the grant before
+        // the deploy ever reaches the management-key count.
         vm.prank(deployer);
-        vm.expectRevert(Errors.NoManagementKeyInKeys.selector);
+        vm.expectRevert(ERC734Validator.ModuleCannotBeKey.selector);
         onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "modMgmt", keys, mods);
     }
 
