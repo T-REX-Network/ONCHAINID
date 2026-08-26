@@ -20,8 +20,10 @@ import { ERC734Validator } from "./modules/validators/ERC734Validator.sol";
  *      ({Identity}) as an immutable fixed at implementation deploy time.
  *
  *      The ERC-734 *getter* selectors (`getKey`, `getKeyPurposes`, `getKeysByPurpose`,
- *      `keyHasPurpose`) are served by the account's ERC-7579 fallback, which routes them to the
- *      enshrined module. They are intentionally not implemented here.
+ *      `keyHasPurpose`) are implemented here as plain functions forwarding to the enshrined
+ *      module, so key-state reads through the account are always answered by the registry and
+ *      never by an installed fallback handler. A real function takes precedence over ERC-7579
+ *      fallback dispatch, so these selectors cannot be routed elsewhere by module installation.
  */
 abstract contract KeyManager {
 
@@ -107,6 +109,55 @@ abstract contract KeyManager {
         // could register one keyHash while attaching a different signer's bytes.
         require(_key == keccak256(_signerData), Errors.InvalidSignerData());
         ERC734Validator(registryModule()).addKey(_signerData, _clientData, _purpose, _type);
+    }
+
+    /// @notice `IERC734.getKey` for this identity, answered by the enshrined registry.
+    function getKey(bytes32 _key)
+        public
+        view
+        virtual
+        returns (uint256[] memory purposes, uint256 keyType, bytes32 key)
+    {
+        return ERC734Validator(registryModule()).getKey(address(this), _key);
+    }
+
+    /// @notice `IERC734.getKeyPurposes` for this identity. Returns the full set; use the
+    ///         `(_key, start, end)` overload for large sets.
+    function getKeyPurposes(bytes32 _key) public view virtual returns (uint256[] memory purposes) {
+        return ERC734Validator(registryModule()).getKeyPurposes(address(this), _key);
+    }
+
+    /// @notice Paginated variant of {getKeyPurposes}. Returns purposes in the index range
+    ///         `[start, end)`; `end` past the set size returns the available tail.
+    function getKeyPurposes(bytes32 _key, uint256 start, uint256 end)
+        public
+        view
+        virtual
+        returns (uint256[] memory purposes)
+    {
+        return ERC734Validator(registryModule()).getKeyPurposes(address(this), _key, start, end);
+    }
+
+    /// @notice `IERC734.getKeysByPurpose` for this identity. Returns the full set; use the
+    ///         `(_purpose, start, end)` overload for large sets.
+    function getKeysByPurpose(uint256 _purpose) public view virtual returns (bytes32[] memory keys) {
+        return ERC734Validator(registryModule()).getKeysByPurpose(address(this), _purpose);
+    }
+
+    /// @notice Paginated variant of {getKeysByPurpose}. Returns key hashes in the index range
+    ///         `[start, end)`; `end` past the set size returns the available tail.
+    function getKeysByPurpose(uint256 _purpose, uint256 start, uint256 end)
+        public
+        view
+        virtual
+        returns (bytes32[] memory keys)
+    {
+        return ERC734Validator(registryModule()).getKeysByPurpose(address(this), _purpose, start, end);
+    }
+
+    /// @notice `IERC734.keyHasPurpose` for this identity. MANAGEMENT satisfies any purpose.
+    function keyHasPurpose(bytes32 _key, uint256 _purpose) public view virtual returns (bool exists) {
+        return _moduleKeyHasPurpose(_key, _purpose);
     }
 
     /// @notice The enshrined registry module. Implemented by the concrete account ({Identity}) as

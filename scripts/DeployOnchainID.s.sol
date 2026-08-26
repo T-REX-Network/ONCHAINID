@@ -64,8 +64,9 @@ contract DeployOnchainID is Script {
     ///      authority may not have a key to sign with.
     uint64 internal constant ROLE_PUBLIC_AUTHORITY = 3;
 
-    /// @dev Can create CORPORATE, IOT and AI_AGENT identities. Nobody onboards these from a
-    ///      wallet themselves, a registrar does it for them, so the role names who may.
+    /// @dev Can create INDIVIDUAL, CORPORATE, IOT and AI_AGENT identities for a third
+    ///      party. Third-party onboarding stays with named issuers because bindings are
+    ///      sticky; self-deploy remains open for these types.
     uint64 internal constant ROLE_ISSUER = 4;
 
     function run() external {
@@ -77,9 +78,7 @@ contract DeployOnchainID is Script {
 
         // 1. IdentityUtilities implementation + proxy
         IdentityUtilities utilitiesImpl = new IdentityUtilities();
-        IdentityUtilitiesProxy utilitiesProxy = new IdentityUtilitiesProxy(
-            address(utilitiesImpl), abi.encodeCall(IdentityUtilities.initialize, (deployer))
-        );
+        IdentityUtilitiesProxy utilitiesProxy = new IdentityUtilitiesProxy(address(utilitiesImpl), deployer);
         console.log("IdentityUtilities implementation:", address(utilitiesImpl));
         console.log("IdentityUtilities proxy:", address(utilitiesProxy));
 
@@ -144,8 +143,6 @@ contract DeployOnchainID is Script {
         // self-deploy because their identity represents a contract, not msg.sender.
         // CLAIM_ISSUER also opts out so the admin role on createIdentityFor is not
         // bypassable via self-deploy.
-        uint64 publicRole = am.PUBLIC_ROLE();
-
         // Gated for createIdentityFor; self-deploy disabled. ASSET and SMART_CONTRACT are
         // single-binding: the bound contract can't sign, so the role must not be
         // PUBLIC_ROLE or anyone could bind a contract to keys they alone hold. Both use the
@@ -157,11 +154,11 @@ contract DeployOnchainID is Script {
         // Self-deploy is open for every type below: the caller is the account, so there is
         // nothing to abuse. createIdentityFor is what the role gates.
         //
-        // INDIVIDUAL stays on PUBLIC_ROLE so anyone can onboard a user. That is safe for the
-        // user, who ends up managing the identity alone, but it does let a stranger bind a
-        // wallet first. Bindings are sticky, so that wallet can then never be onboarded into
-        // a different identity. Move this to ROLE_ISSUER if that griefing matters to you.
-        idFactory.setIdentityTypePolicy(IdentityTypes.INDIVIDUAL, publicRole, true, false);
+        // INDIVIDUAL third-party onboarding goes through ROLE_ISSUER. Bindings are sticky,
+        // so an open createIdentityFor would let a stranger bind a wallet to an identity
+        // its owner never asked for, blocking that wallet from any other identity. Users
+        // who want an identity without an issuer can still self-deploy.
+        idFactory.setIdentityTypePolicy(IdentityTypes.INDIVIDUAL, ROLE_ISSUER, true, false);
 
         // Restricted for createIdentityFor. These are signing entities, a company multisig,
         // a provisioned device, an agent key, so they keep the sole management guarantee.
@@ -202,6 +199,10 @@ contract DeployOnchainID is Script {
         // 11. ERC-7913 WebAuthn Verifier (stateless — verifies P-256 WebAuthn assertions on-chain)
         ERC7913WebAuthnVerifier webAuthnVerifier = new ERC7913WebAuthnVerifier();
         console.log("ERC7913WebAuthnVerifier:", address(webAuthnVerifier));
+
+        // Approve it for linkAccount: ERC-7913 signers only link through a
+        // verifier on this list.
+        idFactory.setTrustedVerifier(address(webAuthnVerifier), true);
 
         vm.stopBroadcast();
 
