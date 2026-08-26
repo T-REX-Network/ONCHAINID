@@ -67,7 +67,8 @@ library IdentityHelper {
         setup.beacon = UpgradeableBeacon(setup.idFactory.beacon());
 
         // Register every standard type with PUBLIC_ROLE and selfDeployable = true for
-        // a permissive test default.
+        // a permissive test default. ASSET and SMART_CONTRACT are single-binding as
+        // in production.
         uint256[8] memory types = [
             IdentityTypes.ASSET,
             IdentityTypes.INDIVIDUAL,
@@ -79,7 +80,8 @@ library IdentityHelper {
             IdentityTypes.AI_AGENT
         ];
         for (uint256 i = 0; i < types.length; i++) {
-            setup.idFactory.setIdentityTypePolicy(types[i], PUBLIC_ROLE, true);
+            bool singleBinding = types[i] == IdentityTypes.ASSET || types[i] == IdentityTypes.SMART_CONTRACT;
+            setup.idFactory.setIdentityTypePolicy(types[i], PUBLIC_ROLE, true, singleBinding);
         }
     }
 

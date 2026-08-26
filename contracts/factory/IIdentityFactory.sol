@@ -63,8 +63,12 @@ interface IIdentityFactory {
 
     /// @notice Emitted when the policy for a given identity type is set. Setting a policy
     ///         registers the type. `selfDeployable` gates {createIdentity}: true allows
-    ///         self-deploy, false reserves the type for {createIdentityFor}.
-    event IdentityTypePolicySet(uint256 indexed identityType, uint64 indexed roleId, bool selfDeployable);
+    ///         self-deploy, false reserves the type for {createIdentityFor}. `singleBinding`
+    ///         marks types bound to one contract (ASSET, SMART_CONTRACT): they keep the
+    ///         account set at deploy and can never link or revoke another.
+    event IdentityTypePolicySet(
+        uint256 indexed identityType, uint64 indexed roleId, bool selfDeployable, bool singleBinding
+    );
 
     /// @notice Emitted when an identity type is unregistered (both deploy paths revert).
     event IdentityTypePolicyRemoved(uint256 indexed identityType);
@@ -129,11 +133,14 @@ interface IIdentityFactory {
     ) external returns (address);
 
     /// @notice Set the per-type policy: AM role required to call {createIdentityFor},
-    ///         and whether {createIdentity} (self-deploy) is allowed. Setting a policy
-    ///         registers the type; registration is tracked separately from the role, so
-    ///         the AM's `ADMIN_ROLE` (id 0) is usable like any other role. `restricted`
-    ///         via the AM.
-    function setIdentityTypePolicy(uint256 _identityType, uint64 _roleId, bool _selfDeployable) external;
+    ///         whether {createIdentity} (self-deploy) is allowed, and whether the type is
+    ///         single-binding. Pass `_singleBinding = true` for types bound to one contract
+    ///         (ASSET, SMART_CONTRACT, ...): they keep the account set at deploy and can
+    ///         never link or revoke another. Setting a policy registers the type;
+    ///         registration is tracked separately from the role, so the AM's `ADMIN_ROLE`
+    ///         (id 0) is usable like any other role. `restricted` via the AM.
+    function setIdentityTypePolicy(uint256 _identityType, uint64 _roleId, bool _selfDeployable, bool _singleBinding)
+        external;
 
     /// @notice Unregister an identity type (both deploy paths will revert). `restricted`
     ///         via the AM.
@@ -144,7 +151,7 @@ interface IIdentityFactory {
     function getIdentityTypePolicy(uint256 _identityType)
         external
         view
-        returns (uint64 roleId, bool selfDeployable, bool registered);
+        returns (uint64 roleId, bool selfDeployable, bool singleBinding, bool registered);
 
     /// @notice Link a wallet to the calling identity. The wallet authorizes the link via
     ///         an EIP-712 `LinkAccount` signature. Supports EOAs, ERC-1271 smart wallets,

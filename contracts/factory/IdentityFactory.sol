@@ -77,10 +77,14 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     /// @dev Per-type deploy policy. `registered` carries registration explicitly so
     ///      `roleId == 0` (the AM's ADMIN_ROLE) stays usable as a type's required role.
     ///      Unregistered types revert from both deploy entry points. `selfDeployable`
-    ///      gates {createIdentity}. uint64 + two bools pack into one storage slot.
+    ///      gates {createIdentity}. `singleBinding` is true for types that represent a
+    ///      contract, not a signer (ASSET, SMART_CONTRACT, ...): they keep the one account
+    ///      set at deploy and can never link or revoke another. uint64 + three bools pack
+    ///      into one storage slot.
     struct TypePolicy {
         uint64 roleId;
         bool selfDeployable;
+        bool singleBinding;
         bool registered;
     }
 
@@ -167,9 +171,12 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     }
 
     /// @inheritdoc IIdentityFactory
-    function setIdentityTypePolicy(uint256 _identityType, uint64 _roleId, bool _selfDeployable) external restricted {
-        _storage().typePolicies[_identityType] = TypePolicy(_roleId, _selfDeployable, true);
-        emit IdentityTypePolicySet(_identityType, _roleId, _selfDeployable);
+    function setIdentityTypePolicy(uint256 _identityType, uint64 _roleId, bool _selfDeployable, bool _singleBinding)
+        external
+        restricted
+    {
+        _storage().typePolicies[_identityType] = TypePolicy(_roleId, _selfDeployable, _singleBinding, true);
+        emit IdentityTypePolicySet(_identityType, _roleId, _selfDeployable, _singleBinding);
     }
 
     /// @inheritdoc IIdentityFactory
@@ -246,15 +253,6 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // contracts could register themselves and feed bogus claims to T-REX modules.
         require(_storage().isFactoryIdentity[msg.sender], Errors.NotFactoryIdentity(msg.sender));
 
-        // Non-signing-entity identities (ASSET, SMART_CONTRACT) are bound to one contract
-        // at deploy. Adding more wallets to them would break the 1:1 contract↔identity
-        // mapping.
-        uint256 idType = IIdentity(msg.sender).getIdentityType();
-        require(
-            idType != IdentityTypes.ASSET && idType != IdentityTypes.SMART_CONTRACT,
-            Errors.CannotLinkToAssetIdentity(msg.sender)
-        );
-
         bytes32 digest = _hashTypedDataV4(
             keccak256(abi.encode(_LINK_ACCOUNT_TYPEHASH, keccak256(account), msg.sender, nonce, expiry))
         );
@@ -275,13 +273,11 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
 
     /// @inheritdoc IIdentityFactory
     function revokeAccount(bytes calldata account) external {
-        // Symmetric with the linkAccount ASSET guard: non-signing-entity identities (ASSET,
-        // SMART_CONTRACT) cannot re-link a fresh wallet because the bound contract can't
-        // sign a LinkAccount digest. Allowing revoke would orphan the factory's discovery
-        // entry permanently. Block it.
-        uint256 idType = IIdentity(msg.sender).getIdentityType();
+        // Symmetric with the link guard: a single-binding identity cannot re-link a
+        // fresh account because the bound contract can't sign a LinkAccount digest,
+        // so allowing revoke would orphan the factory's discovery entry permanently.
         require(
-            idType != IdentityTypes.ASSET && idType != IdentityTypes.SMART_CONTRACT,
+            !_storage().typePolicies[IIdentity(msg.sender).getIdentityType()].singleBinding,
             Errors.CannotRevokeFromNonSigningIdentity(msg.sender)
         );
 
@@ -387,6 +383,15 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
             Errors.CrossChainSenderWalletMismatch(sender, walletEnvelope)
         );
 
+        // Malformed envelopes fail at delivery instead of surfacing at confirm.
+        InteroperableAddress.parseV1(walletEnvelope);
+
+        // A wallet on this chain already has the signature-checked linkAccount path,
+        // and a faithful gateway never authenticates a local sender. Accepting one
+        // here would link the wallet without its signature.
+        (bool isEvm, uint256 chainId,) = InteroperableAddress.tryParseEvmV1(walletEnvelope);
+        require(!isEvm || chainId != block.chainid, Errors.CrossChainLinkForLocalWallet(walletEnvelope));
+
         require(block.timestamp <= expiry, Errors.PendingCrossChainLinkExpired(expiry));
         require(_storage().isFactoryIdentity[identity], Errors.NotFactoryIdentity(identity));
 
@@ -451,10 +456,10 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     function getIdentityTypePolicy(uint256 _identityType)
         external
         view
-        returns (uint64 roleId, bool selfDeployable, bool registered)
+        returns (uint64 roleId, bool selfDeployable, bool singleBinding, bool registered)
     {
         TypePolicy storage policy = _storage().typePolicies[_identityType];
-        return (policy.roleId, policy.selfDeployable, policy.registered);
+        return (policy.roleId, policy.selfDeployable, policy.singleBinding, policy.registered);
     }
 
     /// @dev Per-type gate for {createIdentityFor}. Unknown types revert. Admin registers
@@ -548,7 +553,18 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     function _linkAccount(bytes memory account, address identity) internal {
         // Normalize first so the key, the stored record and the emitted event all
         // carry the canonical form no matter which encoding the caller supplied.
+        // This parses too, so a raw byte string can never become an enumerable record.
         account = _canonicalEnvelope(account);
+
+        // A single-binding identity takes exactly one account: the first, which is
+        // the factory's auto-link at deploy. Anything after that would break the
+        // 1:1 contract↔identity mapping.
+        require(
+            !_storage().typePolicies[IIdentity(identity).getIdentityType()].singleBinding
+                || _storage().accounts[identity].length() == 0,
+            Errors.CannotLinkToAssetIdentity(identity)
+        );
+
         bytes32 key = keccak256(account);
         WalletEntry storage entry = _storage().wallets[key];
 

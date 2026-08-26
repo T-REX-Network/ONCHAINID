@@ -116,6 +116,10 @@ library Errors {
     ///         past its `expiry`.
     error PendingCrossChainLinkExpired(uint256 expiry);
 
+    /// @notice Reverts when a cross-chain proposal names a wallet on this chain.
+    ///         Local wallets link through {linkAccount} with a signature.
+    error CrossChainLinkForLocalWallet(bytes wallet);
+
     /// @notice Reverts when {linkAccount} gets an envelope whose chain type is not
     ///         eip-155. The signature path can only verify EVM signers; foreign
     ///         wallets go through the ERC-7786 cross-chain path.

@@ -108,7 +108,7 @@ contract TokenOidTest is Test {
     ///      Self-deploy is disabled (ASSET represents a contract, not an EOA).
     function _restrictAssetToTokenFactoryRole() internal {
         vm.prank(deployer);
-        setup.idFactory.setIdentityTypePolicy(IdentityTypes.ASSET, ROLE_TOKEN_FACTORY, false);
+        setup.idFactory.setIdentityTypePolicy(IdentityTypes.ASSET, ROLE_TOKEN_FACTORY, false, true);
     }
 
     // ============ Per-identity-type gated asset creation ============

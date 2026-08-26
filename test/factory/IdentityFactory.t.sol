@@ -9,6 +9,7 @@ import { MockERC7913PermissiveVerifier } from "../mocks/MockERC7913PermissiveVer
 import { MockLyingERC734Getter } from "../mocks/MockLyingERC734Getter.sol";
 import { Constants } from "../utils/Constants.sol";
 import { AccessManager } from "@openzeppelin/contracts/access/manager/AccessManager.sol";
+import { ERC7786Recipient } from "@openzeppelin/contracts/crosschain/ERC7786Recipient.sol";
 import {
     MODULE_TYPE_EXECUTOR,
     MODULE_TYPE_FALLBACK,
@@ -219,7 +220,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         AccessManager am = new AccessManager(deployer);
         IdentityFactory freshFactory = new IdentityFactory(address(am));
         vm.prank(deployer);
-        freshFactory.setIdentityTypePolicy(IdentityTypes.INDIVIDUAL, type(uint64).max, true);
+        freshFactory.setIdentityTypePolicy(IdentityTypes.INDIVIDUAL, type(uint64).max, true, false);
 
         vm.prank(david);
         vm.expectRevert(Errors.BeaconNotInitialized.selector);
@@ -236,7 +237,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
     function _restrictTypeToFreshRole(uint256 identityType) internal returns (uint64 role) {
         role = 999;
         vm.prank(deployer);
-        onchainidSetup.idFactory.setIdentityTypePolicy(identityType, role, true);
+        onchainidSetup.idFactory.setIdentityTypePolicy(identityType, role, true, false);
     }
 
     function test_createIdentityFor_revertWhenCallerLacksTypeRole() public {
@@ -348,7 +349,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
     ///         sidestep the createIdentityFor role check.
     function test_createIdentity_revertsWhenNotSelfDeployable() public {
         vm.prank(deployer);
-        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 999, false);
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 999, false, false);
 
         address selfDeployer = makeAddr("selfIssuerEoa");
         vm.prank(selfDeployer);
@@ -364,12 +365,13 @@ contract IdentityFactoryTest is OnchainIDSetup {
     function test_setIdentityTypePolicy_emitsEventAndUpdatesView() public {
         vm.prank(deployer);
         vm.expectEmit(true, true, false, true, address(onchainidSetup.idFactory));
-        emit IIdentityFactory.IdentityTypePolicySet(IdentityTypes.CLAIM_ISSUER, 123, false);
-        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 123, false);
-        (uint64 roleId, bool selfDeployable, bool registered) =
+        emit IIdentityFactory.IdentityTypePolicySet(IdentityTypes.CLAIM_ISSUER, 123, false, true);
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 123, false, true);
+        (uint64 roleId, bool selfDeployable, bool singleBinding, bool registered) =
             onchainidSetup.idFactory.getIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER);
         assertEq(roleId, 123);
         assertEq(selfDeployable, false);
+        assertEq(singleBinding, true);
         assertTrue(registered);
     }
 
@@ -377,7 +379,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
     ///         (id 0) can gate a type like any other role.
     function test_setIdentityTypePolicy_adminRoleUsableAsTypeRole() public {
         vm.prank(deployer);
-        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 0, false);
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 0, false, false);
 
         // deployer is the AM admin, so it holds role 0; anyone else is rejected.
         vm.prank(alice);
@@ -405,7 +407,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         emit IIdentityFactory.IdentityTypePolicyRemoved(IdentityTypes.INDIVIDUAL);
         onchainidSetup.idFactory.removeIdentityTypePolicy(IdentityTypes.INDIVIDUAL);
 
-        (,, bool registered) = onchainidSetup.idFactory.getIdentityTypePolicy(IdentityTypes.INDIVIDUAL);
+        (,,, bool registered) = onchainidSetup.idFactory.getIdentityTypePolicy(IdentityTypes.INDIVIDUAL);
         assertFalse(registered);
 
         vm.prank(alice);
@@ -430,7 +432,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
     function test_setIdentityTypePolicy_revertForNonAdmin() public {
         vm.prank(alice);
         vm.expectRevert(); // AccessManagerUnauthorizedAccount
-        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 7, true);
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 7, true, false);
     }
 
     /// @notice createIdentity rejects unregistered types up front (same as createIdentityFor).
@@ -446,7 +448,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
     /// @notice createIdentity succeeds when the policy explicitly opts the type into self-deploy.
     function test_createIdentity_succeedsWhenSelfDeployable() public {
         vm.prank(deployer);
-        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 999, true);
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 999, true, false);
 
         address selfDeployer = makeAddr("selfIssuerOptedIn");
         vm.prank(selfDeployer);
@@ -466,7 +468,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
     function test_createIdentityFor_unaffectedBySelfDeployable() public {
         uint64 publicRole = onchainidSetup.accessManager.PUBLIC_ROLE();
         vm.prank(deployer);
-        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.INDIVIDUAL, publicRole, false);
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.INDIVIDUAL, publicRole, false, false);
 
         vm.prank(alice);
         address identityAddr = onchainidSetup.idFactory
@@ -482,7 +484,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         // Apply the production policy for ASSET (matches DeployOnchainID defaults).
         uint64 publicRole = onchainidSetup.accessManager.PUBLIC_ROLE();
         vm.prank(deployer);
-        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.ASSET, publicRole, false);
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.ASSET, publicRole, false, true);
 
         address eoa = makeAddr("eoaTryingToMintAsset");
         vm.prank(eoa);
@@ -1245,6 +1247,24 @@ contract IdentityFactoryTest is OnchainIDSetup {
         return gateway;
     }
 
+    /// @dev An eip-155 chain id as the ERC-7930 chain reference the library emits.
+    function _chainRef(uint256 chainId) internal pure returns (bytes memory chainReference) {
+        (, chainReference,) = InteroperableAddress.parseV1(InteroperableAddress.formatEvmV1(chainId));
+    }
+
+    /// @dev Same, but trusted for the origin the test actually delivers from. Gateway trust is
+    ///      scoped per origin chain (N-03), so a test whose envelope is not the Solana one above
+    ///      has to name its own.
+    function _deployTrustedGatewayFor(bytes2 chainType, bytes memory chainReference)
+        internal
+        returns (MockERC7786Gateway)
+    {
+        MockERC7786Gateway gateway = new MockERC7786Gateway();
+        vm.prank(deployer);
+        onchainidSetup.idFactory.setTrustedGateway(address(gateway), chainType, chainReference, true);
+        return gateway;
+    }
+
     /// @dev Build the ERC-7786 payload the factory expects: (walletEnvelope, identity,
     ///      expiry). The wallet envelope here is a non-EVM one — that's the whole point
     ///      of the cross-chain path.
@@ -1449,6 +1469,92 @@ contract IdentityFactoryTest is OnchainIDSetup {
         vm.prank(address(aliceIdentity));
         vm.expectRevert(abi.encodeWithSelector(Errors.PendingCrossChainLinkExpired.selector, expiry));
         onchainidSetup.idFactory.confirmCrossChainLink(solanaEnv);
+    }
+
+    /// @notice A contract-bound (ASSET) identity cannot gain extra wallets through
+    ///         the cross-chain path; confirm hits the same rule as linkAccount (M-08).
+    function test_crossChain_confirmRejectsAssetIdentity() public {
+        MockERC7786Gateway gateway = _deployTrustedGateway();
+        address assetIdentity = onchainidSetup.idFactory
+            .getIdentity(InteroperableAddress.formatEvmV1(block.chainid, Constants.TOKEN_ADDRESS));
+        bytes memory solanaEnv = _nonEvmEnvelope(makeAddr("solanaSignerAsset"));
+        uint256 expiry = block.timestamp + 1 hours;
+        gateway.deliver(
+            address(onchainidSetup.idFactory),
+            bytes32(uint256(20)),
+            solanaEnv,
+            _crossChainPayload(solanaEnv, assetIdentity, expiry)
+        );
+
+        vm.prank(assetIdentity);
+        vm.expectRevert(abi.encodeWithSelector(Errors.CannotLinkToAssetIdentity.selector, assetIdentity));
+        onchainidSetup.idFactory.confirmCrossChainLink(solanaEnv);
+    }
+
+    /// @notice A byte string that is not a valid ERC-7930 envelope fails at delivery,
+    ///         so it can never become an enumerable wallet record (M-08).
+    function test_crossChain_malformedEnvelopeRejectedAtDelivery() public {
+        MockERC7786Gateway gateway = _deployTrustedGatewayFor(bytes2(0x0000), _chainRef(block.chainid));
+        bytes memory garbage = hex"deadbeef";
+        bytes memory payload = _crossChainPayload(garbage, address(aliceIdentity), block.timestamp + 1 hours);
+
+        // Gateway trust is keyed on the origin parsed out of `sender` (N-03), and a malformed
+        // sender parses into no origin at all, so delivery stops at the gateway gate before the
+        // envelope is ever read.
+        vm.expectPartialRevert(ERC7786Recipient.ERC7786RecipientUnauthorizedGateway.selector);
+        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(21)), garbage, payload);
+    }
+
+    /// @notice A proposal naming a wallet on this chain is rejected at delivery:
+    ///         local wallets must sign through linkAccount (M-08).
+    function test_crossChain_localEvmWalletRejectedAtDelivery() public {
+        MockERC7786Gateway gateway = _deployTrustedGatewayFor(bytes2(0x0000), _chainRef(block.chainid));
+        bytes memory davidAcc = InteroperableAddress.formatEvmV1(block.chainid, david);
+        bytes memory payload = _crossChainPayload(davidAcc, address(aliceIdentity), block.timestamp + 1 hours);
+
+        vm.expectRevert(abi.encodeWithSelector(Errors.CrossChainLinkForLocalWallet.selector, davidAcc));
+        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(22)), davidAcc, payload);
+    }
+
+    /// @notice An EVM wallet on another chain still stages; only this chain is blocked.
+    function test_crossChain_foreignEvmWalletStillStages() public {
+        MockERC7786Gateway gateway = _deployTrustedGatewayFor(bytes2(0x0000), _chainRef(block.chainid + 1));
+        bytes memory foreignAcc = InteroperableAddress.formatEvmV1(block.chainid + 1, david);
+        bytes memory payload = _crossChainPayload(foreignAcc, address(aliceIdentity), block.timestamp + 1 hours);
+        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(23)), foreignAcc, payload);
+
+        (address pendingId,) = onchainidSetup.idFactory.getPendingCrossChainLink(foreignAcc);
+        assertEq(pendingId, address(aliceIdentity));
+    }
+
+    /// @notice Invariant behind the single-binding link rule: every single-binding
+    ///         identity leaves the factory with its one account already linked, so the
+    ///         empty-set allowance in _linkAccount is spent by the deploy auto-link and
+    ///         no fresh link remains for anyone else.
+    function test_singleBinding_oneAccountLinkedAtDeploy() public {
+        // The setUp asset identity already holds its token account.
+        bytes memory tokenAcc = InteroperableAddress.formatEvmV1(block.chainid, Constants.TOKEN_ADDRESS);
+        address assetIdentity = onchainidSetup.idFactory.getIdentity(tokenAcc);
+        assertEq(onchainidSetup.idFactory.getAccountsCount(assetIdentity), 1, "asset holds its account");
+
+        // Same for a fresh SMART_CONTRACT identity.
+        address sc = makeAddr("scInvariant");
+        vm.prank(deployer);
+        address scIdentity = onchainidSetup.idFactory
+            .createIdentityFor(
+                sc, IdentityTypes.SMART_CONTRACT, "scInvariant", _makeSingleMgmtKeys(david), _defaultModules()
+            );
+        assertEq(onchainidSetup.idFactory.getAccountsCount(scIdentity), 1, "sc holds its account");
+
+        // The one-shot is consumed: even a properly signed link is rejected.
+        bytes memory davidAcc = InteroperableAddress.formatEvmV1(block.chainid, david);
+        uint256 expiry = block.timestamp + 1 hours;
+        uint256 nonce = onchainidSetup.idFactory.nonceForAccount(davidAcc);
+        bytes memory sig = _signLink(davidPk, davidAcc, scIdentity, nonce, expiry);
+
+        vm.prank(scIdentity);
+        vm.expectRevert(abi.encodeWithSelector(Errors.CannotLinkToAssetIdentity.selector, scIdentity));
+        onchainidSetup.idFactory.linkAccount(davidAcc, sig, nonce, expiry);
     }
 
     /// @notice Reading a pending link for a wallet that was never proposed returns the
