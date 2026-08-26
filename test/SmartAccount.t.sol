@@ -22,6 +22,7 @@ import { Errors } from "contracts/libraries/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
+import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 
 import { ClaimSignerHelper } from "./helpers/ClaimSignerHelper.sol";
@@ -144,6 +145,65 @@ contract SmartAccountTest is OnchainIDSetup {
         vm.prank(alice);
         vm.expectRevert(Errors.CannotRemoveLastManagementKey.selector);
         aliceIdentity.removeKey(aliceKey, KeyPurposes.MANAGEMENT);
+    }
+
+    /// @notice The KeyApprovalModule holds MANAGEMENT as a MODULE key, which cannot sign.
+    ///         It does not count toward the last-manager guard, so alice is the only real
+    ///         manager and removing her MANAGEMENT purpose must revert.
+    function test_removeKey_lastSigningManagementKey_revertsDespiteModuleKey() public {
+        bytes32 aliceKey = keccak256(abi.encodePacked(alice));
+        bytes32 moduleKey = keccak256(abi.encodePacked(address(onchainidSetup.keyApprovalModule)));
+
+        // The module holds MANAGEMENT (executor gating reads this).
+        assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(moduleKey, KeyPurposes.MANAGEMENT),
+            "module key holds MANAGEMENT"
+        );
+        // But the MANAGEMENT index only counts signers, so alice is the last manager.
+        assertEq(
+            IERC734(address(aliceIdentity)).getKeysByPurpose(KeyPurposes.MANAGEMENT).length,
+            1,
+            "MANAGEMENT index counts signer keys only"
+        );
+
+        vm.prank(alice);
+        vm.expectRevert(Errors.CannotRemoveLastManagementKey.selector);
+        aliceIdentity.removeKey(aliceKey, KeyPurposes.MANAGEMENT);
+    }
+
+    /// @notice A MODULE key granted MANAGEMENT keeps its authority through keyHasPurpose but
+    ///         never shows up in the MANAGEMENT enumeration. Both sides asserted directly so a
+    ///         refactor of the index can't silently drop either one.
+    function test_moduleManagementKey_hasPurposeButNotEnumerated() public view {
+        bytes32 moduleKey = keccak256(abi.encodePacked(address(onchainidSetup.keyApprovalModule)));
+
+        assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(moduleKey, KeyPurposes.MANAGEMENT),
+            "module key holds MANAGEMENT"
+        );
+
+        bytes32[] memory managers = IERC734(address(aliceIdentity)).getKeysByPurpose(KeyPurposes.MANAGEMENT);
+        for (uint256 i = 0; i < managers.length; i++) {
+            assertTrue(managers[i] != moduleKey, "module key must not be enumerated as a manager");
+        }
+    }
+
+    /// @notice The guard is skipped for MODULE keys, so a module's registration can always
+    ///         be dropped and uninstall keeps working.
+    function test_removeKey_moduleManagementKey_alwaysRemovable() public {
+        bytes32 aliceKey = keccak256(abi.encodePacked(alice));
+        bytes32 moduleKey = keccak256(abi.encodePacked(address(onchainidSetup.keyApprovalModule)));
+
+        vm.prank(alice);
+        aliceIdentity.removeKey(moduleKey, KeyPurposes.MANAGEMENT);
+
+        assertFalse(
+            IERC734(address(aliceIdentity)).keyHasPurpose(moduleKey, KeyPurposes.MANAGEMENT),
+            "module registration dropped"
+        );
+        assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(aliceKey, KeyPurposes.MANAGEMENT), "alice still manages"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -371,16 +431,28 @@ contract SmartAccountTest is OnchainIDSetup {
         assertEq(counter.count(), 1, "executor dispatch should keep working after the selector drop");
     }
 
-    /// When the module's key is the only MANAGEMENT holder, the old strip-everything path
-    /// hit `CannotRemoveLastManagementKey` and the handler could not be uninstalled at all.
-    /// Fallback uninstalls no longer touch keys, so the drop goes through.
-    function test_uninstallModule_fallbackSelector_whenModuleIsLastManagement_succeeds() public {
+    /// A module key never counts towards MANAGEMENT, so KAM holding MANAGEMENT does not keep
+    /// alice's key removable: hers is the only one the index sees, and the last-manager guard
+    /// rejects the removal. The identity therefore cannot reach a state where a module is the
+    /// sole manager.
+    function test_removeKey_lastSignerManagement_revertsEvenWhenModuleHoldsManagement() public {
         address kam = address(onchainidSetup.keyApprovalModule);
         bytes32 aliceKey = keccak256(abi.encodePacked(alice));
 
-        // Leave KAM as the sole MANAGEMENT key.
+        assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(keccak256(abi.encodePacked(kam)), KeyPurposes.MANAGEMENT),
+            "KAM holds MANAGEMENT authority"
+        );
+
         vm.prank(alice);
+        vm.expectRevert(ERC734Validator.CannotRemoveLastManagementKey.selector);
         aliceIdentity.removeKey(aliceKey, KeyPurposes.MANAGEMENT);
+    }
+
+    /// A fallback selector drop leaves the module's key alone even when the caller is the module
+    /// itself. This is the L-06 property, checked from the module's own call frame.
+    function test_uninstallModule_fallbackSelector_calledByModule_keepsItsKey() public {
+        address kam = address(onchainidSetup.keyApprovalModule);
 
         vm.prank(kam);
         aliceIdentity.uninstallModule(
@@ -389,7 +461,7 @@ contract SmartAccountTest is OnchainIDSetup {
 
         assertTrue(
             IERC734(address(aliceIdentity)).keyHasPurpose(keccak256(abi.encodePacked(kam)), KeyPurposes.MANAGEMENT),
-            "the last MANAGEMENT key survives the selector drop"
+            "the module's key survives the selector drop"
         );
     }
 
