@@ -83,15 +83,7 @@ contract OnchainIDSetup is Test {
             clientData: ""
         });
         address claimIssuerAddr = onchainidSetup.idFactory
-            .createIdentityFor(
-                claimIssuerOwner,
-                IdentityTypes.CLAIM_ISSUER,
-                "claimIssuer",
-                issuerKeys,
-                IdentityHelper.legacyQueueModules(
-                    address(onchainidSetup.keyApprovalModule), address(onchainidSetup.signatureValidator)
-                )
-            );
+            .createIdentityFor(claimIssuerOwner, IdentityTypes.CLAIM_ISSUER, "claimIssuer", issuerKeys);
         claimIssuer = Identity(payable(claimIssuerAddr));
 
         // No validator install on the issuer: the merged module's `isClaimValid` verifies the
@@ -108,16 +100,8 @@ contract OnchainIDSetup is Test {
             signerData: abi.encodePacked(alice),
             clientData: ""
         });
-        address aliceIdentityAddr = onchainidSetup.idFactory
-            .createIdentityFor(
-                alice,
-                IdentityTypes.INDIVIDUAL,
-                "alice",
-                aliceKeys,
-                IdentityHelper.legacyQueueModules(
-                    address(onchainidSetup.keyApprovalModule), address(onchainidSetup.signatureValidator)
-                )
-            );
+        address aliceIdentityAddr =
+            onchainidSetup.idFactory.createIdentityFor(alice, IdentityTypes.INDIVIDUAL, "alice", aliceKeys);
         aliceIdentity = Identity(payable(aliceIdentityAddr));
 
         // The merged ERC734Validator is already installed as a validator by `legacyQueueModules`
@@ -168,16 +152,8 @@ contract OnchainIDSetup is Test {
             signerData: abi.encodePacked(bob),
             clientData: ""
         });
-        address bobIdentityAddr = onchainidSetup.idFactory
-            .createIdentityFor(
-                bob,
-                IdentityTypes.INDIVIDUAL,
-                "bob",
-                bobKeys,
-                IdentityHelper.legacyQueueModules(
-                    address(onchainidSetup.keyApprovalModule), address(onchainidSetup.signatureValidator)
-                )
-            );
+        address bobIdentityAddr =
+            onchainidSetup.idFactory.createIdentityFor(bob, IdentityTypes.INDIVIDUAL, "bob", bobKeys);
         bobIdentity = Identity(payable(bobIdentityAddr));
 
         // Create token identity
@@ -190,16 +166,9 @@ contract OnchainIDSetup is Test {
             signerData: abi.encodePacked(tokenOwner),
             clientData: ""
         });
+        // ASSET is a single-binding type: the sole-management check is skipped.
         onchainidSetup.idFactory
-            .createIdentityFor(
-                Constants.TOKEN_ADDRESS,
-                IdentityTypes.ASSET,
-                "tokenOwner",
-                tokenKeys,
-                IdentityHelper.legacyQueueModules(
-                    address(onchainidSetup.keyApprovalModule), address(onchainidSetup.signatureValidator)
-                )
-            );
+            .createIdentityFor(Constants.TOKEN_ADDRESS, IdentityTypes.ASSET, "tokenOwner", tokenKeys);
     }
 
     // ---- Convenience getters ----

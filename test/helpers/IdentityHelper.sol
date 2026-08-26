@@ -43,10 +43,11 @@ library IdentityHelper {
 
     /// @notice Deploys complete Identity Factory infrastructure with an AccessManager
     ///         whose initial admin is `managementKey`. Every standard identity type is
-    ///         registered with `PUBLIC_ROLE` and `selfDeployable = true` so tests can
-    ///         mint any type for any address without extra plumbing. Tests that
-    ///         exercise stricter gating should re-point the relevant type via
-    ///         `setIdentityTypePolicy`.
+    ///         registered with `PUBLIC_ROLE` and `selfDeployable = true`, and with the
+    ///         standard module bundle registered per type, so tests can mint any type for
+    ///         any address without extra plumbing. Tests that exercise stricter gating
+    ///         should re-point the relevant type via `setIdentityTypePolicy`, and tests
+    ///         that need a different bootstrap via `setIdentityTypeModules`.
     /// @param managementKey The initial management key address (also initial admin of the
     ///        AccessManager).
     /// @return setup Struct containing all deployed contracts
@@ -67,7 +68,12 @@ library IdentityHelper {
         setup.beacon = UpgradeableBeacon(setup.idFactory.beacon());
 
         // Register every standard type with PUBLIC_ROLE and selfDeployable = true for
-        // a permissive test default.
+        // a permissive test default. ASSET and SMART_CONTRACT are single-binding as
+        // in production, and the factory refuses PUBLIC_ROLE for those, so they get a
+        // dedicated role granted to `managementKey`. High id so tests picking their own
+        // role ids never collide with it.
+        uint64 singleBindingRole = type(uint64).max - 1;
+        setup.accessManager.grantRole(singleBindingRole, managementKey, 0);
         uint256[8] memory types = [
             IdentityTypes.ASSET,
             IdentityTypes.INDIVIDUAL,
@@ -78,23 +84,31 @@ library IdentityHelper {
             IdentityTypes.PUBLIC_AUTHORITY,
             IdentityTypes.AI_AGENT
         ];
+        // Modules are registered per type on the factory; deploy callers pass none.
+        Structs.ModuleInstall[] memory standardModules =
+            legacyQueueModules(address(setup.keyApprovalModule), address(setup.signatureValidator));
         for (uint256 i = 0; i < types.length; i++) {
-            setup.idFactory.setIdentityTypePolicy(types[i], PUBLIC_ROLE, true);
+            bool singleBinding = types[i] == IdentityTypes.ASSET || types[i] == IdentityTypes.SMART_CONTRACT;
+            setup.idFactory
+                .setIdentityTypePolicy(types[i], singleBinding ? singleBindingRole : PUBLIC_ROLE, true, singleBinding);
+            setup.idFactory.setIdentityTypeModules(types[i], standardModules);
         }
     }
 
     /// @notice Builds the full default-module install list: the merged ERC734Validator installed as
     ///         a validator (it holds the key registry, enshrined during `initialize`) + the legacy
-    ///         queue (execute/approve) + the ERC-734 getter and ERC-735 claim fallback surface.
+    ///         queue (execute/approve) + the ERC-735 claim fallback surface.
     ///         `claimsModule` is the merged ERC734Validator. The validator install carries empty
     ///         initData: the MANAGEMENT key is seeded from the factory's `_keys` array (which the
     ///         factory requires to be non-empty and to hold at least one MANAGEMENT key).
+    ///         The ERC-734 getters need no fallback wiring: they are plain functions on the
+    ///         account ({KeyManager}) forwarding to the enshrined registry.
     function legacyQueueModules(address keyApprovalModule, address claimsModule)
         internal
         pure
         returns (Structs.ModuleInstall[] memory installs)
     {
-        installs = new Structs.ModuleInstall[](20);
+        installs = new Structs.ModuleInstall[](16);
         // ----- merged ERC734Validator: validator (holds the key registry) -----
         // Empty initData -> onInstall does not seed a key; MANAGEMENT comes from `_keys`.
         installs[0] = Structs.ModuleInstall({
@@ -184,31 +198,6 @@ library IdentityHelper {
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
             initData: abi.encodePacked(ERC734Validator.addClaimByTrustedIssuer.selector),
-            purpose: 0
-        });
-        // ----- ERC-734 getters served by the merged module via fallback -----
-        installs[16] = Structs.ModuleInstall({
-            moduleType: MODULE_TYPE_FALLBACK,
-            module: claimsModule,
-            initData: abi.encodePacked(IERC734.keyHasPurpose.selector),
-            purpose: 0
-        });
-        installs[17] = Structs.ModuleInstall({
-            moduleType: MODULE_TYPE_FALLBACK,
-            module: claimsModule,
-            initData: abi.encodePacked(IERC734.getKey.selector),
-            purpose: 0
-        });
-        installs[18] = Structs.ModuleInstall({
-            moduleType: MODULE_TYPE_FALLBACK,
-            module: claimsModule,
-            initData: abi.encodePacked(IERC734.getKeyPurposes.selector),
-            purpose: 0
-        });
-        installs[19] = Structs.ModuleInstall({
-            moduleType: MODULE_TYPE_FALLBACK,
-            module: claimsModule,
-            initData: abi.encodePacked(IERC734.getKeysByPurpose.selector),
             purpose: 0
         });
     }

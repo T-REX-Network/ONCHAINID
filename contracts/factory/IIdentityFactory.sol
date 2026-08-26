@@ -13,7 +13,11 @@ import { Structs } from "../storage/Structs.sol";
 ///         Use the AM's `PUBLIC_ROLE` for open types; any other role restricts the call to
 ///         its holders.
 ///
-///         {setIdentityTypePolicy} itself is `restricted` (resolved by the AM).
+///         Admin also registers the modules each type deploys with, via
+///         {setIdentityTypeModules}. Callers pass no modules, so the admin decides which
+///         code runs on an identity and with which purpose.
+///
+///         Both setters are `restricted` (resolved by the AM).
 ///
 ///         Wallets are addressed as ERC-7930 interoperable address envelopes (`bytes`).
 ///         EVM wallets are wrapped via OZ `InteroperableAddress.formatEvmV1(chainId, addr)`.
@@ -41,7 +45,7 @@ import { Structs } from "../storage/Structs.sol";
 ///
 ///         Tokens share the same keyspace as wallets: an ASSET identity's auto-linked
 ///         wallet is the token, looked up via `getIdentity(bytes)` or
-///         `getAccounts(identity)[0]`.
+///         `getAccounts(identity, 0, 1)[0]`.
 interface IIdentityFactory {
 
     /// @notice Lifecycle state of a wallet entry. `None` means "never seen" and is
@@ -61,11 +65,21 @@ interface IIdentityFactory {
     // event emitted when a token is linked to an ONCHAINID contract (tokens are EVM-only)
     event TokenLinked(address indexed token, address indexed identity);
 
-    /// @notice Emitted when the policy for a given identity type changes. `roleId == 0`
-    ///         means the type is unregistered (both deploy paths revert). `selfDeployable`
-    ///         gates {createIdentity}: true allows self-deploy, false reserves the type
-    ///         for {createIdentityFor}.
-    event IdentityTypePolicySet(uint256 indexed identityType, uint64 indexed roleId, bool selfDeployable);
+    /// @notice Emitted when the policy for a given identity type is set. Setting a policy
+    ///         registers the type. `selfDeployable` gates {createIdentity}: true allows
+    ///         self-deploy, false reserves the type for {createIdentityFor}. `singleBinding`
+    ///         marks types bound to one contract (ASSET, SMART_CONTRACT): they keep the
+    ///         account set at deploy and can never link or revoke another.
+    event IdentityTypePolicySet(
+        uint256 indexed identityType, uint64 indexed roleId, bool selfDeployable, bool singleBinding
+    );
+
+    /// @notice Emitted when an identity type is unregistered (both deploy paths revert).
+    event IdentityTypePolicyRemoved(uint256 indexed identityType);
+
+    /// @notice Emitted when the modules registered for an identity type change. Every
+    ///         identity of that type installs these from then on.
+    event IdentityTypeModulesSet(uint256 indexed identityType, Structs.ModuleInstall[] modules);
 
     /// @notice Emitted when an inbound ERC-7786 message has staged a wallet -> identity
     ///         binding awaiting identity-side confirmation. The link is not active yet.
@@ -83,6 +97,9 @@ interface IIdentityFactory {
     /// @notice Emitted when admin adds or removes an authorized ERC-7786 gateway
     ///         for one origin chain.
     event TrustedGatewaySet(address indexed gateway, bytes2 chainType, bytes chainReference, bool trusted);
+
+    /// @notice Emitted when admin adds or removes an approved ERC-7913 verifier.
+    event TrustedVerifierSet(address indexed verifier, bool trusted);
 
     /// @notice Emitted when the beacon is deployed via {initializeBeacon}.
     event BeaconInitialized(address indexed implementation);
@@ -109,41 +126,73 @@ interface IIdentityFactory {
     ///         contract-shaped types like ASSET / SMART_CONTRACT opt out because the
     ///         `msg.sender = first wallet` binding does not apply to them. Unregistered
     ///         types revert.
-    function createIdentity(
-        uint256 _identityType,
-        string memory _salt,
-        Structs.KeyParam[] memory _keys,
-        Structs.ModuleInstall[] memory _modules
-    ) external returns (address);
+    ///         The modules registered for the type are installed. Callers do not pick them.
+    function createIdentity(uint256 _identityType, string memory _salt, Structs.KeyParam[] memory _keys)
+        external
+        returns (address);
 
-    /// @notice Deploy for an EVM account that cannot sign (a token, a vault). The
-    ///         account is auto-linked as the identity's first wallet. Caller must hold
-    ///         the role configured for `_identityType` (use `PUBLIC_ROLE` for open types).
-    ///         Unregistered types revert.
+    /// @notice Deploy for another EVM account. The account is auto-linked as the
+    ///         identity's first wallet. Caller must hold the role configured for
+    ///         `_identityType`. Unregistered types revert.
+    ///
+    ///         `_account` signs nothing, so an issuer can onboard a wallet without asking
+    ///         its owner for anything. The deploy instead only succeeds if `_account` ends
+    ///         up as the only wallet with MANAGEMENT on the new identity, so the identity is
+    ///         managed by the wallet it was created for and never by the caller. The type's
+    ///         registered modules may hold MANAGEMENT too, but callers do not choose modules,
+    ///         so a caller cannot act through one either. Single binding types (ASSET,
+    ///         SMART_CONTRACT) hold no key, so they skip the check and rely on the caller's
+    ///         role, which must not be `PUBLIC_ROLE`.
     function createIdentityFor(
         address _account,
         uint256 _identityType,
         string memory _salt,
-        Structs.KeyParam[] memory _keys,
-        Structs.ModuleInstall[] memory _modules
+        Structs.KeyParam[] memory _keys
     ) external returns (address);
 
     /// @notice Set the per-type policy: AM role required to call {createIdentityFor},
-    ///         and whether {createIdentity} (self-deploy) is allowed. Pass `roleId == 0`
-    ///         to unregister the type (both deploy paths will revert). `restricted` via
-    ///         the AM.
-    function setIdentityTypePolicy(uint256 _identityType, uint64 _roleId, bool _selfDeployable) external;
+    ///         whether {createIdentity} (self-deploy) is allowed, and whether the type is
+    ///         single-binding. Pass `_singleBinding = true` for types bound to one contract
+    ///         (ASSET, SMART_CONTRACT, ...): they keep the account set at deploy and can
+    ///         never link or revoke another. Setting a policy registers the type;
+    ///         registration is tracked separately from the role, so the AM's `ADMIN_ROLE`
+    ///         (id 0) is usable like any other role. `restricted` via the AM.
+    function setIdentityTypePolicy(uint256 _identityType, uint64 _roleId, bool _selfDeployable, bool _singleBinding)
+        external;
 
-    /// @notice Read the per-type policy. `roleId == 0` means the type is unregistered.
-    function getIdentityTypePolicy(uint256 _identityType) external view returns (uint64 roleId, bool selfDeployable);
+    /// @notice Unregister an identity type (both deploy paths will revert). `restricted`
+    ///         via the AM.
+    function removeIdentityTypePolicy(uint256 _identityType) external;
+
+    /// @notice Read the per-type policy. `registered == false` means the type is
+    ///         unregistered and both deploy paths revert.
+    function getIdentityTypePolicy(uint256 _identityType)
+        external
+        view
+        returns (uint64 roleId, bool selfDeployable, bool singleBinding, bool registered);
+
+    /// @notice Set the modules installed on every identity of `_identityType`, replacing
+    ///         any list set before. Deploy callers pass no modules, so this is the only way
+    ///         a module reaches an identity, and the admin decides which code runs with
+    ///         which purpose. A type with no modules registered cannot deploy, because
+    ///         `Identity.initialize` needs a validator or an executor. `restricted`.
+    function setIdentityTypeModules(uint256 _identityType, Structs.ModuleInstall[] calldata _modules) external;
+
+    /// @notice Read the modules registered for an identity type.
+    function getIdentityTypeModules(uint256 _identityType) external view returns (Structs.ModuleInstall[] memory);
 
     /// @notice Link a wallet to the calling identity. The wallet authorizes the link via
     ///         an EIP-712 `LinkAccount` signature. Supports EOAs, ERC-1271 smart wallets,
     ///         and ERC-7913 verifiers (passkeys, etc.) uniformly via `SignatureChecker`.
+    ///         ERC-7913 signers only link when their verifier is approved via
+    ///         {setTrustedVerifier}.
     ///
     /// @param account ERC-7930 interoperable address envelope. EVM wallets are wrapped
-    ///         via OZ `InteroperableAddress.formatEvmV1(chainId, addr)`. Non-EVM wallets
-    ///         supply the envelope for their own chain. Malformed envelopes revert.
+    ///         via OZ `InteroperableAddress.formatEvmV1(chainId, addr)`. The chain type
+    ///         must be eip-155 and the chain reference must be the local chain id in
+    ///         minimal big-endian form: the signature check cannot prove control on any
+    ///         other chain, so envelopes for non-EVM or foreign EVM chains revert and
+    ///         go through {confirmCrossChainLink} instead. Malformed envelopes revert.
     /// @param signature EIP-712 signature produced by `account` over
     ///         `LinkAccount(bytes account,address identity,uint256 nonce,uint256 expiry)`.
     /// @param nonce current nonce for `account` (see {nonceForAccount}).
@@ -155,6 +204,12 @@ interface IIdentityFactory {
     /// @notice Revoke a wallet from the calling identity. The wallet→identity record
     ///         remains on-chain; status flips to `Revoked`. A revoked wallet can never
     ///         be re-linked (terminal revocation).
+    ///
+    ///         Revoking the identity's last wallet only retires that address: wallet
+    ///         links and ERC-734 keys are separate namespaces, so the identity's keys
+    ///         are untouched and a MANAGEMENT key can still drive {linkAccount} to bind
+    ///         a fresh wallet. Integrators must not treat an identity whose active set
+    ///         is momentarily empty as dead.
     function revokeAccount(bytes calldata account) external;
 
     /// @notice Settle a cross-chain link previously proposed via an authenticated
@@ -197,6 +252,20 @@ interface IIdentityFactory {
         view
         returns (bool);
 
+    /// @notice Add or remove an approved ERC-7913 verifier. {linkAccount} rejects
+    ///         signers longer than 20 bytes whose leading verifier is not listed,
+    ///         because the verifier judges its own signer's proof. `restricted` via
+    ///         the AM.
+    ///
+    ///         Listing a verifier means trusting its code to judge proof of
+    ///         control. A permissive or buggy verifier lets any signer that names
+    ///         it link without a genuine proof, so grant the role for this
+    ///         function only to admins who vet verifier implementations.
+    function setTrustedVerifier(address verifier, bool trusted) external;
+
+    /// @notice Read whether an address is currently an approved ERC-7913 verifier.
+    function isTrustedVerifier(address verifier) external view returns (bool);
+
     /// @notice Resolve a wallet to its bound identity. Returns `address(0)` when the
     ///         wallet's status is not `Active` (never linked, or revoked).
     function getIdentity(bytes calldata account) external view returns (address);
@@ -211,12 +280,15 @@ interface IIdentityFactory {
     /// @notice Read the current lifecycle status of a wallet entry.
     function getAccountStatus(bytes calldata account) external view returns (AccountStatus);
 
-    /// @notice Enumerate the active wallets currently linked to `identity`. Each entry
-    ///         is the ERC-7930 envelope that was used to link the wallet.
-    function getAccounts(address identity) external view returns (bytes[] memory);
-
-    /// @notice Paginated variant of {getAccounts}.
+    /// @notice Enumerate the active wallets currently linked to `identity`, paginated
+    ///         over `[start, end)` (out-of-range bounds are clamped). Each entry is the
+    ///         ERC-7930 envelope that was used to link the wallet. Envelopes are
+    ///         unbounded bytes and the set has no size cap, so read in pages sized to
+    ///         the provider's eth_call gas cap; {getAccountsCount} gives the total.
     function getAccounts(address identity, uint256 start, uint256 end) external view returns (bytes[] memory);
+
+    /// @notice Number of active wallets currently linked to `identity`.
+    function getAccountsCount(address identity) external view returns (uint256);
 
     /// @notice Returns true iff `identity` was deployed by this factory. Used by
     ///         {linkAccount} to reject pulls into non-OnchainID contracts.
