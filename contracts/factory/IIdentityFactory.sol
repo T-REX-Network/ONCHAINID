@@ -41,7 +41,7 @@ import { Structs } from "../storage/Structs.sol";
 ///
 ///         Tokens share the same keyspace as wallets: an ASSET identity's auto-linked
 ///         wallet is the token, looked up via `getIdentity(bytes)` or
-///         `getAccounts(identity)[0]`.
+///         `getAccounts(identity, 0, 1)[0]`.
 interface IIdentityFactory {
 
     /// @notice Lifecycle state of a wallet entry. `None` means "never seen" and is
@@ -61,11 +61,13 @@ interface IIdentityFactory {
     // event emitted when a token is linked to an ONCHAINID contract (tokens are EVM-only)
     event TokenLinked(address indexed token, address indexed identity);
 
-    /// @notice Emitted when the policy for a given identity type changes. `roleId == 0`
-    ///         means the type is unregistered (both deploy paths revert). `selfDeployable`
-    ///         gates {createIdentity}: true allows self-deploy, false reserves the type
-    ///         for {createIdentityFor}.
+    /// @notice Emitted when the policy for a given identity type is set. Setting a policy
+    ///         registers the type. `selfDeployable` gates {createIdentity}: true allows
+    ///         self-deploy, false reserves the type for {createIdentityFor}.
     event IdentityTypePolicySet(uint256 indexed identityType, uint64 indexed roleId, bool selfDeployable);
+
+    /// @notice Emitted when an identity type is unregistered (both deploy paths revert).
+    event IdentityTypePolicyRemoved(uint256 indexed identityType);
 
     /// @notice Emitted when an inbound ERC-7786 message has staged a wallet -> identity
     ///         binding awaiting identity-side confirmation. The link is not active yet.
@@ -75,8 +77,9 @@ interface IIdentityFactory {
     ///         wallet becomes active.
     event CrossChainLinkConfirmed(bytes account, address indexed identity);
 
-    /// @notice Emitted when admin adds or removes an authorized ERC-7786 gateway.
-    event TrustedGatewaySet(address indexed gateway, bool trusted);
+    /// @notice Emitted when admin adds or removes an authorized ERC-7786 gateway
+    ///         for one origin chain.
+    event TrustedGatewaySet(address indexed gateway, bytes2 chainType, bytes chainReference, bool trusted);
 
     /// @notice Emitted when admin adds or removes an approved ERC-7913 verifier.
     event TrustedVerifierSet(address indexed verifier, bool trusted);
@@ -96,8 +99,10 @@ interface IIdentityFactory {
 
     /// @notice Upgrade the implementation every deployed identity delegates to. The factory
     ///         owns the beacon, so this is the only upgrade path, and it is gated by the
-    ///         factory's current authority. Restricted.
-    function upgradeBeacon(address newImplementation) external;
+    ///         factory's current authority. The candidate must report `expectedVersion` from
+    ///         {Identity.version}, so a build that forgot the version bump is rejected.
+    ///         Restricted.
+    function upgradeBeacon(address newImplementation, string calldata expectedVersion) external;
 
     /// @notice Self-deploy. Caller is the account being deployed for and is auto-linked
     ///         as the new identity's first wallet. Gated per type by `selfDeployable`:
@@ -124,13 +129,22 @@ interface IIdentityFactory {
     ) external returns (address);
 
     /// @notice Set the per-type policy: AM role required to call {createIdentityFor},
-    ///         and whether {createIdentity} (self-deploy) is allowed. Pass `roleId == 0`
-    ///         to unregister the type (both deploy paths will revert). `restricted` via
-    ///         the AM.
+    ///         and whether {createIdentity} (self-deploy) is allowed. Setting a policy
+    ///         registers the type; registration is tracked separately from the role, so
+    ///         the AM's `ADMIN_ROLE` (id 0) is usable like any other role. `restricted`
+    ///         via the AM.
     function setIdentityTypePolicy(uint256 _identityType, uint64 _roleId, bool _selfDeployable) external;
 
-    /// @notice Read the per-type policy. `roleId == 0` means the type is unregistered.
-    function getIdentityTypePolicy(uint256 _identityType) external view returns (uint64 roleId, bool selfDeployable);
+    /// @notice Unregister an identity type (both deploy paths will revert). `restricted`
+    ///         via the AM.
+    function removeIdentityTypePolicy(uint256 _identityType) external;
+
+    /// @notice Read the per-type policy. `registered == false` means the type is
+    ///         unregistered and both deploy paths revert.
+    function getIdentityTypePolicy(uint256 _identityType)
+        external
+        view
+        returns (uint64 roleId, bool selfDeployable, bool registered);
 
     /// @notice Link a wallet to the calling identity. The wallet authorizes the link via
     ///         an EIP-712 `LinkAccount` signature. Supports EOAs, ERC-1271 smart wallets,
@@ -155,6 +169,12 @@ interface IIdentityFactory {
     /// @notice Revoke a wallet from the calling identity. The wallet→identity record
     ///         remains on-chain; status flips to `Revoked`. A revoked wallet can never
     ///         be re-linked (terminal revocation).
+    ///
+    ///         Revoking the identity's last wallet only retires that address: wallet
+    ///         links and ERC-734 keys are separate namespaces, so the identity's keys
+    ///         are untouched and a MANAGEMENT key can still drive {linkAccount} to bind
+    ///         a fresh wallet. Integrators must not treat an identity whose active set
+    ///         is momentarily empty as dead.
     function revokeAccount(bytes calldata account) external;
 
     /// @notice Confirm a cross-chain link previously proposed via an authenticated
@@ -168,19 +188,24 @@ interface IIdentityFactory {
     ///         proposal is staged for `account`.
     function getPendingCrossChainLink(bytes calldata account) external view returns (address identity, uint256 expiry);
 
-    /// @notice Add or remove an authorized ERC-7786 gateway. Inbound messages from any
-    ///         non-trusted address are rejected by {receiveMessage}. `restricted` via
-    ///         the AM so the trust surface is operated by the same admin role as the
-    ///         rest of the factory.
+    /// @notice Add or remove an authorized ERC-7786 gateway for one origin chain.
+    ///         The origin is the ERC-7930 (chainType, chainReference) pair. A gateway
+    ///         serving several origins needs one entry per origin; messages from any
+    ///         other origin are rejected by {receiveMessage}. `restricted` via the AM
+    ///         so the trust surface is operated by the same admin role as the rest of
+    ///         the factory.
     ///
-    ///         Removing a gateway blocks future inbound messages but does not purge
+    ///         Removing an entry blocks future inbound messages but does not purge
     ///         pending links it already staged. Operators should audit
     ///         {getPendingCrossChainLink} and treat entries proposed via the removed
     ///         gateway as suspect.
-    function setTrustedGateway(address gateway, bool trusted) external;
+    function setTrustedGateway(address gateway, bytes2 chainType, bytes calldata chainReference, bool trusted) external;
 
-    /// @notice Read whether an address is currently a trusted ERC-7786 gateway.
-    function isTrustedGateway(address gateway) external view returns (bool);
+    /// @notice Read whether a gateway is currently trusted for one origin chain.
+    function isTrustedGateway(address gateway, bytes2 chainType, bytes calldata chainReference)
+        external
+        view
+        returns (bool);
 
     /// @notice Add or remove an approved ERC-7913 verifier. {linkAccount} rejects
     ///         signers longer than 20 bytes whose leading verifier is not listed,
@@ -210,12 +235,15 @@ interface IIdentityFactory {
     /// @notice Read the current lifecycle status of a wallet entry.
     function getAccountStatus(bytes calldata account) external view returns (AccountStatus);
 
-    /// @notice Enumerate the active wallets currently linked to `identity`. Each entry
-    ///         is the ERC-7930 envelope that was used to link the wallet.
-    function getAccounts(address identity) external view returns (bytes[] memory);
-
-    /// @notice Paginated variant of {getAccounts}.
+    /// @notice Enumerate the active wallets currently linked to `identity`, paginated
+    ///         over `[start, end)` (out-of-range bounds are clamped). Each entry is the
+    ///         ERC-7930 envelope that was used to link the wallet. Envelopes are
+    ///         unbounded bytes and the set has no size cap, so read in pages sized to
+    ///         the provider's eth_call gas cap; {getAccountsCount} gives the total.
     function getAccounts(address identity, uint256 start, uint256 end) external view returns (bytes[] memory);
+
+    /// @notice Number of active wallets currently linked to `identity`.
+    function getAccountsCount(address identity) external view returns (uint256);
 
     /// @notice Returns true iff `identity` was deployed by this factory. Used by
     ///         {linkAccount} to reject pulls into non-OnchainID contracts.
