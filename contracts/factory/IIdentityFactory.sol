@@ -75,8 +75,9 @@ interface IIdentityFactory {
     ///         wallet becomes active.
     event CrossChainLinkConfirmed(bytes account, address indexed identity);
 
-    /// @notice Emitted when admin adds or removes an authorized ERC-7786 gateway.
-    event TrustedGatewaySet(address indexed gateway, bool trusted);
+    /// @notice Emitted when admin adds or removes an authorized ERC-7786 gateway
+    ///         for one origin chain.
+    event TrustedGatewaySet(address indexed gateway, bytes2 chainType, bytes chainReference, bool trusted);
 
     /// @notice Emitted when the beacon is deployed via {initializeBeacon}.
     event BeaconInitialized(address indexed implementation);
@@ -94,9 +95,10 @@ interface IIdentityFactory {
     /// @notice Upgrade the implementation every deployed identity delegates to. The factory
     ///         owns the beacon, so this is the only upgrade path, and it is gated by the
     ///         factory's current authority. The candidate must name this factory, keep the
-    ///         registry module the outgoing implementation names, and have its initializers
-    ///         disabled. Restricted.
-    function upgradeBeacon(address newImplementation) external;
+    ///         registry module the outgoing implementation names, have its initializers
+    ///         disabled, and report `expectedVersion` from {Identity.version}, so a build
+    ///         that forgot the version bump is rejected. Restricted.
+    function upgradeBeacon(address newImplementation, string calldata expectedVersion) external;
 
     /// @notice Self-deploy. Caller is the account being deployed for and is auto-linked
     ///         as the new identity's first wallet. Gated per type by `selfDeployable`:
@@ -162,19 +164,24 @@ interface IIdentityFactory {
     ///         proposal is staged for `account`.
     function getPendingCrossChainLink(bytes calldata account) external view returns (address identity, uint256 expiry);
 
-    /// @notice Add or remove an authorized ERC-7786 gateway. Inbound messages from any
-    ///         non-trusted address are rejected by {receiveMessage}. `restricted` via
-    ///         the AM so the trust surface is operated by the same admin role as the
-    ///         rest of the factory.
+    /// @notice Add or remove an authorized ERC-7786 gateway for one origin chain.
+    ///         The origin is the ERC-7930 (chainType, chainReference) pair. A gateway
+    ///         serving several origins needs one entry per origin; messages from any
+    ///         other origin are rejected by {receiveMessage}. `restricted` via the AM
+    ///         so the trust surface is operated by the same admin role as the rest of
+    ///         the factory.
     ///
-    ///         Removing a gateway blocks future inbound messages but does not purge
+    ///         Removing an entry blocks future inbound messages but does not purge
     ///         pending links it already staged. Operators should audit
     ///         {getPendingCrossChainLink} and treat entries proposed via the removed
     ///         gateway as suspect.
-    function setTrustedGateway(address gateway, bool trusted) external;
+    function setTrustedGateway(address gateway, bytes2 chainType, bytes calldata chainReference, bool trusted) external;
 
-    /// @notice Read whether an address is currently a trusted ERC-7786 gateway.
-    function isTrustedGateway(address gateway) external view returns (bool);
+    /// @notice Read whether a gateway is currently trusted for one origin chain.
+    function isTrustedGateway(address gateway, bytes2 chainType, bytes calldata chainReference)
+        external
+        view
+        returns (bool);
 
     /// @notice Resolve a wallet to its bound identity. Returns `address(0)` when the
     ///         wallet's status is not `Active` (never linked, or revoked).

@@ -56,9 +56,7 @@ contract DeployOnchainID is Script {
 
         // 1. IdentityUtilities implementation + proxy
         IdentityUtilities utilitiesImpl = new IdentityUtilities();
-        IdentityUtilitiesProxy utilitiesProxy = new IdentityUtilitiesProxy(
-            address(utilitiesImpl), abi.encodeCall(IdentityUtilities.initialize, (deployer))
-        );
+        IdentityUtilitiesProxy utilitiesProxy = new IdentityUtilitiesProxy(address(utilitiesImpl), deployer);
         console.log("IdentityUtilities implementation:", address(utilitiesImpl));
         console.log("IdentityUtilities proxy:", address(utilitiesProxy));
 

@@ -61,6 +61,11 @@ contract Identity is Initializable, SmartAccount, ERC165 {
         uint256 identityType;
     }
 
+    /// @dev Release version. {accountId} and {version} both read this so they cannot drift
+    ///      apart. The EIP-712 domain version in the constructor is separate on purpose: it is
+    ///      baked into every stored claim signature and must not follow releases.
+    string private constant _VERSION = "3.0.0";
+
     /// @dev ERC-7201 storage slot for identity-level metadata.
     bytes32 internal constant _IDENTITY_METADATA_SLOT =
         keccak256(abi.encode(uint256(keccak256(bytes("onchainid.identity.metadata"))) - 1)) & ~bytes32(uint256(0xff));
@@ -79,6 +84,11 @@ contract Identity is Initializable, SmartAccount, ERC165 {
      * @param identityFactory_ The {IdentityFactory} that deploys identities of this implementation.
      * @dev The implementation is only ever used behind a BeaconProxy, so its own `Initializable`
      *      slot is locked here; proxies keep their storage untouched and can initialize.
+     *
+     *      The EIP-712 domain version stays at "1" regardless of {_VERSION}. Claim digests
+     *      are rebuilt from the live domain on every read, so bumping it would invalidate
+     *      every stored claim signature at once. Only change it as a deliberate migration
+     *      that breaks old signatures.
      */
     constructor(address registryModule_, address identityFactory_) EIP712("OnchainID", "1") {
         require(registryModule_ != address(0), Errors.ZeroAddress());
@@ -135,10 +145,11 @@ contract Identity is Initializable, SmartAccount, ERC165 {
             }
         }
 
-        // Seed the caller-supplied keys into the enshrined registry module.
+        // Seed the caller-supplied keys through the keyHash check, so the deploy salt
+        // commits to the keys actually registered.
         for (uint256 i = 0; i < _keys.length; i++) {
             Structs.KeyParam calldata key = _keys[i];
-            ERC734Validator(registryModule()).addKey(key.signerData, key.clientData, key.purpose, key.keyType);
+            _addKeyWithData(key.keyHash, key.purpose, key.keyType, key.signerData, key.clientData);
         }
 
         emit IdentityInitialized(_identityType);
@@ -169,12 +180,12 @@ contract Identity is Initializable, SmartAccount, ERC165 {
 
     /// @notice ERC-7579 account identifier.
     function accountId() public view virtual override returns (string memory) {
-        return "trex.onchainid.identity.v3.0.0";
+        return string.concat("trex.onchainid.identity.v", _VERSION);
     }
 
     /// @notice Current contract version.
     function version() external pure virtual returns (string memory) {
-        return "3.0.0";
+        return _VERSION;
     }
 
     /// @notice ERC-165 surface. Returns true for the ERC-734 / ERC-735 / IIdentity selectors
