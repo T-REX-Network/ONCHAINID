@@ -52,6 +52,31 @@ library Errors {
     /// @notice Reverts if no key with MANAGEMENT purpose is provided
     error NoManagementKeyInKeys();
 
+    /// @notice Reverts when {createIdentityFor} deploys for a signing type but `_account`
+    ///         is not the only wallet with MANAGEMENT on the new identity. The wallet the
+    ///         identity was created for has to manage it alone, or the caller could keep a
+    ///         key and strip that wallet later. The type's registered modules may hold
+    ///         MANAGEMENT alongside it.
+    error AccountNotSoleManagementKey(address account);
+
+    /// @notice Reverts when {createIdentityFor} deploys for a signing type and the caller
+    ///         supplies a key that is not `_account`'s own key hash. The caller may only
+    ///         grant purposes to the account the identity is created for; the account adds
+    ///         any other keys itself once it is in control. `keyHash` is the hash derived
+    ///         from the key's `signerData`, which is the value the registry stores under.
+    error KeyNotForAccount(bytes32 keyHash);
+
+    /// @notice Reverts when a deploy caller supplies a key typed MODULE. That type is
+    ///         reserved for keys the module install registers: MODULE keys stay out of the
+    ///         MANAGEMENT index, so a wallet key wearing it would escape the management
+    ///         counts while keeping key authority.
+    error CallerKeyCannotBeModule(bytes32 keyHash);
+
+    /// @notice Reverts when {setIdentityTypePolicy} would open a single-binding type to the
+    ///         AM's PUBLIC_ROLE. Single binding types skip the sole management check, so
+    ///         their role gate must stay restricted.
+    error SingleBindingTypeCannotBePublic(uint256 identityType);
+
     /// @notice Reverts when an identity is initialized with no validator and no executor
     ///         module. Without either, the account cannot verify signatures or dispatch
     ///         outbound calls.

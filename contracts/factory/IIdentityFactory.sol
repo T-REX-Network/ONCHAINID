@@ -13,7 +13,11 @@ import { Structs } from "../storage/Structs.sol";
 ///         Use the AM's `PUBLIC_ROLE` for open types; any other role restricts the call to
 ///         its holders.
 ///
-///         {setIdentityTypePolicy} itself is `restricted` (resolved by the AM).
+///         Admin also registers the modules each type deploys with, via
+///         {setIdentityTypeModules}. Callers pass no modules, so the admin decides which
+///         code runs on an identity and with which purpose.
+///
+///         Both setters are `restricted` (resolved by the AM).
 ///
 ///         Wallets are addressed as ERC-7930 interoperable address envelopes (`bytes`).
 ///         EVM wallets are wrapped via OZ `InteroperableAddress.formatEvmV1(chainId, addr)`.
@@ -73,6 +77,10 @@ interface IIdentityFactory {
     /// @notice Emitted when an identity type is unregistered (both deploy paths revert).
     event IdentityTypePolicyRemoved(uint256 indexed identityType);
 
+    /// @notice Emitted when the modules registered for an identity type change. Every
+    ///         identity of that type installs these from then on.
+    event IdentityTypeModulesSet(uint256 indexed identityType, Structs.ModuleInstall[] modules);
+
     /// @notice Emitted when an inbound ERC-7786 message has staged a wallet -> identity
     ///         binding awaiting identity-side confirmation. The link is not active yet.
     event PendingCrossChainLinkProposed(bytes account, address indexed identity, uint256 expiry);
@@ -113,23 +121,28 @@ interface IIdentityFactory {
     ///         contract-shaped types like ASSET / SMART_CONTRACT opt out because the
     ///         `msg.sender = first wallet` binding does not apply to them. Unregistered
     ///         types revert.
-    function createIdentity(
-        uint256 _identityType,
-        string memory _salt,
-        Structs.KeyParam[] memory _keys,
-        Structs.ModuleInstall[] memory _modules
-    ) external returns (address);
+    ///         The modules registered for the type are installed. Callers do not pick them.
+    function createIdentity(uint256 _identityType, string memory _salt, Structs.KeyParam[] memory _keys)
+        external
+        returns (address);
 
-    /// @notice Deploy for an EVM account that cannot sign (a token, a vault). The
-    ///         account is auto-linked as the identity's first wallet. Caller must hold
-    ///         the role configured for `_identityType` (use `PUBLIC_ROLE` for open types).
-    ///         Unregistered types revert.
+    /// @notice Deploy for another EVM account. The account is auto-linked as the
+    ///         identity's first wallet. Caller must hold the role configured for
+    ///         `_identityType`. Unregistered types revert.
+    ///
+    ///         `_account` signs nothing, so an issuer can onboard a wallet without asking
+    ///         its owner for anything. The deploy instead only succeeds if `_account` ends
+    ///         up as the only wallet with MANAGEMENT on the new identity, so the identity is
+    ///         managed by the wallet it was created for and never by the caller. The type's
+    ///         registered modules may hold MANAGEMENT too, but callers do not choose modules,
+    ///         so a caller cannot act through one either. Single binding types (ASSET,
+    ///         SMART_CONTRACT) hold no key, so they skip the check and rely on the caller's
+    ///         role, which must not be `PUBLIC_ROLE`.
     function createIdentityFor(
         address _account,
         uint256 _identityType,
         string memory _salt,
-        Structs.KeyParam[] memory _keys,
-        Structs.ModuleInstall[] memory _modules
+        Structs.KeyParam[] memory _keys
     ) external returns (address);
 
     /// @notice Set the per-type policy: AM role required to call {createIdentityFor},
@@ -152,6 +165,16 @@ interface IIdentityFactory {
         external
         view
         returns (uint64 roleId, bool selfDeployable, bool singleBinding, bool registered);
+
+    /// @notice Set the modules installed on every identity of `_identityType`, replacing
+    ///         any list set before. Deploy callers pass no modules, so this is the only way
+    ///         a module reaches an identity, and the admin decides which code runs with
+    ///         which purpose. A type with no modules registered cannot deploy, because
+    ///         `Identity.initialize` needs a validator or an executor. `restricted`.
+    function setIdentityTypeModules(uint256 _identityType, Structs.ModuleInstall[] calldata _modules) external;
+
+    /// @notice Read the modules registered for an identity type.
+    function getIdentityTypeModules(uint256 _identityType) external view returns (Structs.ModuleInstall[] memory);
 
     /// @notice Link a wallet to the calling identity. The wallet authorizes the link via
     ///         an EIP-712 `LinkAccount` signature. Supports EOAs, ERC-1271 smart wallets,
