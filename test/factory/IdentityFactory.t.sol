@@ -8,7 +8,11 @@ import { MockERC7786Gateway } from "../mocks/MockERC7786Gateway.sol";
 import { MockLyingERC734Getter } from "../mocks/MockLyingERC734Getter.sol";
 import { Constants } from "../utils/Constants.sol";
 import { AccessManager } from "@openzeppelin/contracts/access/manager/AccessManager.sol";
-import { MODULE_TYPE_FALLBACK, MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import {
+    MODULE_TYPE_EXECUTOR,
+    MODULE_TYPE_FALLBACK,
+    MODULE_TYPE_VALIDATOR
+} from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { UpgradeableBeacon } from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import { Errors as OZErrors } from "@openzeppelin/contracts/utils/Errors.sol";
 import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
@@ -609,6 +613,36 @@ contract IdentityFactoryTest is OnchainIDSetup {
     /// @notice A module install with a MANAGEMENT purpose mints a MODULE key that cannot sign.
     ///         It stays out of the MANAGEMENT index, so the factory sees zero managers and
     ///         rejects the deploy.
+    /// @notice The MANAGEMENT holder is a module other than the registry, granted through the
+    ///         install `purpose` field. That mints a MODULE key, which cannot sign and so never
+    ///         enters the MANAGEMENT index (M-01). The factory reads that index straight off the
+    ///         enshrined registry, sees no manager, and rejects the deploy. Distinct from the
+    ///         registry-module case below, which is stopped earlier by the self-key guard.
+    function test_revertWhenOnlyManagementKeyIsAnInstalledModule() public {
+        Structs.ModuleInstall[] memory mods = new Structs.ModuleInstall[](2);
+        mods[0] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_VALIDATOR,
+            module: address(onchainidSetup.signatureValidator),
+            initData: "",
+            purpose: 0
+        });
+        // The executor, not the registry, carries MANAGEMENT: the only holder is a MODULE key.
+        mods[1] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_EXECUTOR,
+            module: address(onchainidSetup.keyApprovalModule),
+            initData: "",
+            purpose: KeyPurposes.MANAGEMENT
+        });
+
+        // No signer holds MANAGEMENT: david's own key is ACTION only.
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
+        keys[0] = _makeECDSAKey(david, KeyPurposes.ACTION);
+
+        vm.prank(deployer);
+        vm.expectRevert(Errors.NoManagementKeyInKeys.selector);
+        onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "modOnlyMgmt", keys, mods);
+    }
+
     function test_revertBecauseOnlyManagementKeyIsAModuleInstall() public {
         Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
         keys[0] = _makeECDSAKey(david, KeyPurposes.ACTION);
