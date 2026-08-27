@@ -165,11 +165,15 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // Own the beacon from the factory. Upgrades then go through {upgradeBeacon}, which the
         // factory's live authority gates, so ownership never has to be re-transferred on an
         // authority rotation.
-        Create3.deploy(
+        address deployed = Create3.deploy(
             0,
             _BEACON_SALT,
             abi.encodePacked(type(UpgradeableBeacon).creationCode, abi.encode(implementation, address(this)))
         );
+        // On chains with a non-canonical CREATE2 derivation (zkSync Era et al.) the beacon lands
+        // somewhere other than the address committed in the constructor. Fail loudly instead of
+        // leaving the factory permanently pointed at empty code.
+        require(deployed == beacon, Errors.BeaconAddressMismatch(beacon, deployed));
         emit BeaconInitialized(implementation);
     }
 

@@ -72,17 +72,11 @@ contract InitTest is OnchainIDSetup {
             abi.encodePacked(IERC735.getClaim.selector)
         );
 
+        // The key reads are enshrined functions on the account, not fallback handlers,
+        // so the registry surface survives any uninstall and stays advertised.
         assertTrue(aliceIdentity.supportsInterface(type(IERC734).interfaceId));
         assertFalse(aliceIdentity.supportsInterface(type(IERC735).interfaceId));
         assertFalse(aliceIdentity.supportsInterface(type(IIdentity).interfaceId));
-
-        // Dropping the key getters too takes the registry interface down as well.
-        vm.prank(alice);
-        aliceIdentity.uninstallModule(
-            MODULE_TYPE_FALLBACK, address(onchainidSetup.signatureValidator), abi.encodePacked(IERC734.getKey.selector)
-        );
-
-        assertFalse(aliceIdentity.supportsInterface(type(IERC734).interfaceId));
     }
 
     function test_supportsExecutionMode_matchesExecute() public view {

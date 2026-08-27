@@ -237,6 +237,11 @@ library Errors {
     ///         deployed the beacon at its predetermined slot.
     error BeaconNotInitialized();
 
+    /// @notice CREATE3 deployed the beacon somewhere other than the predetermined address the
+    ///         factory committed to at construction. Only possible on chains whose CREATE2
+    ///         derivation deviates from the canonical EVM formula (e.g. zkSync Era).
+    error BeaconAddressMismatch(address expected, address actual);
+
     /// @notice The candidate beacon implementation has no code.
     error ImplementationNotAContract(address implementation);
 

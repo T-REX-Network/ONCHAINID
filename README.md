@@ -66,6 +66,8 @@ Modules follow the ERC-7579 standard and are installed per identity:
 
 This relies on the standard EVM `CREATE2` derivation `keccak256(0xff, sender, salt, keccak256(initCode))`. Chains that deviate from this derivation produce different addresses. The most common case is **zkSync Era** (and other non-EVM-equivalent zkEVMs), which uses a different prefix byte and hashes bytecode and constructor inputs differently. Since `CREATE3` is built on `CREATE2`, this difference cascades: identities on zkSync will not match addresses on standard EVM chains, no matter which `CREATE3` implementation is used.
 
+**Supported chains:** the stack targets chains that follow the canonical `CREATE2` derivation. The factory enforces this at setup: `initializeBeacon` compares the address `CREATE3` actually deployed the beacon to against the address committed in the factory's constructor, and reverts with `BeaconAddressMismatch` if they differ. On a divergent chain (zkSync Era and similar) initialization therefore fails atomically instead of leaving a factory whose beacon lives at an address it can never reach.
+
 The factory offers two entry points:
 
 - **`createIdentity`** — the caller deploys an identity for themselves and is linked as the first wallet.
