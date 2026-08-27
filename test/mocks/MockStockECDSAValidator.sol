@@ -9,9 +9,9 @@ import { ERC7579Validator } from "contracts/modules/validators/ERC7579Validator.
 /// @notice Test mock demonstrating that a "stock" ERC-7579 validator — one that has
 ///         zero ONCHAINID awareness, no ERC-734 lookups, and a plain 65-byte ECDSA
 ///         signature wire format — drops into a SmartAccount without any adapter.
-///         Under the "validators-as-keys" model the ACTION / MANAGEMENT gate is
-///         enforced at the account layer against the validator address, not against
-///         a signer decoded out of the signature payload.
+///         The account performs no ERC-734 purpose check on the user-op path: an
+///         installed validator is trusted to scope its own signers, so whoever this
+///         mock accepts can act for the account.
 /// @dev Shape mirrors OpenZeppelin's ERC7579ECDSAValidator (see the vendored
 ///      openzeppelin-accounts package). Not a shipping contract.
 contract MockStockECDSAValidator is ERC7579Validator {

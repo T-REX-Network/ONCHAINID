@@ -11,7 +11,7 @@ import {
     AccountERC7579Upgradeable
 } from "@openzeppelin/contracts-upgradeable/account/extensions/draft-AccountERC7579Upgradeable.sol";
 import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/ERC4337Utils.sol";
-import { CallType, ERC7579Utils, Mode } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
+import { CallType, ERC7579Utils, ExecType, Mode } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
 import {
     Execution,
     MODULE_TYPE_EXECUTOR,
@@ -22,8 +22,9 @@ import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 
 /// @title SmartAccount
 /// @notice ERC-7579 modular account that uses the ERC-734 key registry from {KeyManager}.
-///         Signature checks happen in the installed validator; the per-target rule for
-///         user ops runs here.
+///         Signature checks happen in the installed validator, and the account does not
+///         re-check a user op the validator accepted; the per-target purpose rule in
+///         {_authorizeCall} applies to executor callers only.
 abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 {
 
     /// @notice Install a module. Gated on MANAGEMENT.
@@ -95,6 +96,14 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         super._uninstallModule(moduleTypeId, module, deInitData);
     }
 
+    /// @notice Advertises the modes {_execute} accepts. The OZ base also claims DELEGATECALL,
+    ///         which {_execute} rejects.
+    function supportsExecutionMode(bytes32 encodedMode) public view virtual override returns (bool) {
+        (CallType callType, ExecType execType,,) = ERC7579Utils.decodeMode(Mode.wrap(encodedMode));
+        return (callType == ERC7579Utils.CALLTYPE_SINGLE || callType == ERC7579Utils.CALLTYPE_BATCH)
+            && (execType == ERC7579Utils.EXECTYPE_DEFAULT || execType == ERC7579Utils.EXECTYPE_TRY);
+    }
+
     /// @notice The one place every dispatched call is authorized. Both `execute` (user ops and
     ///         MANAGEMENT self-calls) and {executeFromExecutor} go through here, so there is only one
     ///         authorization path to keep right. DELEGATECALL and unknown call types are rejected.
@@ -162,6 +171,8 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
 
     /// @dev The purpose an executor's key needs for a target. Management-grade targets need
     ///      MANAGEMENT; any other target needs ACTION. MANAGEMENT satisfies every purpose check.
+    ///      The factory is management-grade because its wallet-binding calls (linkAccount,
+    ///      revokeAccount, settlePendingCrossChainLink) change the identity's own bindings.
     function _isKeyAuthorizedToCallTarget(bytes32 keyHash, address target) private view returns (bool) {
         uint256 requiredPurpose = isManagementTarget(target) ? KeyPurposes.MANAGEMENT : KeyPurposes.ACTION;
         return _moduleKeyHasPurpose(keyHash, requiredPurpose);
