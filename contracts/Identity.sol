@@ -188,17 +188,18 @@ contract Identity is Initializable, SmartAccount, ERC165 {
         return _VERSION;
     }
 
-    /// @notice ERC-165 surface. An interface is only advertised while the fallback handler
-    ///         serving it is installed, probed via one representative selector.
+    /// @notice ERC-165 surface. The claim interface is only advertised while the fallback
+    ///         handler serving it is installed, probed via one representative selector. The
+    ///         key registry reads are enshrined functions on the account itself, so that
+    ///         surface cannot be uninstalled and is always advertised.
     /// @dev The advertised ERC-734 id is this repo's registry-only {IERC734}. execute/approve
     ///      moved to {IKeyExecutor}, so the legacy monolithic id is intentionally not claimed.
     function supportsInterface(bytes4 interfaceId) public view override returns (bool) {
-        bool hasKeyGetters = _fallbackHandler(IERC734.getKey.selector) != address(0);
         bool hasClaims = _fallbackHandler(IERC735.getClaim.selector) != address(0);
 
-        if (interfaceId == type(IERC734).interfaceId) return hasKeyGetters;
+        if (interfaceId == type(IERC734).interfaceId) return true;
         if (interfaceId == type(IERC735).interfaceId) return hasClaims;
-        if (interfaceId == type(IIdentity).interfaceId) return hasKeyGetters && hasClaims;
+        if (interfaceId == type(IIdentity).interfaceId) return hasClaims;
         return super.supportsInterface(interfaceId);
     }
 
