@@ -3,7 +3,7 @@ pragma solidity ^0.8.27;
 
 import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
-contract Structs {
+library Structs {
 
     /**
      *  @dev Definition of the structure of a Key.
@@ -21,11 +21,17 @@ contract Structs {
         EnumerableSet.UintSet purposes;
         uint256 keyType;
         bytes32 key;
-        /// @dev ERC-7913 signer bytes used for on-chain signature verification
+        /// @dev ERC-7913 signer bytes used for on-chain signature verification.
+        ///      Capped at {MAX_SIGNER_DATA_LENGTH} (fits a 20-byte verifier + RSA-4096 key).
         bytes signerData;
         /// @dev Non-cryptographic metadata for dapps (e.g. WebAuthn credentialId). Empty for ECDSA keys.
+        ///      Capped at {MAX_CLIENT_DATA_LENGTH} (WebAuthn credentialIds are spec-capped at 1023 bytes).
         bytes clientData;
     }
+
+    /// @dev Caps on the dynamic fields of {Key}, enforced when a key is registered.
+    uint256 internal constant MAX_SIGNER_DATA_LENGTH = 1024;
+    uint256 internal constant MAX_CLIENT_DATA_LENGTH = 1024;
 
     /**
      *  @dev Definition of the structure of an Execution
@@ -96,6 +102,12 @@ contract Structs {
         uint256 validUntil;
         bytes payload;
     }
+
+    /// @dev Caps on the dynamic fields of {Claim} and {ClaimData}, enforced when a claim is
+    ///      added. They keep every claim small enough to remove in one block.
+    uint256 internal constant MAX_CLAIM_SIGNATURE_LENGTH = 2048;
+    uint256 internal constant MAX_CLAIM_PAYLOAD_LENGTH = 2048;
+    uint256 internal constant MAX_CLAIM_URI_LENGTH = 2048;
 
     /**
      *  @dev Definition of the structure of a KeyParam, used by the factory to set up keys on a new identity.

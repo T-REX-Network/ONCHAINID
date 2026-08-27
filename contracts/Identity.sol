@@ -107,7 +107,7 @@ contract Identity is Initializable, SmartAccount, ERC165 {
 
     /// @notice The factory that deploys this identity. Fixed at implementation deploy time like
     ///         {registryModule}. The account uses it to require MANAGEMENT for the factory's
-    ///         wallet-binding calls (linkAccount, revokeAccount, confirmCrossChainLink).
+    ///         wallet-binding calls (linkAccount, revokeAccount, settlePendingCrossChainLink).
     function identityFactory() public view override returns (address) {
         return _identityFactory;
     }
@@ -169,6 +169,13 @@ contract Identity is Initializable, SmartAccount, ERC165 {
     /// @return The identity type as defined in {IdentityTypes}.
     function getIdentityType() external view returns (uint256) {
         return _getIdentityMetadata().identityType;
+    }
+
+    /// @notice The Initializable version stored on this contract. On an implementation whose
+    ///         constructor ran `_disableInitializers` this is `type(uint64).max`. The factory
+    ///         reads it before a beacon upgrade to reject an unlocked implementation.
+    function initializedVersion() external view returns (uint64) {
+        return _getInitializedVersion();
     }
 
     /// @notice ERC-7579 account identifier.

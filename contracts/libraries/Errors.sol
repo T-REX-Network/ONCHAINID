@@ -52,6 +52,31 @@ library Errors {
     /// @notice Reverts if no key with MANAGEMENT purpose is provided
     error NoManagementKeyInKeys();
 
+    /// @notice Reverts when {createIdentityFor} deploys for a signing type but `_account`
+    ///         is not the only wallet with MANAGEMENT on the new identity. The wallet the
+    ///         identity was created for has to manage it alone, or the caller could keep a
+    ///         key and strip that wallet later. The type's registered modules may hold
+    ///         MANAGEMENT alongside it.
+    error AccountNotSoleManagementKey(address account);
+
+    /// @notice Reverts when {createIdentityFor} deploys for a signing type and the caller
+    ///         supplies a key that is not `_account`'s own key hash. The caller may only
+    ///         grant purposes to the account the identity is created for; the account adds
+    ///         any other keys itself once it is in control. `keyHash` is the hash derived
+    ///         from the key's `signerData`, which is the value the registry stores under.
+    error KeyNotForAccount(bytes32 keyHash);
+
+    /// @notice Reverts when a deploy caller supplies a key typed MODULE. That type is
+    ///         reserved for keys the module install registers: MODULE keys stay out of the
+    ///         MANAGEMENT index, so a wallet key wearing it would escape the management
+    ///         counts while keeping key authority.
+    error CallerKeyCannotBeModule(bytes32 keyHash);
+
+    /// @notice Reverts when {setIdentityTypePolicy} would open a single-binding type to the
+    ///         AM's PUBLIC_ROLE. Single binding types skip the sole management check, so
+    ///         their role gate must stay restricted.
+    error SingleBindingTypeCannotBePublic(uint256 identityType);
+
     /// @notice Reverts when an identity is initialized with no validator and no executor
     ///         module. Without either, the account cannot verify signatures or dispatch
     ///         outbound calls.
@@ -96,7 +121,7 @@ library Errors {
     ///         is not currently part of the calling identity's active set.
     error WalletNotLinkedToIdentity(bytes wallet);
 
-    /// @notice Reverts when the caller of {confirmCrossChainLink} does not match the
+    /// @notice Reverts when the caller of {settlePendingCrossChainLink} does not match the
     ///         identity recorded in the pending proposal. `recorded` is `address(0)`
     ///         if no proposal exists for the wallet.
     error PendingCrossChainLinkIdentityMismatch(bytes wallet, address caller, address recorded);
@@ -115,6 +140,26 @@ library Errors {
     /// @notice Reverts when a cross-chain link proposal is delivered or confirmed
     ///         past its `expiry`.
     error PendingCrossChainLinkExpired(uint256 expiry);
+
+    /// @notice Reverts when a cross-chain proposal names a wallet on this chain.
+    ///         Local wallets link through {linkAccount} with a signature.
+    error CrossChainLinkForLocalWallet(bytes wallet);
+
+    /// @notice Reverts when {linkAccount} gets an envelope whose chain type is not
+    ///         eip-155. The signature path can only verify EVM signers; foreign
+    ///         wallets go through the ERC-7786 cross-chain path.
+    error NonEvmAccount(bytes account);
+
+    /// @notice Reverts when {linkAccount} gets an eip-155 envelope whose chain
+    ///         reference is not this chain's id in minimal big-endian form. The
+    ///         signature path can only prove control on the local chain; wallets on
+    ///         other EVM chains go through the ERC-7786 cross-chain path.
+    error AccountNotOnLocalChain(bytes account);
+
+    /// @notice Reverts when an ERC-7913 signer names a verifier that admin has not
+    ///         approved via {setTrustedVerifier}. Without the list, a caller could
+    ///         ship a verifier that accepts anything and self-certify the link.
+    error UntrustedVerifier(address verifier);
 
     /// @notice Reverts when a wallet envelope encodes its eip-155 chain reference
     ///         with leading zero padding. The same chainid has one minimal
@@ -169,6 +214,20 @@ library Errors {
     ///         below the consumer's claim-add threshold.
     error ReputationBelowClaimAddThreshold(address identity, uint256 score, uint256 threshold);
 
+    /* ----- ERC734Validator field caps (see {Structs}) ----- */
+
+    /// @notice Reverts when a key's clientData exceeds {Structs.MAX_CLIENT_DATA_LENGTH}.
+    error ClientDataTooLong();
+
+    /// @notice Reverts when a claim's signature exceeds {Structs.MAX_CLAIM_SIGNATURE_LENGTH}.
+    error ClaimSignatureTooLong();
+
+    /// @notice Reverts when a claim's payload exceeds {Structs.MAX_CLAIM_PAYLOAD_LENGTH}.
+    error ClaimPayloadTooLong();
+
+    /// @notice Reverts when a claim's uri exceeds {Structs.MAX_CLAIM_URI_LENGTH}.
+    error ClaimUriTooLong();
+
     /* ----- Identity ----- */
 
     /// @notice {IdentityFactory.initializeBeacon} was called but the beacon is already deployed.
@@ -177,6 +236,21 @@ library Errors {
     /// @notice Identity deployment was attempted before {IdentityFactory.initializeBeacon}
     ///         deployed the beacon at its predetermined slot.
     error BeaconNotInitialized();
+
+    /// @notice The candidate beacon implementation has no code.
+    error ImplementationNotAContract(address implementation);
+
+    /// @notice The candidate beacon implementation does not name this factory as its
+    ///         enshrined {IdentityFactory}.
+    error ImplementationFactoryMismatch(address implementation);
+
+    /// @notice The candidate beacon implementation still has its initializers open, so it
+    ///         could be initialized directly instead of only behind a proxy.
+    error ImplementationInitializersNotDisabled(address implementation);
+
+    /// @notice The candidate beacon implementation names a different registry module than
+    ///         the one every deployed identity already holds its keys in.
+    error ImplementationRegistryMismatch(address expected, address actual);
 
     /// @notice The candidate beacon implementation reports a different version than the one
     ///         the upgrader committed to in {IdentityFactory.upgradeBeacon}.

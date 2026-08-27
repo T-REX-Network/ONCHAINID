@@ -2,12 +2,20 @@
 pragma solidity ^0.8.27;
 
 import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
+import { IdentityHelper } from "../helpers/IdentityHelper.sol";
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 import { MockERC1271Wallet } from "../mocks/MockERC1271Wallet.sol";
 import { MockERC7786Gateway } from "../mocks/MockERC7786Gateway.sol";
+import { MockERC7913PermissiveVerifier } from "../mocks/MockERC7913PermissiveVerifier.sol";
+import { MockLyingERC734Getter } from "../mocks/MockLyingERC734Getter.sol";
 import { Constants } from "../utils/Constants.sol";
 import { AccessManager } from "@openzeppelin/contracts/access/manager/AccessManager.sol";
-import { MODULE_TYPE_FALLBACK, MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import { ERC7786Recipient } from "@openzeppelin/contracts/crosschain/ERC7786Recipient.sol";
+import {
+    MODULE_TYPE_EXECUTOR,
+    MODULE_TYPE_FALLBACK,
+    MODULE_TYPE_VALIDATOR
+} from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { UpgradeableBeacon } from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import { Errors as OZErrors } from "@openzeppelin/contracts/utils/Errors.sol";
 import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
@@ -21,9 +29,11 @@ import { Errors } from "contracts/libraries/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
+import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 import { Vm } from "forge-std/Vm.sol";
 import { RevertingIdentity } from "test/mocks/RevertingIdentity.sol";
+import { UnlockedIdentity } from "test/mocks/UnlockedIdentity.sol";
 
 contract IdentityFactoryTest is OnchainIDSetup {
 
@@ -48,40 +58,16 @@ contract IdentityFactoryTest is OnchainIDSetup {
     }
 
     /// @dev Minimal module bundle that satisfies Identity.initialize's "needs a validator
-    ///      or an executor" invariant, plus the four ERC-734 getter fallbacks so the factory's
-    ///      post-deploy `getKeysByPurpose(MANAGEMENT)` check can be answered. The validator install
-    ///      carries empty initData: the MANAGEMENT key is seeded from the caller-supplied `keys`, so
-    ///      seeding it again in the validator's onInstall would collide (KeyAlreadyRegistered).
+    ///      or an executor" invariant. The validator install carries empty initData: the
+    ///      MANAGEMENT key is seeded from the caller-supplied `keys`, so seeding it again in
+    ///      the validator's onInstall would collide (KeyAlreadyRegistered). No getter fallback
+    ///      wiring is needed: the ERC-734 getters are plain functions on the account, and the
+    ///      factory's post-deploy MANAGEMENT check reads the enshrined registry directly.
     function _defaultModules() internal view returns (Structs.ModuleInstall[] memory mods) {
         address validator = address(onchainidSetup.signatureValidator);
-        mods = new Structs.ModuleInstall[](5);
+        mods = new Structs.ModuleInstall[](1);
         mods[0] =
             Structs.ModuleInstall({ moduleType: MODULE_TYPE_VALIDATOR, module: validator, initData: "", purpose: 0 });
-        // ERC-734 getter fallbacks served by the merged validator module.
-        mods[1] = Structs.ModuleInstall({
-            moduleType: MODULE_TYPE_FALLBACK,
-            module: validator,
-            initData: abi.encodePacked(IERC734.keyHasPurpose.selector),
-            purpose: 0
-        });
-        mods[2] = Structs.ModuleInstall({
-            moduleType: MODULE_TYPE_FALLBACK,
-            module: validator,
-            initData: abi.encodePacked(IERC734.getKey.selector),
-            purpose: 0
-        });
-        mods[3] = Structs.ModuleInstall({
-            moduleType: MODULE_TYPE_FALLBACK,
-            module: validator,
-            initData: abi.encodePacked(IERC734.getKeyPurposes.selector),
-            purpose: 0
-        });
-        mods[4] = Structs.ModuleInstall({
-            moduleType: MODULE_TYPE_FALLBACK,
-            module: validator,
-            initData: abi.encodePacked(IERC734.getKeysByPurpose.selector),
-            purpose: 0
-        });
     }
 
     function _domainSeparator(address verifyingContract) internal view returns (bytes32) {
@@ -187,6 +173,72 @@ contract IdentityFactoryTest is OnchainIDSetup {
         onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "4.0.0");
     }
 
+    /// @notice An identity's registry module is an implementation immutable, not proxy storage,
+    ///         so an upgrade to an implementation naming a different registry would silently
+    ///         re-point every deployed identity at a registry holding none of their keys.
+    function test_upgradeBeacon_revertForDifferentRegistryModule() public {
+        ERC734Validator otherRegistry =
+            new ERC734Validator(address(onchainidSetup.idFactory), address(onchainidSetup.reputationRegistry));
+        Identity newImpl = new Identity(address(otherRegistry), address(onchainidSetup.idFactory));
+
+        vm.prank(deployer);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Errors.ImplementationRegistryMismatch.selector,
+                address(onchainidSetup.signatureValidator),
+                address(otherRegistry)
+            )
+        );
+        onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.0.0");
+    }
+
+    /// @notice The candidate has to name this factory, otherwise the account's factory-gated
+    ///         calls (linkAccount, revokeAccount, confirmCrossChainLink) stop answering to it.
+    function test_upgradeBeacon_revertForDifferentFactory() public {
+        IdentityFactory otherFactory = new IdentityFactory(address(onchainidSetup.accessManager));
+        Identity newImpl = new Identity(address(onchainidSetup.signatureValidator), address(otherFactory));
+
+        vm.prank(deployer);
+        vm.expectRevert(abi.encodeWithSelector(Errors.ImplementationFactoryMismatch.selector, address(newImpl)));
+        onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.0.0");
+    }
+
+    function test_upgradeBeacon_revertForCodelessImplementation() public {
+        address notAContract = makeAddr("notAContract");
+        vm.prank(deployer);
+        vm.expectRevert(abi.encodeWithSelector(Errors.ImplementationNotAContract.selector, notAContract));
+        onchainidSetup.idFactory.upgradeBeacon(notAContract, "3.0.0");
+    }
+
+    /// @notice An implementation whose initializers are still open can be initialized directly,
+    ///         so the factory refuses to put it behind the beacon.
+    function test_upgradeBeacon_revertForUnlockedInitializers() public {
+        UnlockedIdentity unlockedImpl =
+            new UnlockedIdentity(address(onchainidSetup.signatureValidator), address(onchainidSetup.idFactory));
+        vm.prank(deployer);
+        vm.expectRevert(
+            abi.encodeWithSelector(Errors.ImplementationInitializersNotDisabled.selector, address(unlockedImpl))
+        );
+        onchainidSetup.idFactory.upgradeBeacon(address(unlockedImpl), "3.0.0");
+    }
+
+    /// @notice Existing identities keep resolving their keys across a continuous upgrade.
+    function test_upgradeBeacon_preservesKeysOnDeployedIdentities() public {
+        address owner = makeAddr("upgradeContinuityOwner");
+        vm.prank(owner);
+        address identityAddr = onchainidSetup.idFactory
+            .createIdentity(IdentityTypes.INDIVIDUAL, "upgradeContinuity", _makeSingleMgmtKeys(owner));
+
+        bytes32 ownerKey = ClaimSignerHelper.addressToKey(owner);
+        assertTrue(IERC734(identityAddr).keyHasPurpose(ownerKey, KeyPurposes.MANAGEMENT), "key set before upgrade");
+
+        Identity newImpl = new Identity(address(onchainidSetup.signatureValidator), address(onchainidSetup.idFactory));
+        vm.prank(deployer);
+        onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.0.0");
+
+        assertTrue(IERC734(identityAddr).keyHasPurpose(ownerKey, KeyPurposes.MANAGEMENT), "key survives the upgrade");
+    }
+
     /// @notice Upgrade rights follow the factory's current authority. After rotating the factory
     ///         to a new AccessManager, the deployer (admin of the OLD one only) can no longer
     ///         upgrade. The beacon owner (the factory) never moves, so nothing drifts out of sync.
@@ -236,13 +288,11 @@ contract IdentityFactoryTest is OnchainIDSetup {
         AccessManager am = new AccessManager(deployer);
         IdentityFactory freshFactory = new IdentityFactory(address(am));
         vm.prank(deployer);
-        freshFactory.setIdentityTypePolicy(IdentityTypes.INDIVIDUAL, type(uint64).max, true);
+        freshFactory.setIdentityTypePolicy(IdentityTypes.INDIVIDUAL, type(uint64).max, true, false);
 
         vm.prank(david);
         vm.expectRevert(Errors.BeaconNotInitialized.selector);
-        freshFactory.createIdentity(
-            IdentityTypes.INDIVIDUAL, "noBeaconSalt", _makeSingleMgmtKeys(david), _defaultModules()
-        );
+        freshFactory.createIdentity(IdentityTypes.INDIVIDUAL, "noBeaconSalt", _makeSingleMgmtKeys(david));
     }
 
     // ============ Per-identity-type gating ============
@@ -253,7 +303,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
     function _restrictTypeToFreshRole(uint256 identityType) internal returns (uint64 role) {
         role = 999;
         vm.prank(deployer);
-        onchainidSetup.idFactory.setIdentityTypePolicy(identityType, role, true);
+        onchainidSetup.idFactory.setIdentityTypePolicy(identityType, role, true, false);
     }
 
     function test_createIdentityFor_revertWhenCallerLacksTypeRole() public {
@@ -266,9 +316,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
             )
         );
         onchainidSetup.idFactory
-            .createIdentityFor(
-                david, IdentityTypes.CLAIM_ISSUER, "noRole", _makeSingleMgmtKeys(david), _defaultModules()
-            );
+            .createIdentityFor(david, IdentityTypes.CLAIM_ISSUER, "noRole", _makeSingleMgmtKeys(david));
     }
 
     function test_createIdentityFor_adminMustGrantSelfRoleToCall() public {
@@ -283,18 +331,15 @@ contract IdentityFactoryTest is OnchainIDSetup {
             )
         );
         onchainidSetup.idFactory
-            .createIdentityFor(
-                david, IdentityTypes.CLAIM_ISSUER, "adminNoRole", _makeSingleMgmtKeys(david), _defaultModules()
-            );
+            .createIdentityFor(david, IdentityTypes.CLAIM_ISSUER, "adminNoRole", _makeSingleMgmtKeys(david));
 
         // Once admin grants themselves the role, the call succeeds.
         vm.prank(deployer);
         onchainidSetup.accessManager.grantRole(role, deployer, 0);
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(david);
         vm.prank(deployer);
-        address identityAddr = onchainidSetup.idFactory
-            .createIdentityFor(
-                david, IdentityTypes.CLAIM_ISSUER, "adminWithRole", _makeSingleMgmtKeys(david), _defaultModules()
-            );
+        address identityAddr =
+            onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.CLAIM_ISSUER, "adminWithRole", keys);
         assertTrue(identityAddr != address(0));
     }
 
@@ -309,9 +354,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(Errors.DelayedRoleNotSupported.selector, alice, role, uint32(1 days)));
         onchainidSetup.idFactory
-            .createIdentityFor(
-                david, IdentityTypes.CLAIM_ISSUER, "delayedRole", _makeSingleMgmtKeys(david), _defaultModules()
-            );
+            .createIdentityFor(david, IdentityTypes.CLAIM_ISSUER, "delayedRole", _makeSingleMgmtKeys(david));
 
         // Re-granting with a zero delay unblocks the caller (delay decrease settles
         // after the old delay elapses).
@@ -320,9 +363,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         vm.warp(block.timestamp + 1 days);
         vm.prank(alice);
         address identityAddr = onchainidSetup.idFactory
-            .createIdentityFor(
-                david, IdentityTypes.CLAIM_ISSUER, "delayCleared", _makeSingleMgmtKeys(david), _defaultModules()
-            );
+            .createIdentityFor(david, IdentityTypes.CLAIM_ISSUER, "delayCleared", _makeSingleMgmtKeys(david));
         assertTrue(identityAddr != address(0));
     }
 
@@ -334,19 +375,18 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
         Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(david);
         vm.prank(alice);
-        address identityAddr = onchainidSetup.idFactory
-            .createIdentityFor(david, IdentityTypes.CLAIM_ISSUER, "aliceRole", keys, _defaultModules());
+        address identityAddr =
+            onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.CLAIM_ISSUER, "aliceRole", keys);
         assertTrue(identityAddr != address(0));
     }
 
     /// @notice Types registered with PUBLIC_ROLE are deployable by anyone.
     function test_createIdentityFor_publicRoleTypeIsOpen() public {
         // The test helper registers INDIVIDUAL with PUBLIC_ROLE at setUp.
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(david);
         vm.prank(alice);
-        address identityAddr = onchainidSetup.idFactory
-            .createIdentityFor(
-                david, IdentityTypes.INDIVIDUAL, "openType", _makeSingleMgmtKeys(david), _defaultModules()
-            );
+        address identityAddr =
+            onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "openType", keys);
         assertTrue(identityAddr != address(0));
     }
 
@@ -356,8 +396,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         uint256 unknownType = 99999999;
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(Errors.UnknownIdentityType.selector, unknownType));
-        onchainidSetup.idFactory
-            .createIdentityFor(david, unknownType, "unknown", _makeSingleMgmtKeys(david), _defaultModules());
+        onchainidSetup.idFactory.createIdentityFor(david, unknownType, "unknown", _makeSingleMgmtKeys(david));
     }
 
     /// @notice createIdentity reverts when the per-type policy has `selfDeployable = false`.
@@ -365,7 +404,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
     ///         sidestep the createIdentityFor role check.
     function test_createIdentity_revertsWhenNotSelfDeployable() public {
         vm.prank(deployer);
-        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 999, false);
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 999, false, false);
 
         address selfDeployer = makeAddr("selfIssuerEoa");
         vm.prank(selfDeployer);
@@ -373,26 +412,83 @@ contract IdentityFactoryTest is OnchainIDSetup {
             abi.encodeWithSelector(Errors.IdentityTypeNotSelfDeployable.selector, IdentityTypes.CLAIM_ISSUER)
         );
         onchainidSetup.idFactory
-            .createIdentity(
-                IdentityTypes.CLAIM_ISSUER, "selfIssuer", _makeSingleMgmtKeys(selfDeployer), _defaultModules()
-            );
+            .createIdentity(IdentityTypes.CLAIM_ISSUER, "selfIssuer", _makeSingleMgmtKeys(selfDeployer));
     }
 
     function test_setIdentityTypePolicy_emitsEventAndUpdatesView() public {
         vm.prank(deployer);
         vm.expectEmit(true, true, false, true, address(onchainidSetup.idFactory));
-        emit IIdentityFactory.IdentityTypePolicySet(IdentityTypes.CLAIM_ISSUER, 123, false);
-        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 123, false);
-        (uint64 roleId, bool selfDeployable) =
+        emit IIdentityFactory.IdentityTypePolicySet(IdentityTypes.CLAIM_ISSUER, 123, false, true);
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 123, false, true);
+        (uint64 roleId, bool selfDeployable, bool singleBinding, bool registered) =
             onchainidSetup.idFactory.getIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER);
         assertEq(roleId, 123);
         assertEq(selfDeployable, false);
+        assertEq(singleBinding, true);
+        assertTrue(registered);
+    }
+
+    /// @notice Registration is tracked separately from the role, so the AM's ADMIN_ROLE
+    ///         (id 0) can gate a type like any other role.
+    function test_setIdentityTypePolicy_adminRoleUsableAsTypeRole() public {
+        vm.prank(deployer);
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 0, false, false);
+
+        // deployer is the AM admin, so it holds role 0; anyone else is rejected.
+        vm.prank(alice);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Errors.NotAuthorizedForIdentityType.selector, alice, IdentityTypes.CLAIM_ISSUER, uint64(0)
+            )
+        );
+        onchainidSetup.idFactory
+            .createIdentityFor(david, IdentityTypes.CLAIM_ISSUER, "adminGated", _makeSingleMgmtKeys(david));
+
+        vm.prank(deployer);
+        address identityAddr = onchainidSetup.idFactory
+            .createIdentityFor(david, IdentityTypes.CLAIM_ISSUER, "adminGated", _makeSingleMgmtKeys(david));
+        assertTrue(identityAddr != address(0));
+    }
+
+    function test_removeIdentityTypePolicy_unregistersType() public {
+        vm.prank(deployer);
+        vm.expectEmit(true, false, false, true, address(onchainidSetup.idFactory));
+        emit IIdentityFactory.IdentityTypePolicyRemoved(IdentityTypes.INDIVIDUAL);
+        onchainidSetup.idFactory.removeIdentityTypePolicy(IdentityTypes.INDIVIDUAL);
+
+        (,,, bool registered) = onchainidSetup.idFactory.getIdentityTypePolicy(IdentityTypes.INDIVIDUAL);
+        assertFalse(registered);
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(Errors.UnknownIdentityType.selector, IdentityTypes.INDIVIDUAL));
+        onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "removed", _makeSingleMgmtKeys(alice));
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(Errors.UnknownIdentityType.selector, IdentityTypes.INDIVIDUAL));
+        onchainidSetup.idFactory
+            .createIdentityFor(david, IdentityTypes.INDIVIDUAL, "removed", _makeSingleMgmtKeys(david));
+    }
+
+    function test_removeIdentityTypePolicy_revertForNonAdmin() public {
+        vm.prank(alice);
+        vm.expectRevert(); // AccessManagerUnauthorizedAccount
+        onchainidSetup.idFactory.removeIdentityTypePolicy(IdentityTypes.INDIVIDUAL);
+    }
+
+    function test_setIdentityTypePolicy_revertWhenSingleBindingTypeIsPublic() public {
+        // A single-binding identity is bound to a contract that holds no key, so the role
+        // gate is its only defense. Opening it to PUBLIC_ROLE would let anyone bind a
+        // contract to keys they alone hold, so the factory refuses the config.
+        uint64 publicRole = onchainidSetup.accessManager.PUBLIC_ROLE();
+        vm.prank(deployer);
+        vm.expectRevert(abi.encodeWithSelector(Errors.SingleBindingTypeCannotBePublic.selector, IdentityTypes.ASSET));
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.ASSET, publicRole, false, true);
     }
 
     function test_setIdentityTypePolicy_revertForNonAdmin() public {
         vm.prank(alice);
         vm.expectRevert(); // AccessManagerUnauthorizedAccount
-        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 7, true);
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 7, true, false);
     }
 
     /// @notice createIdentity rejects unregistered types up front (same as createIdentityFor).
@@ -401,21 +497,18 @@ contract IdentityFactoryTest is OnchainIDSetup {
         address selfDeployer = makeAddr("selfDeployerUnknownType");
         vm.prank(selfDeployer);
         vm.expectRevert(abi.encodeWithSelector(Errors.UnknownIdentityType.selector, unknownType));
-        onchainidSetup.idFactory
-            .createIdentity(unknownType, "unknownSelf", _makeSingleMgmtKeys(selfDeployer), _defaultModules());
+        onchainidSetup.idFactory.createIdentity(unknownType, "unknownSelf", _makeSingleMgmtKeys(selfDeployer));
     }
 
     /// @notice createIdentity succeeds when the policy explicitly opts the type into self-deploy.
     function test_createIdentity_succeedsWhenSelfDeployable() public {
         vm.prank(deployer);
-        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 999, true);
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 999, true, false);
 
         address selfDeployer = makeAddr("selfIssuerOptedIn");
         vm.prank(selfDeployer);
         address identityAddr = onchainidSetup.idFactory
-            .createIdentity(
-                IdentityTypes.CLAIM_ISSUER, "selfIssuerOk", _makeSingleMgmtKeys(selfDeployer), _defaultModules()
-            );
+            .createIdentity(IdentityTypes.CLAIM_ISSUER, "selfIssuerOk", _makeSingleMgmtKeys(selfDeployer));
         assertTrue(identityAddr != address(0));
         assertEq(
             onchainidSetup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, selfDeployer)),
@@ -428,29 +521,27 @@ contract IdentityFactoryTest is OnchainIDSetup {
     function test_createIdentityFor_unaffectedBySelfDeployable() public {
         uint64 publicRole = onchainidSetup.accessManager.PUBLIC_ROLE();
         vm.prank(deployer);
-        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.INDIVIDUAL, publicRole, false);
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.INDIVIDUAL, publicRole, false, false);
 
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(david);
         vm.prank(alice);
-        address identityAddr = onchainidSetup.idFactory
-            .createIdentityFor(
-                david, IdentityTypes.INDIVIDUAL, "selfDeployOffButForOk", _makeSingleMgmtKeys(david), _defaultModules()
-            );
+        address identityAddr =
+            onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "selfDeployOffButForOk", keys);
         assertTrue(identityAddr != address(0));
     }
 
     /// @notice Regression guard: ASSET-typed self-deploy must revert. Closes the bug where
     ///         any EOA could mint an ASSET identity bound to themselves.
     function test_createIdentity_assetTypeRevertsForEoa() public {
-        // Apply the production policy for ASSET (matches DeployOnchainID defaults).
-        uint64 publicRole = onchainidSetup.accessManager.PUBLIC_ROLE();
+        // Apply the production policy for ASSET (matches DeployOnchainID defaults):
+        // gated role, no self-deploy, single binding.
         vm.prank(deployer);
-        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.ASSET, publicRole, false);
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.ASSET, 1, false, true);
 
         address eoa = makeAddr("eoaTryingToMintAsset");
         vm.prank(eoa);
         vm.expectRevert(abi.encodeWithSelector(Errors.IdentityTypeNotSelfDeployable.selector, IdentityTypes.ASSET));
-        onchainidSetup.idFactory
-            .createIdentity(IdentityTypes.ASSET, "assetEoa", _makeSingleMgmtKeys(eoa), _defaultModules());
+        onchainidSetup.idFactory.createIdentity(IdentityTypes.ASSET, "assetEoa", _makeSingleMgmtKeys(eoa));
     }
 
     // ============ createIdentityFor (validation) ============
@@ -459,48 +550,66 @@ contract IdentityFactoryTest is OnchainIDSetup {
         vm.prank(deployer);
         vm.expectRevert(Errors.ZeroAddress.selector);
         onchainidSetup.idFactory
-            .createIdentityFor(
-                address(0), IdentityTypes.INDIVIDUAL, "salt1", _makeSingleMgmtKeys(address(0)), _defaultModules()
-            );
+            .createIdentityFor(address(0), IdentityTypes.INDIVIDUAL, "salt1", _makeSingleMgmtKeys(address(0)));
     }
 
     function test_revertBecauseSaltCannotBeEmpty() public {
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(david);
         vm.prank(deployer);
         vm.expectRevert(Errors.EmptyString.selector);
-        onchainidSetup.idFactory
-            .createIdentityFor(david, IdentityTypes.INDIVIDUAL, "", _makeSingleMgmtKeys(david), _defaultModules());
+        onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "", keys);
     }
 
     function test_revertBecauseSaltAlreadyUsed() public {
-        // Same salt, keys, and modules deploy to the same address, so the second call collides.
+        // Same account, salt and keys deploy to the same address, so the second call collides.
         Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(carol);
-        Structs.ModuleInstall[] memory modules = _defaultModules();
 
         vm.prank(deployer);
-        onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "saltUsed", keys, modules);
+        onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "saltUsed", keys);
 
         vm.prank(deployer);
         vm.expectRevert(OZErrors.FailedDeployment.selector);
-        onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "saltUsed", keys, modules);
+        onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "saltUsed", keys);
     }
 
     /// @notice Same _salt string with different keys yields a different identity address.
     ///         Closes the cross-chain front-running surface where someone reuses an
     ///         expected salt with their own keys to land on the victim's address.
     function test_createIdentityFor_sameSaltDifferentKeysGivesDifferentAddress() public {
-        Structs.ModuleInstall[] memory modules = _defaultModules();
-
+        Structs.KeyParam[] memory carolKeys = _makeSingleMgmtKeys(carol);
         vm.prank(deployer);
-        address first = onchainidSetup.idFactory
-            .createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "saltShared", _makeSingleMgmtKeys(carol), modules);
+        address first =
+            onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "saltShared", carolKeys);
 
+        Structs.KeyParam[] memory davidKeys = _makeSingleMgmtKeys(david);
         vm.prank(deployer);
-        address second = onchainidSetup.idFactory
-            .createIdentityFor(david, IdentityTypes.INDIVIDUAL, "saltShared", _makeSingleMgmtKeys(david), modules);
+        address second =
+            onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "saltShared", davidKeys);
 
         assertTrue(first != address(0));
         assertTrue(second != address(0));
         assertTrue(first != second, "different bootstrap config must land at a different address");
+    }
+
+    /// @notice The auto-linked account is part of the deploy salt (L-11). With the type, the
+    ///         salt string and the keys all held constant, changing only the account must move
+    ///         the address: otherwise someone watching a pending creation could replay those
+    ///         public arguments with an account of their own, land on the address the caller
+    ///         was going to get, and have their wallet stickily bound to it.
+    function test_createIdentityFor_sameKeysDifferentAccountGivesDifferentAddress() public {
+        // ASSET is single-binding, so its keys are not bound to the account (the bound
+        // contract holds none). That leaves the account as the only differing input.
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(carol);
+        address tokenA = makeAddr("tokenA");
+        address tokenB = makeAddr("tokenB");
+
+        vm.prank(deployer);
+        address forA = onchainidSetup.idFactory.createIdentityFor(tokenA, IdentityTypes.ASSET, "sameSalt", keys);
+
+        vm.prank(deployer);
+        address forB = onchainidSetup.idFactory.createIdentityFor(tokenB, IdentityTypes.ASSET, "sameSalt", keys);
+
+        assertTrue(forA != forB, "the auto-linked account must move the deploy address");
     }
 
     function test_createIdentityFor_revertWhenKeyHashDoesNotMatchSignerData() public {
@@ -511,35 +620,268 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
         vm.prank(deployer);
         vm.expectRevert(Errors.InvalidSignerData.selector);
-        onchainidSetup.idFactory
-            .createIdentityFor(david, IdentityTypes.INDIVIDUAL, "tamperedHash", keys, _defaultModules());
+        onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "tamperedHash", keys);
     }
 
     function test_createIdentity_revertWhenAccountAlreadyBoundElsewhere() public {
         bytes memory aliceAcc = InteroperableAddress.formatEvmV1(block.chainid, alice);
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(alice);
         vm.prank(deployer);
         vm.expectRevert(
             abi.encodeWithSelector(Errors.WalletBoundToAnotherIdentity.selector, aliceAcc, address(aliceIdentity))
         );
-        onchainidSetup.idFactory
-            .createIdentityFor(
-                alice, IdentityTypes.INDIVIDUAL, "newSalt", _makeSingleMgmtKeys(alice), _defaultModules()
-            );
+        onchainidSetup.idFactory.createIdentityFor(alice, IdentityTypes.INDIVIDUAL, "newSalt", keys);
     }
 
     function test_revertBecauseEmptyKeys() public {
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](0);
         vm.prank(deployer);
         vm.expectRevert(Errors.EmptyListOfKeys.selector);
-        onchainidSetup.idFactory
-            .createIdentityFor(david, IdentityTypes.INDIVIDUAL, "salt1", new Structs.KeyParam[](0), _defaultModules());
+        onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "salt1", keys);
     }
 
+    /// @dev NoManagementKeyInKeys fires inside _doCreateIdentity, before the sole-management
+    ///      post-check. The registered modules hold MANAGEMENT keys of their own, but those
+    ///      do not count as managers, so an ACTION-only key set still reverts.
     function test_revertBecauseNoManagementKey() public {
         Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
         keys[0] = _makeECDSAKey(david, KeyPurposes.ACTION);
         vm.prank(deployer);
         vm.expectRevert(Errors.NoManagementKeyInKeys.selector);
-        onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "salt1", keys, _defaultModules());
+        onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "salt1", keys);
+    }
+
+    // ============ per-type module configuration ============
+
+    function test_setIdentityTypeModules_revertForNonAdmin() public {
+        vm.prank(alice);
+        vm.expectRevert(); // AccessManagerUnauthorizedAccount
+        onchainidSetup.idFactory.setIdentityTypeModules(IdentityTypes.CLAIM_ISSUER, _defaultModules());
+    }
+
+    function test_setIdentityTypeModules_replacesList() public {
+        // Register a short bundle, then a different one. The second call replaces the
+        // first rather than appending to it.
+        Structs.ModuleInstall[] memory first = _defaultModules();
+        vm.prank(deployer);
+        onchainidSetup.idFactory.setIdentityTypeModules(IdentityTypes.CLAIM_ISSUER, first);
+
+        Structs.ModuleInstall[] memory stored =
+            onchainidSetup.idFactory.getIdentityTypeModules(IdentityTypes.CLAIM_ISSUER);
+        assertEq(stored.length, first.length);
+        assertEq(stored[0].module, address(onchainidSetup.signatureValidator));
+
+        Structs.ModuleInstall[] memory second = new Structs.ModuleInstall[](1);
+        second[0] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_VALIDATOR,
+            module: address(onchainidSetup.keyApprovalModule),
+            initData: "",
+            purpose: 0
+        });
+        vm.prank(deployer);
+        onchainidSetup.idFactory.setIdentityTypeModules(IdentityTypes.CLAIM_ISSUER, second);
+
+        stored = onchainidSetup.idFactory.getIdentityTypeModules(IdentityTypes.CLAIM_ISSUER);
+        assertEq(stored.length, 1, "list replaced, not appended");
+        assertEq(stored[0].module, address(onchainidSetup.keyApprovalModule));
+    }
+
+    /// @notice A type with no modules registered cannot deploy: Identity.initialize needs a
+    ///         validator or an executor.
+    function test_createIdentity_revertWhenTypeHasNoModules() public {
+        vm.prank(deployer);
+        onchainidSetup.idFactory.setIdentityTypeModules(IdentityTypes.CLAIM_ISSUER, new Structs.ModuleInstall[](0));
+
+        address selfDeployer = makeAddr("noModulesEoa");
+        vm.prank(selfDeployer);
+        vm.expectRevert(Errors.IdentityNoValidatorOrExecutor.selector);
+        onchainidSetup.idFactory
+            .createIdentity(IdentityTypes.CLAIM_ISSUER, "noModules", _makeSingleMgmtKeys(selfDeployer));
+    }
+
+    function test_createIdentity_revertWhenOnlyAModuleWouldManage() public {
+        // The registered bundle gives the KeyApprovalModule a MANAGEMENT key, so an
+        // ACTION-only key set still leaves the identity with one manager. That manager is a
+        // module, which only acts when someone drives it, so nobody could manage this
+        // identity. The wallet-manager check has to catch it.
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
+        keys[0] = _makeECDSAKey(carol, KeyPurposes.ACTION);
+        vm.prank(carol);
+        vm.expectRevert(Errors.NoManagementKeyInKeys.selector);
+        onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "moduleOnlyManager", keys);
+    }
+
+    /// @notice The standard bundle registers the KeyApprovalModule with `purpose: MANAGEMENT`.
+    ///         MODULE keys stay out of the MANAGEMENT index, so the account is still the sole
+    ///         indexed manager and the deploy passes; the module keeps its purpose through
+    ///         keyHasPurpose.
+    function test_createIdentityFor_allowsRegisteredModuleWithManagementPurpose() public {
+        address fresh = makeAddr("freshOnboardee");
+        vm.prank(david);
+        address identity = onchainidSetup.idFactory
+            .createIdentityFor(fresh, IdentityTypes.INDIVIDUAL, "moduleCarveOut", _makeSingleMgmtKeys(fresh));
+
+        assertTrue(IERC734(identity).keyHasPurpose(keccak256(abi.encodePacked(fresh)), KeyPurposes.MANAGEMENT));
+        // Only the account: the module's MODULE key never enters the index.
+        assertEq(IERC734(identity).getKeysByPurpose(KeyPurposes.MANAGEMENT).length, 1);
+        assertTrue(
+            IERC734(identity)
+                .keyHasPurpose(
+                    keccak256(abi.encodePacked(address(onchainidSetup.keyApprovalModule))), KeyPurposes.MANAGEMENT
+                ),
+            "the registered module still holds the purpose"
+        );
+    }
+
+    // ============ createIdentityFor proof of control ============
+    //
+    // createIdentityFor takes no signature: onboarding must be frictionless. The guarantee
+    // instead is that the identity is governed by the wallet it is created for, alone. A
+    // caller that names a victim's wallet as _account cannot make itself a manager, because
+    // the deploy only succeeds if _account ends up as the only wallet holding MANAGEMENT.
+    // carol is the victim, david is the caller trying to hijack her wallet.
+
+    function test_createIdentityFor_revertWhenAccountNotManagement() public {
+        // david deploys for carol's wallet but keys the identity to himself. Keys on a
+        // third-party deploy may only target the account, so this fails before deploying.
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(david);
+        vm.prank(david);
+        vm.expectRevert(abi.encodeWithSelector(Errors.KeyNotForAccount.selector, keccak256(abi.encodePacked(david))));
+        onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "hijack", keys);
+    }
+
+    function test_createIdentityFor_revertWhenCallerAddsSecondManagementKey() public {
+        // david keys carol honestly but slips himself in as a second MANAGEMENT key. He
+        // could later strip carol and own an identity stuck to her wallet. His key is not
+        // carol's, so the deploy reverts.
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](2);
+        keys[0] = _makeECDSAKey(carol, KeyPurposes.MANAGEMENT);
+        keys[1] = _makeECDSAKey(david, KeyPurposes.MANAGEMENT);
+        vm.prank(david);
+        vm.expectRevert(abi.encodeWithSelector(Errors.KeyNotForAccount.selector, keccak256(abi.encodePacked(david))));
+        onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "coGov", keys);
+    }
+
+    function test_createIdentityFor_revertWhenSecondManagementKeyPosesAsModule() public {
+        // A key labeled MODULE stays out of the MANAGEMENT index and would hold hidden
+        // management authority through the approval queue. The factory rejects MODULE
+        // typed caller keys outright, even when the key is the account's own.
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](2);
+        keys[0] = _makeECDSAKey(carol, KeyPurposes.MANAGEMENT);
+        keys[1] = Structs.KeyParam({
+            keyHash: keccak256(abi.encodePacked(carol)),
+            purpose: KeyPurposes.MANAGEMENT,
+            keyType: KeyTypes.MODULE,
+            signerData: abi.encodePacked(carol),
+            clientData: ""
+        });
+        vm.prank(david);
+        vm.expectRevert(
+            abi.encodeWithSelector(Errors.CallerKeyCannotBeModule.selector, keccak256(abi.encodePacked(carol)))
+        );
+        onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "fakeMod", keys);
+    }
+
+    function test_createIdentity_revertWhenCallerKeyPosesAsModule() public {
+        // Self-deploy rejects MODULE typed caller keys too: a wallet key wearing MODULE
+        // would escape the MANAGEMENT index and the last-manager removal guard.
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](2);
+        keys[0] = _makeECDSAKey(carol, KeyPurposes.MANAGEMENT);
+        keys[1] = Structs.KeyParam({
+            keyHash: keccak256(abi.encodePacked(david)),
+            purpose: KeyPurposes.MANAGEMENT,
+            keyType: KeyTypes.MODULE,
+            signerData: abi.encodePacked(david),
+            clientData: ""
+        });
+        vm.prank(carol);
+        vm.expectRevert(
+            abi.encodeWithSelector(Errors.CallerKeyCannotBeModule.selector, keccak256(abi.encodePacked(david)))
+        );
+        onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "selfFakeMod", keys);
+    }
+
+    function test_createIdentityFor_succeedsWhenAccountIsManagement() public {
+        // Honest deploy: david onboards carol, keying the identity to carol. No signature
+        // from carol is needed; she is the only manager, so the identity is hers.
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(carol);
+        vm.prank(david);
+        address identity = onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "carolOwn", keys);
+
+        assertTrue(identity != address(0));
+        assertTrue(IERC734(identity).keyHasPurpose(keccak256(abi.encodePacked(carol)), KeyPurposes.MANAGEMENT));
+    }
+
+    function test_createIdentityFor_revertWhenCallerSeedsLesserKeys() public {
+        // david keys carol as manager but gives himself an ACTION key. carol never asked
+        // for the identity and may not know it exists to clean it up, so the caller may
+        // not seed keys for anyone but the account.
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](2);
+        keys[0] = _makeECDSAKey(carol, KeyPurposes.MANAGEMENT);
+        keys[1] = _makeECDSAKey(david, KeyPurposes.ACTION);
+        vm.prank(david);
+        vm.expectRevert(abi.encodeWithSelector(Errors.KeyNotForAccount.selector, keccak256(abi.encodePacked(david))));
+        onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "carolPlus", keys);
+    }
+
+    function test_createIdentityFor_revertWhenCallerSpoofsKeyHash() public {
+        // keyHash is caller supplied and the registry never reads it: keys are stored under
+        // keccak256(signerData). david sets carol's hash on a key whose signerData is his
+        // own address, so the honest shape check has to run on the derived hash instead.
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](2);
+        keys[0] = _makeECDSAKey(carol, KeyPurposes.MANAGEMENT);
+        keys[1] = Structs.KeyParam({
+            keyHash: keccak256(abi.encodePacked(carol)),
+            purpose: KeyPurposes.CLAIM_SIGNER,
+            keyType: KeyTypes.ECDSA,
+            signerData: abi.encodePacked(david),
+            clientData: ""
+        });
+        vm.prank(david);
+        vm.expectRevert(abi.encodeWithSelector(Errors.KeyNotForAccount.selector, keccak256(abi.encodePacked(david))));
+        onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "carolSpoof", keys);
+    }
+
+    function test_createIdentityFor_succeedsWithExtraKeysForTheAccount() public {
+        // Extra purposes for the account itself are fine: every key is carol's.
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](2);
+        keys[0] = _makeECDSAKey(carol, KeyPurposes.MANAGEMENT);
+        keys[1] = _makeECDSAKey(carol, KeyPurposes.ACTION);
+        vm.prank(david);
+        address identity =
+            onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "carolPlus", keys);
+
+        assertTrue(IERC734(identity).keyHasPurpose(keccak256(abi.encodePacked(carol)), KeyPurposes.MANAGEMENT));
+        assertTrue(IERC734(identity).keyHasPurpose(keccak256(abi.encodePacked(carol)), KeyPurposes.ACTION));
+    }
+
+    function test_createIdentityFor_openRoleBindingIsSticky_documentedTradeoff() public {
+        // The test harness keeps INDIVIDUAL on PUBLIC_ROLE, so david can bind carol's
+        // wallet to an identity carol never asked for. carol manages it alone, but sticky
+        // binding then blocks that wallet from joining any other identity. This is why the
+        // production deploy script gates createIdentityFor for INDIVIDUAL behind
+        // ROLE_ISSUER and leaves only self-deploy open.
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(carol);
+        vm.prank(david);
+        address identity = onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.INDIVIDUAL, "grief", keys);
+
+        bytes memory carolAcc = InteroperableAddress.formatEvmV1(block.chainid, carol);
+        assertEq(onchainidSetup.idFactory.getIdentity(carolAcc), identity);
+
+        // Any later deploy for carol's wallet lands on the sticky binding and reverts.
+        vm.prank(carol);
+        vm.expectRevert(abi.encodeWithSelector(Errors.WalletBoundToAnotherIdentity.selector, carolAcc, identity));
+        onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "carolOwnChoice", keys);
+    }
+
+    function test_createIdentityFor_singleBindingTypeSkipsAccountCheck() public {
+        // ASSET is single-binding: its bound contract can't hold a key, so the check is
+        // skipped and the role gate (kept off PUBLIC_ROLE) is the only defense. deployer is
+        // AM admin here, so it passes.
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(tokenOwner);
+        vm.prank(deployer);
+        address identity = onchainidSetup.idFactory.createIdentityFor(carol, IdentityTypes.ASSET, "assetNoSig", keys);
+        assertTrue(identity != address(0));
     }
 
     /// @notice A module install with a MANAGEMENT purpose mints a MODULE key that cannot sign.
@@ -549,40 +891,107 @@ contract IdentityFactoryTest is OnchainIDSetup {
         Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
         keys[0] = _makeECDSAKey(david, KeyPurposes.ACTION);
 
-        Structs.ModuleInstall[] memory mods = _defaultModules();
-        // Grant the validator module MANAGEMENT: the only MANAGEMENT holder is now a MODULE key.
+        // Re-register the type's bundle with the validator granted MANAGEMENT: the only
+        // MANAGEMENT holder is now a MODULE key.
+        Structs.ModuleInstall[] memory mods = onchainidSetup.idFactory.getIdentityTypeModules(IdentityTypes.INDIVIDUAL);
         mods[0].purpose = KeyPurposes.MANAGEMENT;
+        vm.prank(deployer);
+        onchainidSetup.idFactory.setIdentityTypeModules(IdentityTypes.INDIVIDUAL, mods);
+
+        // mods[0] is the registry module itself, so the self-key guard rejects the grant before
+        // the deploy ever reaches the management-key count. The non-registry module case is
+        // covered by test_revertWhenOnlyManagementKeyIsAnInstalledModule.
+        vm.prank(deployer);
+        vm.expectRevert(ERC734Validator.ModuleCannotBeKey.selector);
+        onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "modMgmt", keys);
+    }
+
+    /// @notice A fallback handler registered for the `getKeysByPurpose(uint256)` selector
+    ///         fabricates a MANAGEMENT key while the enshrined registry holds none. The
+    ///         factory must not be fooled: its post-deploy check reads the registry directly,
+    ///         so the installed handler is never consulted (M-04).
+    function test_revertWhenManagementKeyOnlyFakedByFallbackHandler() public {
+        MockLyingERC734Getter liar = new MockLyingERC734Getter();
+
+        Structs.ModuleInstall[] memory mods = new Structs.ModuleInstall[](2);
+        mods[0] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_VALIDATOR,
+            module: address(onchainidSetup.signatureValidator),
+            initData: "",
+            purpose: 0
+        });
+        mods[1] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_FALLBACK,
+            module: address(liar),
+            initData: abi.encodePacked(IERC734.getKeysByPurpose.selector),
+            purpose: 0
+        });
+        vm.prank(deployer);
+        onchainidSetup.idFactory.setIdentityTypeModules(IdentityTypes.INDIVIDUAL, mods);
+
+        // No MANAGEMENT key anywhere in the real registry.
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
+        keys[0] = _makeECDSAKey(david, KeyPurposes.ACTION);
 
         vm.prank(deployer);
         vm.expectRevert(Errors.NoManagementKeyInKeys.selector);
-        onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "modMgmt", keys, mods);
+        onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "m04", keys);
+    }
+
+    /// @notice The MANAGEMENT holder is a module other than the registry, granted through the
+    ///         install `purpose` field. That mints a MODULE key, which cannot sign and so never
+    ///         enters the MANAGEMENT index (M-01). The factory reads that index straight off the
+    ///         enshrined registry, sees no manager, and rejects the deploy.
+    function test_revertWhenOnlyManagementKeyIsAnInstalledModule() public {
+        Structs.ModuleInstall[] memory mods = new Structs.ModuleInstall[](2);
+        mods[0] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_VALIDATOR,
+            module: address(onchainidSetup.signatureValidator),
+            initData: "",
+            purpose: 0
+        });
+        // The executor, not the registry, carries MANAGEMENT: the only holder is a MODULE key.
+        mods[1] = Structs.ModuleInstall({
+            moduleType: MODULE_TYPE_EXECUTOR,
+            module: address(onchainidSetup.keyApprovalModule),
+            initData: "",
+            purpose: KeyPurposes.MANAGEMENT
+        });
+        vm.prank(deployer);
+        onchainidSetup.idFactory.setIdentityTypeModules(IdentityTypes.INDIVIDUAL, mods);
+
+        // No signer holds MANAGEMENT: david's own key is ACTION only.
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](1);
+        keys[0] = _makeECDSAKey(david, KeyPurposes.ACTION);
+
+        vm.prank(deployer);
+        vm.expectRevert(Errors.NoManagementKeyInKeys.selector);
+        onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "modOnlyMgmt", keys);
     }
 
     // ============ createIdentityFor auto-link ============
 
     function test_createIdentity_autoLinksAccountAsActive() public {
         bytes memory davidAcc = InteroperableAddress.formatEvmV1(block.chainid, david);
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(david);
         vm.prank(deployer);
-        address identityAddr = onchainidSetup.idFactory
-            .createIdentityFor(
-                david, IdentityTypes.INDIVIDUAL, "davidSalt", _makeSingleMgmtKeys(david), _defaultModules()
-            );
+        address identityAddr =
+            onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "davidSalt", keys);
 
         assertEq(onchainidSetup.idFactory.getIdentity(davidAcc), identityAddr);
         assertEq(
             uint256(onchainidSetup.idFactory.getAccountStatus(davidAcc)), uint256(IIdentityFactory.AccountStatus.Active)
         );
-        bytes[] memory accs = onchainidSetup.idFactory.getAccounts(identityAddr);
-        assertEq(accs.length, 1);
+        assertEq(onchainidSetup.idFactory.getAccountsCount(identityAddr), 1);
+        bytes[] memory accs = onchainidSetup.idFactory.getAccounts(identityAddr, 0, 1);
         assertEq(keccak256(accs[0]), keccak256(davidAcc));
     }
 
     function test_createIdentity_setsIsFactoryIdentity() public {
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(david);
         vm.prank(deployer);
-        address identityAddr = onchainidSetup.idFactory
-            .createIdentityFor(
-                david, IdentityTypes.INDIVIDUAL, "isFactorySalt", _makeSingleMgmtKeys(david), _defaultModules()
-            );
+        address identityAddr =
+            onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "isFactorySalt", keys);
         assertTrue(onchainidSetup.idFactory.isFactoryIdentity(identityAddr));
     }
 
@@ -687,6 +1096,9 @@ contract IdentityFactoryTest is OnchainIDSetup {
     /// @notice Tokens and wallets share one keyspace. Re-using an address that's
     ///         already an ASSET identity's auto-linked wallet reverts via the
     ///         sticky-binding rule — no separate token-collision branch needed.
+    /// @dev    Typed ASSET (single-binding) so the sole-management post-check is skipped:
+    ///         TOKEN_ADDRESS is a fixed constant that holds no key. The call still reaches
+    ///         the sticky-binding revert in _linkAccount, so the original coverage is preserved.
     function test_createIdentity_revertWhenAccountIsAlreadyToken() public {
         bytes memory tokenAcc = InteroperableAddress.formatEvmV1(block.chainid, Constants.TOKEN_ADDRESS);
         address existingTokenIdentity = onchainidSetup.idFactory.getIdentity(tokenAcc);
@@ -697,10 +1109,9 @@ contract IdentityFactoryTest is OnchainIDSetup {
         onchainidSetup.idFactory
             .createIdentityFor(
                 Constants.TOKEN_ADDRESS,
-                IdentityTypes.INDIVIDUAL,
+                IdentityTypes.ASSET,
                 "tokenAsAccount",
-                _makeSingleMgmtKeys(Constants.TOKEN_ADDRESS),
-                _defaultModules()
+                _makeSingleMgmtKeys(Constants.TOKEN_ADDRESS)
             );
     }
 
@@ -721,8 +1132,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertEq(bound, address(aliceIdentity));
         assertEq(uint256(status), uint256(IIdentityFactory.AccountStatus.Revoked));
 
-        bytes[] memory active = onchainidSetup.idFactory.getAccounts(address(aliceIdentity));
-        assertEq(active.length, 1);
+        assertEq(onchainidSetup.idFactory.getAccountsCount(address(aliceIdentity)), 1);
     }
 
     /// @notice Wallet-binding calls into the factory are management-grade. An ACTION key driving
@@ -815,11 +1225,18 @@ contract IdentityFactoryTest is OnchainIDSetup {
         uint256 nc = onchainidSetup.idFactory.nonceForAccount(carolAcc);
         _execLink(aliceIdentity, alice, carolAcc, _signLink(carolPk, carolAcc, address(aliceIdentity), nc, ex), nc, ex);
 
-        bytes[] memory all = onchainidSetup.idFactory.getAccounts(address(aliceIdentity));
+        uint256 count = onchainidSetup.idFactory.getAccountsCount(address(aliceIdentity));
+        assertEq(count, 3);
+
+        bytes[] memory all = onchainidSetup.idFactory.getAccounts(address(aliceIdentity), 0, count);
         assertEq(all.length, 3);
 
         bytes[] memory page = onchainidSetup.idFactory.getAccounts(address(aliceIdentity), 1, 3);
         assertEq(page.length, 2);
+
+        // out-of-range bounds are clamped, not reverted
+        bytes[] memory clamped = onchainidSetup.idFactory.getAccounts(address(aliceIdentity), 0, type(uint256).max);
+        assertEq(clamped.length, 3);
     }
 
     // ============ unified token + wallet resolution ============
@@ -944,11 +1361,12 @@ contract IdentityFactoryTest is OnchainIDSetup {
         );
         uint256 expiry = block.timestamp + 1 hours;
         // david can produce a valid signature over the padded bytes, so only the
-        // canonical check blocks the link.
+        // local-chain check blocks the link: a padded chainid is not this chain's
+        // minimal encoding, so M-06's exact-match guard fires before the canonical one.
         bytes memory sig = _signLink(davidPk, zeroPaddedAcc, address(aliceIdentity), 0, expiry);
 
         vm.prank(address(aliceIdentity));
-        vm.expectRevert(abi.encodeWithSelector(Errors.NonCanonicalAccount.selector, zeroPaddedAcc));
+        vm.expectRevert(abi.encodeWithSelector(Errors.AccountNotOnLocalChain.selector, zeroPaddedAcc));
         onchainidSetup.idFactory.linkAccount(zeroPaddedAcc, sig, 0, expiry);
     }
 
@@ -967,7 +1385,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         bytes memory sig2 = _signLink(davidPk, zeroPaddedAcc, address(bobIdentity), nonce + 1, expiry);
 
         vm.prank(address(bobIdentity));
-        vm.expectRevert(abi.encodeWithSelector(Errors.NonCanonicalAccount.selector, zeroPaddedAcc));
+        vm.expectRevert(abi.encodeWithSelector(Errors.AccountNotOnLocalChain.selector, zeroPaddedAcc));
         onchainidSetup.idFactory.linkAccount(zeroPaddedAcc, sig2, nonce + 1, expiry);
 
         assertEq(
@@ -1002,14 +1420,128 @@ contract IdentityFactoryTest is OnchainIDSetup {
     ///         linkAccount happily parses the envelope (it's a valid ERC-7930), but the
     ///         signer bytes inside aren't an EVM address, so SignatureChecker has nothing
     ///         to verify against. Non-EVM wallets must use the ERC-7786 cross-chain path.
+    /// @notice Linking a non-EVM envelope through the EVM signature path is rejected
+    ///         up front on chain type, before any signature check. Non-EVM wallets
+    ///         must use the ERC-7786 cross-chain path.
     function test_linkAccount_nonEvmEnvelopeRejected() public {
         bytes memory solanaEnv = _nonEvmEnvelope(makeAddr("solanaSigner"));
         uint256 expiry = block.timestamp + 1 hours;
         bytes memory sig = hex"";
 
         vm.prank(address(aliceIdentity));
-        vm.expectRevert(Errors.InvalidSignature.selector);
+        vm.expectRevert(abi.encodeWithSelector(Errors.NonEvmAccount.selector, solanaEnv));
         onchainidSetup.idFactory.linkAccount(solanaEnv, sig, 0, expiry);
+    }
+
+    /// @notice A non-EVM envelope whose 32-byte signer starts with a permissive
+    ///         ERC-7913 verifier must not link through the signature path (M-06).
+    ///         Without the chain-type check, SignatureChecker would dispatch to the
+    ///         caller-chosen verifier and accept a dummy signature.
+    function test_linkAccount_nonEvmEnvelopeWithPermissiveVerifierRejected() public {
+        MockERC7913PermissiveVerifier permissiveVerifier = new MockERC7913PermissiveVerifier();
+        // signer = verifier(20) || key(12): a valid ERC-7913 shape hiding in a foreign envelope
+        bytes memory signer = abi.encodePacked(address(permissiveVerifier), bytes12(uint96(1)));
+        bytes memory foreignEnv = InteroperableAddress.formatV1(bytes2(0x0001), hex"01", signer);
+        uint256 expiry = block.timestamp + 1 hours;
+
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(abi.encodeWithSelector(Errors.NonEvmAccount.selector, foreignEnv));
+        onchainidSetup.idFactory.linkAccount(foreignEnv, hex"", 0, expiry);
+
+        assertEq(onchainidSetup.idFactory.getIdentity(foreignEnv), address(0));
+    }
+
+    /// @notice ERC-7913 signers keep working: an eip-155 envelope whose address field
+    ///         is verifier(20) || key links once its verifier is on the trust list.
+    function test_linkAccount_erc7913SignerWithTrustedVerifierLinks() public {
+        MockERC7913PermissiveVerifier permissiveVerifier = new MockERC7913PermissiveVerifier();
+        vm.prank(deployer);
+        onchainidSetup.idFactory.setTrustedVerifier(address(permissiveVerifier), true);
+
+        bytes memory signer = abi.encodePacked(address(permissiveVerifier), bytes32(uint256(0xBEEF)));
+        // 0x7a69 = 31337, the default foundry chain id
+        bytes memory env = InteroperableAddress.formatV1(bytes2(0x0000), hex"7a69", signer);
+        uint256 expiry = block.timestamp + 1 hours;
+
+        vm.prank(address(aliceIdentity));
+        onchainidSetup.idFactory.linkAccount(env, hex"", 0, expiry);
+
+        assertEq(onchainidSetup.idFactory.getIdentity(env), address(aliceIdentity));
+    }
+
+    /// @notice An ERC-7913 signer naming an unapproved verifier cannot link, even on
+    ///         an eip-155 envelope (M-06). Without the trust list the caller's own
+    ///         verifier would judge the proof.
+    function test_linkAccount_erc7913SignerWithUntrustedVerifierRejected() public {
+        MockERC7913PermissiveVerifier permissiveVerifier = new MockERC7913PermissiveVerifier();
+        bytes memory signer = abi.encodePacked(address(permissiveVerifier), bytes32(uint256(0xBEEF)));
+        bytes memory env = InteroperableAddress.formatV1(bytes2(0x0000), hex"7a69", signer);
+        uint256 expiry = block.timestamp + 1 hours;
+
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(abi.encodeWithSelector(Errors.UntrustedVerifier.selector, address(permissiveVerifier)));
+        onchainidSetup.idFactory.linkAccount(env, hex"", 0, expiry);
+
+        assertEq(onchainidSetup.idFactory.getIdentity(env), address(0));
+    }
+
+    /// @notice An eip-155 envelope naming a foreign EVM chain must not link through
+    ///         the local signature path (M-06 residual). The signature is valid for
+    ///         the digest, but it only proves control on this chain — the wallet at
+    ///         that address on chain 137 may be unrelated.
+    function test_linkAccount_foreignEvmChainReferenceRejected() public {
+        // chain reference hex"89" = 137 (Polygon), signer = david's real address
+        bytes memory foreignEnv = InteroperableAddress.formatV1(bytes2(0x0000), hex"89", abi.encodePacked(david));
+        uint256 expiry = block.timestamp + 1 hours;
+        bytes memory sig = _signLink(davidPk, foreignEnv, address(aliceIdentity), 0, expiry);
+
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(abi.encodeWithSelector(Errors.AccountNotOnLocalChain.selector, foreignEnv));
+        onchainidSetup.idFactory.linkAccount(foreignEnv, sig, 0, expiry);
+
+        assertEq(onchainidSetup.idFactory.getIdentity(foreignEnv), address(0));
+    }
+
+    /// @notice A zero-padded alias of the local chain id is rejected too — otherwise
+    ///         one key could occupy one registry entry per padding variant.
+    function test_linkAccount_paddedChainReferenceRejected() public {
+        // hex"007a69" is 31337 with a leading zero byte — same chain, different bytes
+        bytes memory paddedEnv = InteroperableAddress.formatV1(bytes2(0x0000), hex"007a69", abi.encodePacked(david));
+        uint256 expiry = block.timestamp + 1 hours;
+        bytes memory sig = _signLink(davidPk, paddedEnv, address(aliceIdentity), 0, expiry);
+
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(abi.encodeWithSelector(Errors.AccountNotOnLocalChain.selector, paddedEnv));
+        onchainidSetup.idFactory.linkAccount(paddedEnv, sig, 0, expiry);
+    }
+
+    // ============ setTrustedVerifier ============
+
+    function test_setTrustedVerifier_emitsEventAndUpdatesView() public {
+        address verifier = makeAddr("someVerifier");
+        assertFalse(onchainidSetup.idFactory.isTrustedVerifier(verifier));
+
+        vm.prank(deployer);
+        vm.expectEmit(true, false, false, true);
+        emit IIdentityFactory.TrustedVerifierSet(verifier, true);
+        onchainidSetup.idFactory.setTrustedVerifier(verifier, true);
+        assertTrue(onchainidSetup.idFactory.isTrustedVerifier(verifier));
+
+        vm.prank(deployer);
+        onchainidSetup.idFactory.setTrustedVerifier(verifier, false);
+        assertFalse(onchainidSetup.idFactory.isTrustedVerifier(verifier));
+    }
+
+    function test_setTrustedVerifier_revertForNonAdmin() public {
+        vm.prank(alice);
+        vm.expectRevert(); // AccessManagerUnauthorizedAccount
+        onchainidSetup.idFactory.setTrustedVerifier(makeAddr("someVerifier"), true);
+    }
+
+    function test_setTrustedVerifier_revertForZeroAddress() public {
+        vm.prank(deployer);
+        vm.expectRevert(Errors.ZeroAddress.selector);
+        onchainidSetup.idFactory.setTrustedVerifier(address(0), true);
     }
 
     // ============ ERC-7786 — cross-chain wallet linking ============
@@ -1020,6 +1552,24 @@ contract IdentityFactoryTest is OnchainIDSetup {
         MockERC7786Gateway gateway = new MockERC7786Gateway();
         vm.prank(deployer);
         onchainidSetup.idFactory.setTrustedGateway(address(gateway), bytes2(0x0001), hex"01", true);
+        return gateway;
+    }
+
+    /// @dev An eip-155 chain id as the ERC-7930 chain reference the library emits.
+    function _chainRef(uint256 chainId) internal pure returns (bytes memory chainReference) {
+        (, chainReference,) = InteroperableAddress.parseV1(InteroperableAddress.formatEvmV1(chainId));
+    }
+
+    /// @dev Same, but trusted for the origin the test actually delivers from. Gateway trust is
+    ///      scoped per origin chain (N-03), so a test whose envelope is not the Solana one above
+    ///      has to name its own.
+    function _deployTrustedGatewayFor(bytes2 chainType, bytes memory chainReference)
+        internal
+        returns (MockERC7786Gateway)
+    {
+        MockERC7786Gateway gateway = new MockERC7786Gateway();
+        vm.prank(deployer);
+        onchainidSetup.idFactory.setTrustedGateway(address(gateway), chainType, chainReference, true);
         return gateway;
     }
 
@@ -1053,7 +1603,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
         // Identity confirms — wallet is now actively linked.
         vm.prank(address(aliceIdentity));
-        onchainidSetup.idFactory.confirmCrossChainLink(solanaEnv);
+        onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, true);
 
         assertEq(onchainidSetup.idFactory.getIdentity(solanaEnv), address(aliceIdentity));
         // Pending entry cleared.
@@ -1113,7 +1663,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
     }
 
     /// @notice Only the identity named in the proposal can finalize it. A different
-    ///         identity calling confirmCrossChainLink is rejected — that's the
+    ///         identity calling settlePendingCrossChainLink is rejected — that's the
     ///         identity-ownership half of the proof.
     function test_crossChain_wrongIdentityConfirmRejected() public {
         MockERC7786Gateway gateway = _deployTrustedGateway();
@@ -1132,7 +1682,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
                 address(aliceIdentity)
             )
         );
-        onchainidSetup.idFactory.confirmCrossChainLink(solanaEnv);
+        onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, true);
     }
 
     /// @notice Once the wallet is linked (or revoked), a fresh inbound proposal for
@@ -1146,7 +1696,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
         gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(5)), solanaEnv, payload);
         vm.prank(address(aliceIdentity));
-        onchainidSetup.idFactory.confirmCrossChainLink(solanaEnv);
+        onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, true);
 
         // A second proposal for the same wallet (different receiveId) is now blocked
         // because the wallet entry status is Active, not None.
@@ -1198,7 +1748,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
         gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(10)), solanaEnv, payload);
         vm.prank(address(aliceIdentity));
-        onchainidSetup.idFactory.confirmCrossChainLink(solanaEnv);
+        onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, true);
 
         // The sender must equal the envelope, so both carry the padding; the
         // canonical wallet key is what blocks the second proposal.
@@ -1226,7 +1776,91 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
         vm.prank(address(aliceIdentity));
         vm.expectRevert(abi.encodeWithSelector(Errors.PendingCrossChainLinkExpired.selector, expiry));
-        onchainidSetup.idFactory.confirmCrossChainLink(solanaEnv);
+        onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, true);
+    }
+
+    /// @notice A contract-bound (ASSET) identity cannot gain extra wallets through
+    ///         the cross-chain path; confirm hits the same rule as linkAccount (M-08).
+    function test_crossChain_confirmRejectsAssetIdentity() public {
+        MockERC7786Gateway gateway = _deployTrustedGateway();
+        address assetIdentity = onchainidSetup.idFactory
+            .getIdentity(InteroperableAddress.formatEvmV1(block.chainid, Constants.TOKEN_ADDRESS));
+        bytes memory solanaEnv = _nonEvmEnvelope(makeAddr("solanaSignerAsset"));
+        uint256 expiry = block.timestamp + 1 hours;
+        gateway.deliver(
+            address(onchainidSetup.idFactory),
+            bytes32(uint256(20)),
+            solanaEnv,
+            _crossChainPayload(solanaEnv, assetIdentity, expiry)
+        );
+
+        vm.prank(assetIdentity);
+        vm.expectRevert(abi.encodeWithSelector(Errors.CannotLinkToAssetIdentity.selector, assetIdentity));
+        onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, true);
+    }
+
+    /// @notice A byte string that is not a valid ERC-7930 envelope fails at delivery,
+    ///         so it can never become an enumerable wallet record (M-08).
+    function test_crossChain_malformedEnvelopeRejectedAtDelivery() public {
+        MockERC7786Gateway gateway = _deployTrustedGatewayFor(bytes2(0x0000), _chainRef(block.chainid));
+        bytes memory garbage = hex"deadbeef";
+        bytes memory payload = _crossChainPayload(garbage, address(aliceIdentity), block.timestamp + 1 hours);
+
+        // Gateway trust is keyed on the origin parsed out of `sender` (N-03), and a malformed
+        // sender parses into no origin at all, so delivery stops at the gateway gate before the
+        // envelope is ever read.
+        vm.expectPartialRevert(ERC7786Recipient.ERC7786RecipientUnauthorizedGateway.selector);
+        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(21)), garbage, payload);
+    }
+
+    /// @notice A proposal naming a wallet on this chain is rejected at delivery:
+    ///         local wallets must sign through linkAccount (M-08).
+    function test_crossChain_localEvmWalletRejectedAtDelivery() public {
+        MockERC7786Gateway gateway = _deployTrustedGatewayFor(bytes2(0x0000), _chainRef(block.chainid));
+        bytes memory davidAcc = InteroperableAddress.formatEvmV1(block.chainid, david);
+        bytes memory payload = _crossChainPayload(davidAcc, address(aliceIdentity), block.timestamp + 1 hours);
+
+        vm.expectRevert(abi.encodeWithSelector(Errors.CrossChainLinkForLocalWallet.selector, davidAcc));
+        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(22)), davidAcc, payload);
+    }
+
+    /// @notice An EVM wallet on another chain still stages; only this chain is blocked.
+    function test_crossChain_foreignEvmWalletStillStages() public {
+        MockERC7786Gateway gateway = _deployTrustedGatewayFor(bytes2(0x0000), _chainRef(block.chainid + 1));
+        bytes memory foreignAcc = InteroperableAddress.formatEvmV1(block.chainid + 1, david);
+        bytes memory payload = _crossChainPayload(foreignAcc, address(aliceIdentity), block.timestamp + 1 hours);
+        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(23)), foreignAcc, payload);
+
+        (address pendingId,) = onchainidSetup.idFactory.getPendingCrossChainLink(foreignAcc);
+        assertEq(pendingId, address(aliceIdentity));
+    }
+
+    /// @notice Invariant behind the single-binding link rule: every single-binding
+    ///         identity leaves the factory with its one account already linked, so the
+    ///         empty-set allowance in _linkAccount is spent by the deploy auto-link and
+    ///         no fresh link remains for anyone else.
+    function test_singleBinding_oneAccountLinkedAtDeploy() public {
+        // The setUp asset identity already holds its token account.
+        bytes memory tokenAcc = InteroperableAddress.formatEvmV1(block.chainid, Constants.TOKEN_ADDRESS);
+        address assetIdentity = onchainidSetup.idFactory.getIdentity(tokenAcc);
+        assertEq(onchainidSetup.idFactory.getAccountsCount(assetIdentity), 1, "asset holds its account");
+
+        // Same for a fresh SMART_CONTRACT identity.
+        address sc = makeAddr("scInvariant");
+        vm.prank(deployer);
+        address scIdentity = onchainidSetup.idFactory
+            .createIdentityFor(sc, IdentityTypes.SMART_CONTRACT, "scInvariant", _makeSingleMgmtKeys(david));
+        assertEq(onchainidSetup.idFactory.getAccountsCount(scIdentity), 1, "sc holds its account");
+
+        // The one-shot is consumed: even a properly signed link is rejected.
+        bytes memory davidAcc = InteroperableAddress.formatEvmV1(block.chainid, david);
+        uint256 expiry = block.timestamp + 1 hours;
+        uint256 nonce = onchainidSetup.idFactory.nonceForAccount(davidAcc);
+        bytes memory sig = _signLink(davidPk, davidAcc, scIdentity, nonce, expiry);
+
+        vm.prank(scIdentity);
+        vm.expectRevert(abi.encodeWithSelector(Errors.CannotLinkToAssetIdentity.selector, scIdentity));
+        onchainidSetup.idFactory.linkAccount(davidAcc, sig, nonce, expiry);
     }
 
     /// @notice Reading a pending link for a wallet that was never proposed returns the
@@ -1238,24 +1872,106 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertEq(exp, 0);
     }
 
+    /// @notice The named identity can decline a proposal it does not want. The entry is
+    ///         deleted, no binding is created, and the wallet stays free to be proposed
+    ///         again later.
+    function test_crossChain_settlePendingRejectClearsProposal() public {
+        MockERC7786Gateway gateway = _deployTrustedGateway();
+        bytes memory solanaEnv = _nonEvmEnvelope(makeAddr("solanaSignerDeclined"));
+        uint256 expiry = block.timestamp + 1 hours;
+        bytes memory payload = _crossChainPayload(solanaEnv, address(aliceIdentity), expiry);
+        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(10)), solanaEnv, payload);
+
+        vm.expectEmit(true, true, true, true);
+        emit IIdentityFactory.CrossChainLinkRejected(solanaEnv, address(aliceIdentity), expiry);
+        vm.prank(address(aliceIdentity));
+        onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, false);
+
+        (address id, uint256 exp) = onchainidSetup.idFactory.getPendingCrossChainLink(solanaEnv);
+        assertEq(id, address(0));
+        assertEq(exp, 0);
+        assertEq(onchainidSetup.idFactory.getIdentity(solanaEnv), address(0), "decline creates no binding");
+
+        // Entry status is still None, so a fresh proposal for the same wallet is accepted.
+        gateway.deliver(
+            address(onchainidSetup.idFactory),
+            bytes32(uint256(11)),
+            solanaEnv,
+            _crossChainPayload(solanaEnv, address(aliceIdentity), block.timestamp + 1 hours)
+        );
+        (address reId,) = onchainidSetup.idFactory.getPendingCrossChainLink(solanaEnv);
+        assertEq(reId, address(aliceIdentity), "wallet can be proposed again after a decline");
+    }
+
+    /// @notice Declining works after expiry too. That's the whole point: accepting is
+    ///         barred once lapsed, so without this an abandoned proposal would have no
+    ///         way out of storage.
+    function test_crossChain_settlePendingRejectWorksAfterExpiry() public {
+        MockERC7786Gateway gateway = _deployTrustedGateway();
+        bytes memory solanaEnv = _nonEvmEnvelope(makeAddr("solanaSignerAbandoned"));
+        uint256 expiry = block.timestamp + 1 hours;
+        bytes memory payload = _crossChainPayload(solanaEnv, address(aliceIdentity), expiry);
+        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(12)), solanaEnv, payload);
+
+        vm.warp(expiry + 1);
+
+        // Accepting is barred once expired...
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(abi.encodeWithSelector(Errors.PendingCrossChainLinkExpired.selector, expiry));
+        onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, true);
+
+        // ...but declining still clears the slot.
+        vm.prank(address(aliceIdentity));
+        onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, false);
+
+        (address id, uint256 exp) = onchainidSetup.idFactory.getPendingCrossChainLink(solanaEnv);
+        assertEq(id, address(0));
+        assertEq(exp, 0);
+    }
+
+    /// @notice Declining is caller-gated the same way accepting is. A stranger cannot
+    ///         wipe a proposal out from under the identity that is about to accept it.
+    function test_crossChain_settlePendingRejectRejectsWrongCaller() public {
+        MockERC7786Gateway gateway = _deployTrustedGateway();
+        bytes memory solanaEnv = _nonEvmEnvelope(makeAddr("solanaSignerGriefTarget"));
+        uint256 expiry = block.timestamp + 1 hours;
+        bytes memory payload = _crossChainPayload(solanaEnv, address(aliceIdentity), expiry);
+        gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(13)), solanaEnv, payload);
+
+        vm.prank(address(bobIdentity));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Errors.PendingCrossChainLinkIdentityMismatch.selector,
+                solanaEnv,
+                address(bobIdentity),
+                address(aliceIdentity)
+            )
+        );
+        onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, false);
+
+        // Proposal survived and Alice can still accept it.
+        vm.prank(address(aliceIdentity));
+        onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, true);
+        assertEq(onchainidSetup.idFactory.getIdentity(solanaEnv), address(aliceIdentity));
+    }
+
     // ============ createIdentityFor with new identity types ============
 
     function test_createIdentity_smartContractType_shouldSetType() public {
+        // SMART_CONTRACT is single-binding: the sole-management check is skipped.
         vm.prank(deployer);
         address identityAddr = onchainidSetup.idFactory
-            .createIdentityFor(
-                david, IdentityTypes.SMART_CONTRACT, "saltSmartContract", _makeSingleMgmtKeys(david), _defaultModules()
-            );
+            .createIdentityFor(david, IdentityTypes.SMART_CONTRACT, "saltSmartContract", _makeSingleMgmtKeys(david));
         Identity identity = Identity(payable(identityAddr));
         assertEq(identity.getIdentityType(), IdentityTypes.SMART_CONTRACT);
     }
 
     function test_createIdentity_publicAuthorityType_shouldSetType() public {
+        // PUBLIC_AUTHORITY is a normal signer type: david must end up its sole manager.
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(david);
         vm.prank(deployer);
-        address identityAddr = onchainidSetup.idFactory
-            .createIdentityFor(
-                david, IdentityTypes.PUBLIC_AUTHORITY, "saltPublicAuth", _makeSingleMgmtKeys(david), _defaultModules()
-            );
+        address identityAddr =
+            onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.PUBLIC_AUTHORITY, "saltPublicAuth", keys);
         Identity identity = Identity(payable(identityAddr));
         assertEq(identity.getIdentityType(), IdentityTypes.PUBLIC_AUTHORITY);
     }
@@ -1263,13 +1979,12 @@ contract IdentityFactoryTest is OnchainIDSetup {
     // ============ createIdentityFor with module installation ============
 
     function test_createIdentity_withModules_shouldInstallValidator() public {
-        // The MANAGEMENT key is seeded from `keys` (_makeSingleMgmtKeys(david)); the validator
-        // install carries empty initData to avoid re-seeding david (KeyAlreadyRegistered). The
-        // ERC-734 getter fallbacks are needed for the factory's post-deploy management-key check.
-        Structs.ModuleInstall[] memory modules = _defaultModules();
+        // Modules come from the type's registered bundle, so the validator is installed
+        // without the caller passing anything.
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(david);
         vm.prank(deployer);
-        address identityAddr = onchainidSetup.idFactory
-            .createIdentityFor(david, IdentityTypes.INDIVIDUAL, "saltWithModules", _makeSingleMgmtKeys(david), modules);
+        address identityAddr =
+            onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "saltWithModules", keys);
 
         Identity identity = Identity(payable(identityAddr));
         assertTrue(identity.isModuleInstalled(1, address(onchainidSetup.signatureValidator), ""));
@@ -1278,11 +1993,10 @@ contract IdentityFactoryTest is OnchainIDSetup {
     // ============ Factory's own bootstrap key removed ============
 
     function test_createIdentity_factoryKeyRemoved() public {
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(david);
         vm.prank(deployer);
-        address identityAddr = onchainidSetup.idFactory
-            .createIdentityFor(
-                david, IdentityTypes.INDIVIDUAL, "saltFactoryKey", _makeSingleMgmtKeys(david), _defaultModules()
-            );
+        address identityAddr =
+            onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "saltFactoryKey", keys);
         Identity identity = Identity(payable(identityAddr));
         assertFalse(
             IERC734(address(identity))
@@ -1295,19 +2009,19 @@ contract IdentityFactoryTest is OnchainIDSetup {
     // ============ CREATE3 failure ============
 
     function test_createIdentity_revertWhenCreate2Fails() public {
-        RevertingIdentity revertingImpl = new RevertingIdentity();
-
         AccessManager am = new AccessManager(deployer);
         IdentityFactory badFactory = new IdentityFactory(address(am));
+        RevertingIdentity revertingImpl =
+            new RevertingIdentity(address(badFactory), address(onchainidSetup.signatureValidator));
         vm.prank(deployer);
         badFactory.initializeBeacon(address(revertingImpl));
 
-        // deployer is AM admin — bypasses the `restricted` gate on createIdentityFor.
+        // deployer is AM admin — bypasses the `restricted` gate on createIdentityFor. INDIVIDUAL
+        // is unregistered on this fresh factory, so it reverts at _checkTypeRole (category 1)
+        // before the signature check; an empty sig is fine and the generic expectRevert holds.
         vm.prank(deployer);
         vm.expectRevert();
-        badFactory.createIdentityFor(
-            david, IdentityTypes.INDIVIDUAL, "salt1", _makeSingleMgmtKeys(david), _defaultModules()
-        );
+        badFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "salt1", _makeSingleMgmtKeys(david));
     }
 
     // ============ createIdentity (self-deploy) ============
@@ -1316,12 +2030,44 @@ contract IdentityFactoryTest is OnchainIDSetup {
         address eoa = makeAddr("selfDeployEoa");
         vm.prank(eoa);
         address identityAddr = onchainidSetup.idFactory
-            .createIdentity(IdentityTypes.INDIVIDUAL, "selfDeploySalt", _makeSingleMgmtKeys(eoa), _defaultModules());
+        .createIdentity(IdentityTypes.INDIVIDUAL, "selfDeploySalt", _makeSingleMgmtKeys(eoa));
         assertTrue(identityAddr != address(0));
         assertEq(
             onchainidSetup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, eoa)),
             identityAddr,
             "self-deployer auto-linked"
+        );
+    }
+
+    /// @notice A front-runner who replays a pending self-deploy verbatim lands on a
+    ///         different address, because the auto-linked account is part of the salt.
+    ///         Without that the attacker would take the victim's address, carrying the
+    ///         victim's MANAGEMENT key but with the attacker's own wallet auto-linked,
+    ///         and the binding is sticky.
+    function test_createIdentity_frontRunnerCannotTakeVictimAddress() public {
+        address victim = makeAddr("frontRunVictim");
+        address attacker = makeAddr("frontRunAttacker");
+
+        // The victim's pending call is public: type, salt and keys are all in the mempool.
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(victim);
+
+        vm.prank(attacker);
+        address attackerIdentity = onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "frontRun", keys);
+
+        // The victim's own transaction still goes through.
+        vm.prank(victim);
+        address victimIdentity = onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "frontRun", keys);
+
+        assertTrue(attackerIdentity != victimIdentity, "replay must not land on the victim's address");
+        assertEq(
+            onchainidSetup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, victim)),
+            victimIdentity,
+            "victim keeps its own identity"
+        );
+        assertEq(
+            onchainidSetup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, attacker)),
+            attackerIdentity,
+            "attacker's wallet stays on its own identity"
         );
     }
 
@@ -1333,8 +2079,8 @@ contract IdentityFactoryTest is OnchainIDSetup {
         // Easier: emit-watch any address, then check after.
         vm.recordLogs();
         vm.prank(eoa);
-        address identityAddr = onchainidSetup.idFactory
-            .createIdentity(IdentityTypes.INDIVIDUAL, "evtSalt", _makeSingleMgmtKeys(eoa), _defaultModules());
+        address identityAddr =
+            onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "evtSalt", _makeSingleMgmtKeys(eoa));
 
         Vm.Log[] memory logs = vm.getRecordedLogs();
         bytes32 expectedTopic0 = keccak256("IdentityInitialized(uint256)");

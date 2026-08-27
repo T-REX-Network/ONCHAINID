@@ -215,10 +215,11 @@ contract KeyApprovalModuleFactoryGuardTest is OnchainIDSetup {
         });
 
         vm.prank(deployer);
-        address idAddr = onchainidSetup.idFactory
-            .createIdentityFor(
-                owner, IdentityTypes.INDIVIDUAL, "vulnerable-config", keys, _modulesWithoutRegistryExecutor()
-            );
+        onchainidSetup.idFactory.setIdentityTypeModules(IdentityTypes.INDIVIDUAL, _modulesWithoutRegistryExecutor());
+
+        vm.prank(deployer);
+        address idAddr =
+            onchainidSetup.idFactory.createIdentityFor(owner, IdentityTypes.INDIVIDUAL, "vulnerable-config", keys);
         Identity id = Identity(payable(idAddr));
         address registry = id.registryModule();
 

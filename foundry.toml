@@ -8,6 +8,8 @@ libs = ["dependencies"]
 solc_version = "0.8.30"
 optimizer = true
 optimizer_runs = 200
+via_ir = true
+
 evm_version = "cancun"
 
 fs_permissions = [{ access = "read", path = "test/vendored" }]
