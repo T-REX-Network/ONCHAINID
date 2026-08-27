@@ -11,7 +11,7 @@ import {
     AccountERC7579Upgradeable
 } from "@openzeppelin/contracts-upgradeable/account/extensions/draft-AccountERC7579Upgradeable.sol";
 import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/ERC4337Utils.sol";
-import { CallType, ERC7579Utils, Mode } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
+import { CallType, ERC7579Utils, ExecType, Mode } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
 import {
     Execution,
     MODULE_TYPE_EXECUTOR,
@@ -94,6 +94,14 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         }
 
         super._uninstallModule(moduleTypeId, module, deInitData);
+    }
+
+    /// @notice Advertises the modes {_execute} accepts. The OZ base also claims DELEGATECALL,
+    ///         which {_execute} rejects.
+    function supportsExecutionMode(bytes32 encodedMode) public view virtual override returns (bool) {
+        (CallType callType, ExecType execType,,) = ERC7579Utils.decodeMode(Mode.wrap(encodedMode));
+        return (callType == ERC7579Utils.CALLTYPE_SINGLE || callType == ERC7579Utils.CALLTYPE_BATCH)
+            && (execType == ERC7579Utils.EXECTYPE_DEFAULT || execType == ERC7579Utils.EXECTYPE_TRY);
     }
 
     /// @notice The one place every dispatched call is authorized. Both `execute` (user ops and
