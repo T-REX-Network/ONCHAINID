@@ -1,4 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0
+//
+// ONCHAINID Smart Contracts
+// Digital identities for the T-REX ecosystem.
+//
+// Copyright (C) 2026 Digital Asset Operational Services ISAC Ltd. ("T-REX Network")
+//
+// This file is part of the ONCHAINID smart contract suite.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 pragma solidity ^0.8.28;
 
 import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/ERC4337Utils.sol";
@@ -181,11 +202,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     ///      bypassed by a gas-starved `callNoReturn` anyway, so nothing may depend on it running.
     ///      Uninstalling leaves the keys in place, which is intended: the enshrined registry
     ///      keeps serving the account's ERC-734 reads whether or not this module is installed.
-    function onUninstall(
-        bytes calldata /* data */
-    )
-        public
-        virtual { }
+    function onUninstall(bytes calldata /* data */ ) public virtual { }
 
     // --- registry (called by the account on itself) ----------------------
 
@@ -232,8 +249,10 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     function _keyHasPurpose(address account, bytes32 keyHash, uint256 purpose) internal view returns (bool) {
         AccountRegistry storage registry = _store().registries[account];
         return registry.allKeys.contains(keyHash)
-            && (registry.keys[keyHash].purposes.contains(purpose)
-                || registry.keys[keyHash].purposes.contains(KeyPurposes.MANAGEMENT));
+            && (
+                registry.keys[keyHash].purposes.contains(purpose)
+                    || registry.keys[keyHash].purposes.contains(KeyPurposes.MANAGEMENT)
+            );
     }
 
     /// @notice Purposes held by `keyHash` on `account`. Returns the full set. Use the
@@ -867,9 +886,8 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
             bytes32 salt,
             uint256[] memory
         ) {
-            bytes32 domainSeparator = MessageHashUtils.toDomainSeparator(
-                fields, name, version, chainId, verifyingContract, salt
-            );
+            bytes32 domainSeparator =
+                MessageHashUtils.toDomainSeparator(fields, name, version, chainId, verifyingContract, salt);
 
             bytes32 dataHash =
                 keccak256(abi.encode(_CLAIM_DATA_TYPEHASH, data.issuedAt, data.validUntil, keccak256(data.payload)));

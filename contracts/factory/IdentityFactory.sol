@@ -1,4 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0
+//
+// ONCHAINID Smart Contracts
+// Digital identities for the T-REX ecosystem.
+//
+// Copyright (C) 2026 Digital Asset Operational Services ISAC Ltd. ("T-REX Network")
+//
+// This file is part of the ONCHAINID smart contract suite.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 pragma solidity ^0.8.27;
 
 import { AccessManaged } from "@openzeppelin/contracts/access/manager/AccessManaged.sol";
@@ -416,7 +437,11 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     }
 
     /// @inheritdoc IIdentityFactory
-    function getPendingCrossChainLink(bytes calldata account) external view returns (address identity, uint256 expiry) {
+    function getPendingCrossChainLink(bytes calldata account)
+        external
+        view
+        returns (address identity, uint256 expiry)
+    {
         PendingLink storage pending = _storage().pendingLinks[_walletKey(account)];
         return (pending.identity, pending.expiry);
     }
@@ -474,10 +499,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         bytes32, /* receiveId */
         bytes calldata sender,
         bytes calldata payload
-    )
-        internal
-        override
-    {
+    ) internal override {
         (bytes memory walletEnvelope, address identity, uint256 expiry) = abi.decode(payload, (bytes, address, uint256));
 
         // The wallet must originate the bridge call itself. `sender` is the
@@ -671,9 +693,9 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // is answered by the canonical key store and not by any handler the caller installed.
         // `registryModule()` is a plain function on the beacon-controlled implementation.
         require(
-            ERC734Validator(Identity(payable(identity)).registryModule())
-            .getKeysByPurpose(identity, KeyPurposes.MANAGEMENT)
-            .length >= 1,
+            ERC734Validator(Identity(payable(identity)).registryModule()).getKeysByPurpose(
+                identity, KeyPurposes.MANAGEMENT
+            ).length >= 1,
             Errors.NoManagementKeyInKeys()
         );
 

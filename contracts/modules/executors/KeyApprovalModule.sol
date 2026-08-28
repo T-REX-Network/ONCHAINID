@@ -1,4 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0
+//
+// ONCHAINID Smart Contracts
+// Digital identities for the T-REX ecosystem.
+//
+// Copyright (C) 2026 Digital Asset Operational Services ISAC Ltd. ("T-REX Network")
+//
+// This file is part of the ONCHAINID smart contract suite.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 pragma solidity ^0.8.28;
 
 import {
@@ -88,7 +109,11 @@ contract KeyApprovalModule is IERC7579Module, IKeyExecutor {
     /// @dev    Treasury model: any `msg.value` is pushed back to the identity; `_value` is
     ///         dispatched from the identity's balance when the request runs.
     ///         Gated: caller must hold a key on the identity that authorizes proposing.
-    function execute(address _to, uint256 _value, bytes calldata _data) external payable returns (uint256 executionId) {
+    function execute(address _to, uint256 _value, bytes calldata _data)
+        external
+        payable
+        returns (uint256 executionId)
+    {
         address account = msg.sender;
         address proposer = _msgSender();
         bytes32 callerKeyHash = hashAddress(proposer);
@@ -207,8 +232,7 @@ contract KeyApprovalModule is IERC7579Module, IKeyExecutor {
     function _canPropose(address account, bytes32 keyHash) internal view returns (bool) {
         IERC734 acct = IERC734(account);
         return acct.keyHasPurpose(keyHash, KeyPurposes.PROPOSER) || acct.keyHasPurpose(keyHash, KeyPurposes.ACTION)
-            || acct.keyHasPurpose(keyHash, KeyPurposes.CLAIM_SIGNER)
-            || acct.keyHasPurpose(keyHash, KeyPurposes.CLAIM_ADDER);
+            || acct.keyHasPurpose(keyHash, KeyPurposes.CLAIM_SIGNER) || acct.keyHasPurpose(keyHash, KeyPurposes.CLAIM_ADDER);
     }
 
     /// @dev Dispatches via `executeFromExecutor`, which spends `execution.value` from the

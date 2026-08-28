@@ -1,4 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0
+//
+// ONCHAINID Smart Contracts
+// Digital identities for the T-REX ecosystem.
+//
+// Copyright (C) 2026 Digital Asset Operational Services ISAC Ltd. ("T-REX Network")
+//
+// This file is part of the ONCHAINID smart contract suite.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 pragma solidity ^0.8.27;
 
 import { Structs } from "../storage/Structs.sol";
@@ -231,7 +252,10 @@ interface IIdentityFactory {
 
     /// @notice Read a pending cross-chain proposal. Returns (address(0), 0) when no
     ///         proposal is staged for `account`.
-    function getPendingCrossChainLink(bytes calldata account) external view returns (address identity, uint256 expiry);
+    function getPendingCrossChainLink(bytes calldata account)
+        external
+        view
+        returns (address identity, uint256 expiry);
 
     /// @notice Add or remove an authorized ERC-7786 gateway for one origin chain.
     ///         The origin is the ERC-7930 (chainType, chainReference) pair. A gateway
@@ -245,7 +269,8 @@ interface IIdentityFactory {
     ///         {getPendingCrossChainLink} and treat entries proposed via the removed
     ///         gateway as suspect; the named identity clears one by calling
     ///         {settlePendingCrossChainLink} with `accept = false`.
-    function setTrustedGateway(address gateway, bytes2 chainType, bytes calldata chainReference, bool trusted) external;
+    function setTrustedGateway(address gateway, bytes2 chainType, bytes calldata chainReference, bool trusted)
+        external;
 
     /// @notice Read whether a gateway is currently trusted for one origin chain.
     function isTrustedGateway(address gateway, bytes2 chainType, bytes calldata chainReference)

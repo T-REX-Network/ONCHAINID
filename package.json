@@ -1,31 +1,40 @@
 {
-  "name": "@onchain-id/solidity",
-  "version": "2.2.2-beta3",
-  "description": "EVM solidity smart contracts for Blockchain OnchainID identities.",
-  "license": "ISC",
-  "author": "OnchainID Organization",
+  "name": "@t-rex-network/onchainid",
+  "version": "3.0.0",
+  "description": "ONCHAINID smart contracts: digital identities for the T-REX ecosystem. ERC-734/ERC-735 identities built on a modular ERC-7579 smart account with ERC-4337 support.",
+  "license": "GPL-3.0-or-later",
+  "author": "Digital Asset Operational Services ISAC Ltd. (https://www.trex.network)",
   "type": "module",
   "files": [
     "contracts",
-    "out"
+    "out",
+    "NOTICE.md"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/onchain-id/solidity.git"
+    "url": "git+https://github.com/T-REX-Network/ONCHAINID.git"
   },
   "keywords": [
     "onchainid",
     "identity",
     "erc734",
     "erc735",
+    "erc7579",
+    "erc4337",
+    "erc3643",
+    "t-rex",
+    "trex-network",
     "ethereum",
     "solidity",
     "smart contracts"
   ],
   "bugs": {
-    "url": "https://github.com/onchain-id/solidity/issues"
+    "url": "https://github.com/T-REX-Network/ONCHAINID/issues"
   },
-  "homepage": "https://github.com/onchain-id/solidity#readme",
+  "homepage": "https://github.com/T-REX-Network/ONCHAINID#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "prepare": "husky && forge soldeer install",
     "build": "forge build",

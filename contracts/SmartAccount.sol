@@ -1,4 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0
+//
+// ONCHAINID Smart Contracts
+// Digital identities for the T-REX ecosystem.
+//
+// Copyright (C) 2026 Digital Asset Operational Services ISAC Ltd. ("T-REX Network")
+//
+// This file is part of the ONCHAINID smart contract suite.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 pragma solidity ^0.8.28;
 
 import { KeyManager } from "./KeyManager.sol";
@@ -7,9 +28,8 @@ import { hashAddress } from "./libraries/Hashing.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
 import { ERC734Validator } from "./modules/validators/ERC734Validator.sol";
 import { SafeCalldataBatch } from "./vendor/utils/SafeCalldataBatch.sol";
-import {
-    AccountERC7579Upgradeable
-} from "@openzeppelin/contracts-upgradeable/account/extensions/draft-AccountERC7579Upgradeable.sol";
+import { AccountERC7579Upgradeable } from
+    "@openzeppelin/contracts-upgradeable/account/extensions/draft-AccountERC7579Upgradeable.sol";
 import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/ERC4337Utils.sol";
 import { CallType, ERC7579Utils, ExecType, Mode } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
 import {
@@ -74,7 +94,11 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
     ///      single MODULE key. Dropping one selector must not revoke the key that still
     ///      authorizes the others; retiring a fallback-only module's key is an explicit
     ///      {removeKey}.
-    function _uninstallModule(uint256 moduleTypeId, address module, bytes memory deInitData) internal virtual override {
+    function _uninstallModule(uint256 moduleTypeId, address module, bytes memory deInitData)
+        internal
+        virtual
+        override
+    {
         // Take away the module's ERC-734 purposes first, then run the base uninstall (which calls
         // the module's onUninstall). Order matters: a module that still holds MANAGEMENT could use
         // its onUninstall callback to grant itself keys. Stripping first closes that window.
