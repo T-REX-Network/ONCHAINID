@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0]
+
+ONCHAINID v3 is a ground-up re-architecture of the identity stack, developed by T-REX Network in collaboration with OpenZeppelin. The identity is no longer a monolithic ERC-734 / ERC-735 contract: it is an ERC-7579 modular smart account with ERC-4337 account abstraction support, where keys live at the account level and claims, execution rules, signature validation, and recovery are installable modules.
+
+v3 is not storage-compatible or interface-compatible with 2.x. It is a new deployment, not an in-place upgrade of 2.x proxies. The repository is maintained at https://github.com/T-REX-Network/ONCHAINID and published as `@t-rex-network/onchainid`. Licensing remains GPL-3.0; see [LICENSE.md](./LICENSE.md) and [NOTICE.md](./NOTICE.md).
+
+### Breaking changes
+
+- Re-architected `Identity` into three layers: `Identity` (the deployed contract, running a single one-shot setup when its proxy is created), `SmartAccount` (the ERC-7579 modular account, gating module install and removal on the MANAGEMENT purpose and purpose-checking calls from installed executors), and `KeyManager` (a storage-less ERC-734 facade; the canonical key registry lives in the enshrined `ERC734Validator` module).
+- ERC-735 claims are no longer implemented inside the identity contract. They are served by the installed `ERC734Validator` module and reached through the account's ERC-7579 fallback handler. Claim calls revert if no module is installed to answer them.
+- Externalized the ERC-734 `execute` / `approve` flow into the `KeyApprovalModule` executor, which owns the execution queue, the auto-approval rules, and the execution nonce.
+- Extended key purposes: MANAGEMENT (1), ACTION (2), CLAIM_SIGNER (3), ENCRYPTION (4), plus the new CLAIM_ADDER (5) and PROPOSER (6). PROPOSER is a queue-only purpose: it can queue an execution but never runs or approves one on its own.
+- Replaced the `ImplementationAuthority` / `IdentityProxy` upgrade pattern with a beacon proxy per identity, deployed through CREATE3 by the factory. A given salt resolves to the same identity address on every chain following the canonical CREATE2 derivation. `initializeBeacon` verifies the derivation at setup and reverts atomically on divergent chains (zkSync Era and similar).
+- Replaced `IdFactory` with `IdentityFactory`: identities are typed, each type carries an admin-registered policy (role, self-deployable flag, single-binding flag) and a default module set, and access is controlled through OpenZeppelin `AccessManager`. Two entry points: `createIdentity` (the caller deploys for themselves and is auto-linked as the first wallet) and `createIdentityFor` (role-gated deployment on behalf of another account).
+- Rewrote wallet linking. Linked accounts are stored as ERC-7930 interoperable-address envelopes (chain-aware, EVM and non-EVM), linking requires a signature with nonce and expiry (`linkAccount`), accounts can be revoked (`revokeAccount`), and cross-chain links settle through trusted gateways (`settlePendingCrossChainLink`) and trusted verifiers.
+- Replaced revert strings with custom errors (`Errors` library).
+- Moved storage to ERC-7201 namespaced layouts across upgradeable contracts.
+- Migrated the toolchain from Hardhat to Foundry (`forge`), with dependencies managed by soldeer. Solidity 0.8.30, EVM version cancun.
+- Renamed the npm package from `@onchain-id/solidity` to `@t-rex-network/onchainid`.
+### Added
+
+- ERC-4337 account abstraction: identities validate `UserOperation`s through the installed validator module and can operate with bundlers and paymasters.
+- ERC-7913 signers: the userOp signature wire format is `abi.encode(signer, signature)`, where a 20-byte signer is an EOA or ERC-1271 contract and a longer signer is a `verifier || key` blob. Supported key types: ECDSA, RSA, WEBAUTHN (passkeys), MODULE, ACCESS_MANAGER. This enables multi-device signing, including claim signing from passkey devices.
+- Per-identity EIP-712 domains, so signatures cannot be replayed against another identity sharing the same module deployment.
+- `RecoveryModule`: social recovery for identities, wrapping OpenZeppelin's `ERC7579SocialRecoveryExecutor`. Weighted guardian quorum, delayed execution, cancellable by the account or by a guardian quorum before it runs.
+- `EASClaimIssuer`: a stateless `IClaimIssuer` that resolves claims by reading Ethereum Attestation Service attestations live, with an admin-managed topic-to-schema map and per-topic attester allowlists. Revocation, expiry, and wallet unlinking take effect on the next read.
+- Claim lifecycle: claims carry `issuedAt` / `validUntil` validity windows, revocation is digest-based, and `getClaimStatus` returns an explicit status (Valid, BadSignature, NotYetValid, Expired, Revoked) instead of a bare boolean.
+- Identity types registered at the factory: ASSET (1), INDIVIDUAL (2), CORPORATE (3), IOT (4), CLAIM_ISSUER (5), SMART_CONTRACT (6), PUBLIC_AUTHORITY (7), AI_AGENT (8).
+- `ReputationRegistry`: per-identity reputation scores with per-type defaults, writable only through the REPUTATION_MANAGER role via `AccessManager`.
+- `IdentityUtilities` (UUPS-upgradeable): an on-chain registry of structured claim-topic schemas (field names and types), with `FormatResolver` for the supported field formats.
+- Full Foundry test suite with coverage enforced in CI.
+### Removed
+
+- `Gateway`, superseded by the AccessManager-gated factory and the trusted-gateway model for cross-chain links.
+- `Verifier` base contract.
+- The standalone `ClaimIssuer` implementation. Claim issuers are now regular ONCHAINID identities (type CLAIM_ISSUER) whose `isClaimValid` is served by the claims module, and `EASClaimIssuer` covers EAS-backed issuance. The `IClaimIssuer` interface remains.
+- `ImplementationAuthority`, `IdentityProxy`, `Storage`, and `Version` contracts.
+- Hardhat and TypeChain tooling.
+### Security
+
+- ONCHAINID v3 audited by OpenZeppelin. Report: //TODO: Add Link.
+
 ## [2.2.2]
 
 ### Updated

@@ -1,20 +1,22 @@
-## ![OnchainID Smart Contracts](./onchainid_logo_final.png)
+## ![ONCHAINID Smart Contracts](./onchainid_logo_final.png)
 
-![GitHub](https://img.shields.io/github/license/onchain-id/solidity?color=green)
-![GitHub release (latest by date)](https://img.shields.io/github/v/release/onchain-id/solidity)
-![GitHub Workflow Status (branch)](https://img.shields.io/github/actions/workflow/status/onchain-id/solidity/publish-release.yml)
-![GitHub repo size](https://img.shields.io/github/repo-size/onchain-id/solidity)
-![GitHub Release Date](https://img.shields.io/github/release-date/onchain-id/solidity)
+![GitHub](https://img.shields.io/github/license/T-REX-Network/ONCHAINID?color=green)
+![GitHub release (latest by date)](https://img.shields.io/github/v/release/T-REX-Network/ONCHAINID)
+![GitHub Workflow Status (branch)](https://img.shields.io/github/actions/workflow/status/T-REX-Network/ONCHAINID/publish-release.yml)
+![GitHub repo size](https://img.shields.io/github/repo-size/T-REX-Network/ONCHAINID)
+![GitHub Release Date](https://img.shields.io/github/release-date/T-REX-Network/ONCHAINID)
 
 ---
 
-# OnchainID Smart Contracts
+# ONCHAINID Smart Contracts
 
-Smart contracts for secure blockchain identities. OnchainID implements the ERC-734 (key holder) and ERC-735 (claim holder) standards, rebuilt on top of a modular ERC-7579 account with ERC-4337 support.
+Digital identities for the T-REX ecosystem. ONCHAINID implements the ERC-734 (key holder) and ERC-735 (claim holder) standards, rebuilt on top of a modular ERC-7579 account with ERC-4337 support.
 
-Learn more about OnchainID and blockchain identities on the official website: [https://onchainid.com](https://onchainid.com).
+ONCHAINID v3 was designed and built by [T-REX Network](https://www.trex.network) in collaboration with [OpenZeppelin](https://www.openzeppelin.com).
 
-## What is an OnchainID identity?
+Learn more about ONCHAINID and the T-REX Network on the official website: [https://www.trex.network](https://www.trex.network).
+
+## What is an ONCHAINID identity?
 
 An identity is a smart contract that belongs to a person, a company, an asset, or any other subject. It does two things:
 
@@ -145,31 +147,33 @@ npm run docs           # forge doc --serve --open
 Install the package to use the contracts and interfaces in your own project:
 
 ```bash
-npm add @onchain-id/solidity
+npm add @t-rex-network/onchainid
 ```
 
-```javascript
-// contracts, if you need to deploy them
-const {
-  contracts: { ERC734, Identity },
-} = require("@onchain-id/solidity");
+In Solidity, import the contracts or interfaces directly:
 
-// interfaces, if you need to interact with deployed contracts
-const {
-  interfaces: { IERC734, IERC735 },
-} = require("@onchain-id/solidity");
+```solidity
+import { IIdentity } from "@t-rex-network/onchainid/contracts/interface/IIdentity.sol";
+import { IClaimIssuer } from "@t-rex-network/onchainid/contracts/interface/IClaimIssuer.sol";
 ```
 
-Each artifact exposes its ABI and bytecode, for example `ERC734.abi` and `ERC734.bytecode`.
+Compiled artifacts (ABI and bytecode) are shipped in the `out/` directory of the package, one JSON file per contract, for example `out/Identity.sol/Identity.json`.
+
+## Versioning and provenance
+
+This repository hosts ONCHAINID **v3**, a ground-up re-architecture of the identity stack. See [CHANGELOG.md](./CHANGELOG.md) for the full release notes.
+
+v3 originated as a fork of the ONCHAINID reference implementation by the [onchain-id project](https://github.com/onchain-id/solidity) (GPL-3.0) and has been substantially rewritten and re-architected. It is not storage-compatible or interface-compatible with the 2.x line: moving from 2.x means a new deployment, not an upgrade of existing proxies. The 2.x implementation remains available in the upstream repository.
+
+## Security and audits
+
+<!-- TODO: link the OpenZeppelin audit report for ONCHAINID v3 when published -->
+ONCHAINID v3 is being audited by OpenZeppelin. The audit report will be linked here once published.
+
+Please report security vulnerabilities responsibly to security@trex.network rather than opening a public issue.
 
 ## License
 
-Released under the GPL-3.0 license. See [LICENSE.md](./LICENSE.md).
+Copyright (C) 2026 Digital Asset Operational Services ISAC Ltd. ("T-REX Network").
 
----
-
-<div style="padding: 16px;">
-   <a href="https://tokeny.com/wp-content/uploads/2023/04/Tokeny_ONCHAINID_SC-Audit_Report.pdf" target="_blank">
-       <img src="https://hacken.io/wp-content/uploads/2023/02/ColorWBTypeSmartContractAuditBackFilled.png" alt="Proofed by Hacken - Smart contract audit" style="width: 258px; height: 100px;">
-   </a>
-</div>
+This project is licensed under the GNU General Public License v3.0. See [LICENSE.md](./LICENSE.md) for the full license text and [NOTICE.md](./NOTICE.md) for copyright, provenance, and trademark information.
