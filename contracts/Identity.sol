@@ -161,9 +161,8 @@ contract Identity is Initializable, SmartAccount, ERC165 {
             _installModule(_modules[i].moduleType, _modules[i].module, _modules[i].initData);
 
             if (_modules[i].purpose != 0) {
-                ERC734Validator(registryModule()).addKey(
-                    abi.encodePacked(_modules[i].module), "", _modules[i].purpose, KeyTypes.MODULE
-                );
+                ERC734Validator(registryModule())
+                    .addKey(abi.encodePacked(_modules[i].module), "", _modules[i].purpose, KeyTypes.MODULE);
             }
         }
 

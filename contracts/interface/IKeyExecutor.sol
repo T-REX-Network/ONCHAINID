@@ -62,10 +62,7 @@ interface IKeyExecutor {
      * @notice Queue (and possibly auto-execute) a call from the identity.
      * @return executionId opaque id used with {approve} if the call was queued, not auto-approved.
      */
-    function execute(address _to, uint256 _value, bytes calldata _data)
-        external
-        payable
-        returns (uint256 executionId);
+    function execute(address _to, uint256 _value, bytes calldata _data) external payable returns (uint256 executionId);
 
     /**
      * @notice Approve (or reject) a previously queued execution. Caller's keyHash is recovered

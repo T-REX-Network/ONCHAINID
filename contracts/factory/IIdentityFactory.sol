@@ -252,10 +252,7 @@ interface IIdentityFactory {
 
     /// @notice Read a pending cross-chain proposal. Returns (address(0), 0) when no
     ///         proposal is staged for `account`.
-    function getPendingCrossChainLink(bytes calldata account)
-        external
-        view
-        returns (address identity, uint256 expiry);
+    function getPendingCrossChainLink(bytes calldata account) external view returns (address identity, uint256 expiry);
 
     /// @notice Add or remove an authorized ERC-7786 gateway for one origin chain.
     ///         The origin is the ERC-7930 (chainType, chainReference) pair. A gateway
@@ -269,8 +266,7 @@ interface IIdentityFactory {
     ///         {getPendingCrossChainLink} and treat entries proposed via the removed
     ///         gateway as suspect; the named identity clears one by calling
     ///         {settlePendingCrossChainLink} with `accept = false`.
-    function setTrustedGateway(address gateway, bytes2 chainType, bytes calldata chainReference, bool trusted)
-        external;
+    function setTrustedGateway(address gateway, bytes2 chainType, bytes calldata chainReference, bool trusted) external;
 
     /// @notice Read whether a gateway is currently trusted for one origin chain.
     function isTrustedGateway(address gateway, bytes2 chainType, bytes calldata chainReference)

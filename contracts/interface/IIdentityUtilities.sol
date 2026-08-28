@@ -123,10 +123,7 @@ interface IIdentityUtilities {
      * @return fieldNames Decoded string array of field names
      * @return fieldTypes Decoded string array of field types
      */
-    function getSchema(uint256 topicId)
-        external
-        view
-        returns (string[] memory fieldNames, string[] memory fieldTypes);
+    function getSchema(uint256 topicId) external view returns (string[] memory fieldNames, string[] memory fieldTypes);
 
     /**
      * @notice Returns an array of TopicInfo structs for the given topic IDs

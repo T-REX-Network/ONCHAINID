@@ -32,7 +32,6 @@ library FormatResolver {
         Uint16Type, // 3
         StringArray, // 4
         AddressType // 5
-
     }
 
     /// @notice Turn format integer into a `FormatType`

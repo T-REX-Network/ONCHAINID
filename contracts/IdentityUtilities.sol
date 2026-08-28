@@ -224,8 +224,7 @@ contract IdentityUtilities is IIdentityUtilities, AccessControlUpgradeable, UUPS
         view
         returns (ClaimInfo memory info)
     {
-        (
-            ,
+        (,
             // topic - not used
             uint256 scheme,
             address issuer,

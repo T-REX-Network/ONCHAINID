@@ -28,8 +28,9 @@ import { hashAddress } from "./libraries/Hashing.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
 import { ERC734Validator } from "./modules/validators/ERC734Validator.sol";
 import { SafeCalldataBatch } from "./vendor/utils/SafeCalldataBatch.sol";
-import { AccountERC7579Upgradeable } from
-    "@openzeppelin/contracts-upgradeable/account/extensions/draft-AccountERC7579Upgradeable.sol";
+import {
+    AccountERC7579Upgradeable
+} from "@openzeppelin/contracts-upgradeable/account/extensions/draft-AccountERC7579Upgradeable.sol";
 import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/ERC4337Utils.sol";
 import { CallType, ERC7579Utils, ExecType, Mode } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
 import {
@@ -94,11 +95,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
     ///      single MODULE key. Dropping one selector must not revoke the key that still
     ///      authorizes the others; retiring a fallback-only module's key is an explicit
     ///      {removeKey}.
-    function _uninstallModule(uint256 moduleTypeId, address module, bytes memory deInitData)
-        internal
-        virtual
-        override
-    {
+    function _uninstallModule(uint256 moduleTypeId, address module, bytes memory deInitData) internal virtual override {
         // Take away the module's ERC-734 purposes first, then run the base uninstall (which calls
         // the module's onUninstall). Order matters: a module that still holds MANAGEMENT could use
         // its onUninstall callback to grant itself keys. Stripping first closes that window.

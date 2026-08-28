@@ -22,8 +22,9 @@
 
 pragma solidity ^0.8.28;
 
-import { ERC7579SocialRecoveryExecutor } from
-    "@openzeppelin/accounts/modules/executors/ERC7579SocialRecoveryExecutor.sol";
+import {
+    ERC7579SocialRecoveryExecutor
+} from "@openzeppelin/accounts/modules/executors/ERC7579SocialRecoveryExecutor.sol";
 
 /// @title RecoveryModule
 /// @notice Social recovery for ONCHAINID identities. Wraps OZ's

@@ -202,7 +202,11 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     ///      bypassed by a gas-starved `callNoReturn` anyway, so nothing may depend on it running.
     ///      Uninstalling leaves the keys in place, which is intended: the enshrined registry
     ///      keeps serving the account's ERC-734 reads whether or not this module is installed.
-    function onUninstall(bytes calldata /* data */ ) public virtual { }
+    function onUninstall(
+        bytes calldata /* data */
+    )
+        public
+        virtual { }
 
     // --- registry (called by the account on itself) ----------------------
 
@@ -249,10 +253,8 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     function _keyHasPurpose(address account, bytes32 keyHash, uint256 purpose) internal view returns (bool) {
         AccountRegistry storage registry = _store().registries[account];
         return registry.allKeys.contains(keyHash)
-            && (
-                registry.keys[keyHash].purposes.contains(purpose)
-                    || registry.keys[keyHash].purposes.contains(KeyPurposes.MANAGEMENT)
-            );
+            && (registry.keys[keyHash].purposes.contains(purpose)
+                || registry.keys[keyHash].purposes.contains(KeyPurposes.MANAGEMENT));
     }
 
     /// @notice Purposes held by `keyHash` on `account`. Returns the full set. Use the
@@ -886,8 +888,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
             bytes32 salt,
             uint256[] memory
         ) {
-            bytes32 domainSeparator =
-                MessageHashUtils.toDomainSeparator(fields, name, version, chainId, verifyingContract, salt);
+            bytes32 domainSeparator = MessageHashUtils.toDomainSeparator(
+                fields, name, version, chainId, verifyingContract, salt
+            );
 
             bytes32 dataHash =
                 keccak256(abi.encode(_CLAIM_DATA_TYPEHASH, data.issuedAt, data.validUntil, keccak256(data.payload)));
