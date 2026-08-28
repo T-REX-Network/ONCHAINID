@@ -313,6 +313,12 @@ library Errors {
     /// @notice The request is already executed.
     error RequestAlreadyExecuted();
 
+    /// @notice The key that queued the request no longer authorizes proposing on the identity.
+    error ProposerNoLongerAuthorized(address proposer);
+
+    /// @notice The request was queued before the module was last uninstalled and is void.
+    error RequestInvalidated();
+
     /// @notice The claim is invalid.
     error InvalidClaim();
 
