@@ -5,7 +5,7 @@
 ![GitHub Workflow Status (branch)](https://img.shields.io/github/actions/workflow/status/T-REX-Network/ONCHAINID/publish-release.yml)
 ![GitHub repo size](https://img.shields.io/github/repo-size/T-REX-Network/ONCHAINID)
 ![GitHub Release Date](https://img.shields.io/github/release-date/T-REX-Network/ONCHAINID)
- 
+
 ---
 
 # ONCHAINID Smart Contracts
@@ -22,7 +22,8 @@ An identity is a smart contract that belongs to a person, a company, an asset, o
 
 - **Holds keys (ERC-734).** Keys are addresses granted specific purposes, such as managing the identity or signing claims.
 - **Holds claims (ERC-735).** Claims are signed statements about the identity, for example "this identity passed KYC", issued by trusted parties.
-  Each identity is a modular account. Extra behaviour — claims, execution rules, signature checks, social recovery — is added through installable modules, so the core stays small and each feature can be reviewed on its own.
+
+Each identity is a modular account. Extra behaviour — claims, execution rules, signature checks, social recovery — is added through installable modules, so the core stays small and each feature can be reviewed on its own.
 
 ## Architecture
 
@@ -31,7 +32,8 @@ The identity is built in layers. Each layer has one job:
 - **`Identity`** — the concrete contract that gets deployed. It wires the pieces below together and runs a single, one-shot setup step when the proxy is created.
 - **`SmartAccount`** — the ERC-7579 modular account. It gates module install and removal on the key registry's `MANAGEMENT` purpose and purpose-checks calls coming from installed executors; user operations are authorized by the installed validator, which the account trusts to scope its own signers.
 - **`KeyManager`** — the ERC-734 key registry. It is the single source of truth for which key holds which purpose. Every other part of the system reads keys from here.
-  Claims (ERC-735) are **not** built into `Identity`. They are served by an installed module (`ERC734Validator`) and reached through the account's fallback handler. If no module is installed to answer them, calling a claim function reverts.
+
+Claims (ERC-735) are **not** built into `Identity`. They are served by an installed module (`ERC734Validator`) and reached through the account's fallback handler. If no module is installed to answer them, calling a claim function reverts.
 
 ### Key purposes
 
@@ -59,6 +61,7 @@ Modules follow the ERC-7579 standard and are installed per identity:
 - **`KeyApprovalModule`** — an executor that owns the execution queue, auto-approval rules, and execution nonce. Queueing requires the `PROPOSER` purpose.
 - **`RecoveryModule`** — social recovery for an identity (see notes below).
 - **`EASClaimIssuer`** — a stateless claim issuer that reads [EAS](https://attest.org) attestations live (see notes below).
+
 ## Factory and cross-chain addresses
 
 `IdentityFactory` deploys each identity as a beacon proxy using `CREATE3`. Because of `CREATE3`, a given `(salt, wallet)` resolves to the **same identity address on every chain** — as long as the factory itself sits at the same address on each chain.
@@ -71,7 +74,8 @@ The factory offers two entry points:
 
 - **`createIdentity`** — the caller deploys an identity for themselves and is linked as the first wallet.
 - **`createIdentityFor`** — the caller deploys an identity for another account (a token, a vault, and so on). This requires the right role for that identity type.
-  Each identity type must be registered by an admin before it can be used, and access is controlled with OpenZeppelin's `AccessManager`.
+
+Each identity type must be registered by an admin before it can be used, and access is controlled with OpenZeppelin's `AccessManager`.
 
 ## Recovery module integration notes
 
@@ -80,6 +84,7 @@ The factory offers two entry points:
 - **Guardians recover the identity, not a password.** A set of guardians can, together, restore access by meeting a threshold. Recovery is weighted and quorum-based.
 - **Recovery is delayed and can be cancelled.** A scheduled recovery only executes after a delay window, and it can be cancelled either by the account itself or by a guardian quorum before it runs.
 - **Signatures are scoped to one identity.** Each recovery request is signed against that identity's EIP-712 domain, so signatures cannot be replayed against a different identity that uses the same module.
+
 > Because it depends on the private `openzeppelin-accounts` repository, building this repo requires read access to that repository (see below).
 
 ## EAS adapter integration notes
@@ -89,6 +94,7 @@ The factory offers two entry points:
 - **A factory-revoked wallet does not invalidate identity-level claims.** The adapter accepts an attestation whose recipient is the identity itself or any wallet *ever* linked to it, regardless of the wallet's current factory status. Rationale: if a holder revokes a compromised wallet, their identity-level KYC must not freeze with it — otherwise wallet recovery would deadlock the identity (`isVerified` would fail during the recovery itself). Audit trails will therefore legitimately show "identity KYC valid" alongside a revoked wallet link.
 - **The enforcement boundary for a compromised wallet is the token-transfer layer, not the claim layer.** The revoked wallet is blocked where it acts (token transfers, factory operations); the identity's eligibility is a fact about the identity, not about any single wallet. Attestation-level kills happen on EAS (attester revokes) or on the identity (`removeClaim`).
 - **`getAttestationData` is a raw read.** It returns the attestation payload even if the attestation is revoked, expired, or from an untrusted attester. Any eligibility or display decision (KYC badges, investment gating) must go through `isClaimValid` / `getClaimStatus` — decoding the payload alone can show stale data for attestations revoked on EAS.
+
 ## Getting started
 
 This is a [Foundry](https://book.getfoundry.sh) project. Solidity `0.8.30`, EVM version `cancun`, optimizer on (200 runs). Dependencies are managed with [soldeer](https://soldeer.xyz), listed in `foundry.toml` and locked in `soldeer.lock`.
@@ -98,6 +104,7 @@ This is a [Foundry](https://book.getfoundry.sh) project. Solidity `0.8.30`, EVM 
 - [Foundry](https://book.getfoundry.sh/getting-started/installation) (`forge`)
 - Node.js and npm (used only for git hooks and to run `forge soldeer install`)
 - Read access to the private `openzeppelin-accounts` repository. `forge soldeer install` clones it, so git must be authenticated. In CI this is done with a repository secret; locally your normal GitHub git credentials are enough.
+
 ### Install
 
 ```bash
@@ -117,7 +124,7 @@ npm run build          # forge build
 ```bash
 npm test               # forge test
 forge test -vvv        # with stack traces on revert (matches CI)
-forge test --match-test <n>          # run a single test
+forge test --match-test <name>          # run a single test
 forge test --match-contract <Contract>  # run all tests in one file
 ```
 
