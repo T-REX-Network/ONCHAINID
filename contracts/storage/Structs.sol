@@ -82,18 +82,23 @@ contract Structs {
     /**
      *  @dev Typed envelope for the signed portion of a Claim.
      *
-     *  issuedAt:   block timestamp when the issuer signed the claim. MUST be > 0.
-     *              `block.timestamp < issuedAt` means the claim is not yet valid.
-     *  validUntil: block timestamp after which the claim expires. 0 means no expiry.
-     *  payload:    topic-specific claim contents.
+     *  issuedAt:     block timestamp when the issuer signed the claim. MUST be > 0.
+     *                `block.timestamp < issuedAt` means the claim is not yet valid.
+     *  validUntil:   block timestamp after which the claim expires. 0 means no expiry.
+     *  metadataHash: `keccak256(abi.encode(scheme, keccak256(bytes(uri))))`. Binds the claim's
+     *                scheme and uri to the signature; every add checks it against the
+     *                submitted values.
+     *  payload:      topic-specific claim contents.
      *
-     *  The EIP-712 type is nested as `ClaimData(uint256 issuedAt,uint256 validUntil,bytes payload)`
+     *  The EIP-712 type is nested as
+     *  `ClaimData(uint256 issuedAt,uint256 validUntil,bytes32 metadataHash,bytes payload)`
      *  so wallets render each field legibly during typed-data signing instead of
      *  surfacing an opaque hex blob.
      */
     struct ClaimData {
         uint256 issuedAt;
         uint256 validUntil;
+        bytes32 metadataHash;
         bytes payload;
     }
 

@@ -10,7 +10,8 @@ import { Vm } from "forge-std/Vm.sol";
 ///         follows ERC-7913 (`len==20` for EOA / ERC-1271; `len>20` for verifier(20) || key(rest)).
 ///         The claim is signed against the nested EIP-712 struct
 ///         `Claim(uint256 topic,address subject,ClaimData data)` with
-///         `ClaimData(uint256 issuedAt,uint256 validUntil,bytes payload)`.
+///         `ClaimData(uint256 issuedAt,uint256 validUntil,bytes32 metadataHash,bytes payload)`.
+///         `metadataHash` must commit to the scheme and uri the claim is added with.
 library ClaimSignerHelper {
 
     struct Claim {
@@ -34,6 +35,11 @@ library ClaimSignerHelper {
         return keccak256(abi.encodePacked(addr));
     }
 
+    /// @notice The scheme+uri commitment `_addClaim` checks `ClaimData.metadataHash` against.
+    function metadataHash(uint256 scheme, string memory uri) internal pure returns (bytes32) {
+        return keccak256(abi.encode(scheme, keccak256(bytes(uri))));
+    }
+
     /// @notice Signs a claim using the issuer contract's EIP-712 domain.
     function signClaim(
         uint256 signerPk,
@@ -50,7 +56,8 @@ library ClaimSignerHelper {
         return abi.encode(signer, rawSig);
     }
 
-    /// @notice Convenience overload: signs a claim with `issuedAt = block.timestamp`, no expiry.
+    /// @notice Convenience overload: `issuedAt = block.timestamp`, no expiry, committed to
+    ///         scheme 1 and an empty uri.
     function signClaim(
         uint256 signerPk,
         address signerAddr,
@@ -59,8 +66,9 @@ library ClaimSignerHelper {
         uint256 topic,
         bytes memory payload
     ) internal view returns (bytes memory) {
-        Structs.ClaimData memory data =
-            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: payload });
+        Structs.ClaimData memory data = Structs.ClaimData({
+            issuedAt: block.timestamp, validUntil: 0, metadataHash: metadataHash(1, ""), payload: payload
+        });
         return signClaim(signerPk, signerAddr, issuerContract, identity, topic, data);
     }
 
@@ -78,7 +86,9 @@ library ClaimSignerHelper {
         claim.issuer = issuerAddr;
         claim.topic = topic;
         claim.scheme = 1;
-        claim.data = Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: payload });
+        claim.data = Structs.ClaimData({
+            issuedAt: block.timestamp, validUntil: 0, metadataHash: metadataHash(1, uri), payload: payload
+        });
         claim.uri = uri;
         claim.id = computeClaimId(issuerAddr, topic);
         claim.signature = signClaim(signerPk, signerAddr, issuerAddr, identityAddr, topic, claim.data);

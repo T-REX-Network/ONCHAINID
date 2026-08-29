@@ -109,12 +109,13 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     /// @dev EIP-712 typehash for `Claim`. The nested `ClaimData` type is appended per the EIP-712
     ///      rule for nested struct types.
     bytes32 internal constant _CLAIM_TYPEHASH = keccak256(
-        "Claim(uint256 topic,address subject,ClaimData data)ClaimData(uint256 issuedAt,uint256 validUntil,bytes payload)"
+        "Claim(uint256 topic,address subject,ClaimData data)"
+        "ClaimData(uint256 issuedAt,uint256 validUntil,bytes32 metadataHash,bytes payload)"
     );
 
     /// @dev EIP-712 typehash for the nested `ClaimData` envelope.
     bytes32 internal constant _CLAIM_DATA_TYPEHASH =
-        keccak256("ClaimData(uint256 issuedAt,uint256 validUntil,bytes payload)");
+        keccak256("ClaimData(uint256 issuedAt,uint256 validUntil,bytes32 metadataHash,bytes payload)");
 
     /// @notice Emitted when a claim digest is marked revoked by the issuer. Holder-side removals
     ///         emit `ClaimRemoved` (from IERC735) instead.
@@ -624,19 +625,15 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         // removeClaim reads a claim's topic and treats 0 as "no such claim". So a claim stored
         // under topic 0 could never be removed. Reject it up front.
         require(topic != 0, Errors.InvalidClaimTopic());
+
+        // scheme and uri are signed through data.metadataHash, so a replayed signature
+        // cannot repoint the claim.
+        require(data.metadataHash == getMetadataHash(scheme, uri), Errors.ClaimMetadataMismatch(scheme, uri));
+
         require(IClaimIssuer(issuer).isClaimValid(IIdentity(account), topic, signature, data), Errors.InvalidClaim());
 
         AccountRegistry storage s = _store().registries[account];
         claimId = keccak256(abi.encode(issuer, topic));
-
-        // The uri is not signed, so a replayed issuer signature could repoint it. Only allow a
-        // uri change together with new data, which forces a fresh issuer signature.
-        Structs.Claim storage existing = s.claims[claimId];
-        require(
-            existing.topic == 0 || keccak256(bytes(existing.uri)) == keccak256(bytes(uri))
-                || keccak256(abi.encode(existing.data)) != keccak256(abi.encode(data)),
-            Errors.ClaimUriImmutable(claimId)
-        );
 
         s.claims[claimId] =
             Structs.Claim({ topic: topic, scheme: scheme, issuer: issuer, signature: signature, data: data, uri: uri });
@@ -799,6 +796,11 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         emit ClaimAddedTo(address(_identity), _topic, _signature, _data);
     }
 
+    /// @notice The `metadataHash` a claim's `ClaimData` must carry for `_scheme` and `_uri`.
+    function getMetadataHash(uint256 _scheme, string memory _uri) public pure returns (bytes32) {
+        return keccak256(abi.encode(_scheme, keccak256(bytes(_uri))));
+    }
+
     // --- claims internals ------------------------------------------------
 
     /// @dev Build the EIP-712 claim digest using the issuer identity's domain (read via IERC5267),
@@ -821,8 +823,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         bytes32 domainSeparator =
             MessageHashUtils.toDomainSeparator(fields, name, version, chainId, verifyingContract, salt);
 
-        bytes32 dataHash =
-            keccak256(abi.encode(_CLAIM_DATA_TYPEHASH, data.issuedAt, data.validUntil, keccak256(data.payload)));
+        bytes32 dataHash = keccak256(
+            abi.encode(_CLAIM_DATA_TYPEHASH, data.issuedAt, data.validUntil, data.metadataHash, keccak256(data.payload))
+        );
         bytes32 structHash = keccak256(abi.encode(_CLAIM_TYPEHASH, topic, subject, dataHash));
         return MessageHashUtils.toTypedDataHash(domainSeparator, structHash);
     }

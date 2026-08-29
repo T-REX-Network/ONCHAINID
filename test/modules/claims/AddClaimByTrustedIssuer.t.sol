@@ -133,7 +133,7 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
         onchainidSetup.reputationRegistry.setReputation(address(aliceIdentity), ISSUER_DEFAULT_SCORE);
 
         Structs.ClaimData memory data =
-            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: hex"01" });
+            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, metadataHash: 0, payload: hex"01" });
         bytes memory signature = ClaimSignerHelper.signClaim(
             carolPk, carol, address(aliceIdentity), address(bobIdentity), FRESH_TOPIC, data
         );
@@ -232,119 +232,157 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
         ERC734Validator(address(aliceIdentity)).addClaimByTrustedIssuer(0, scheme, issuer, signature, data, "");
     }
 
-    // ============ uri is pinned on re-add ============
+    // ============ scheme and uri are bound through metadataHash ============
 
-    /// @notice The uri is not covered by the claim signature, so re-presenting the issuer's own
-    ///         unchanged signature and data with a different uri would repoint the stored record
-    ///         while it still reads as issuer-attested. The overwrite is rejected.
-    function test_reAddClaim_sameData_differentUri_reverts() public {
+    /// @notice The attack from the finding: re-present the issuer's own unchanged signature and
+    ///         data with a different uri, repointing the stored record while it still reads as
+    ///         issuer-attested. The signed commitment no longer matches, so the write is refused.
+    function test_reAddClaim_sameSignature_differentUri_reverts() public {
         (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
-            _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
+            _buildCommittedClaim(FRESH_TOPIC, 1, "ipfs://issuer-doc");
 
         vm.prank(claimIssuerOwner);
         ERC734Validator(address(aliceIdentity))
             .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "ipfs://issuer-doc");
 
-        bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), FRESH_TOPIC);
-
-        // Same issuer, same signature, same data — only the uri changes.
         vm.prank(claimIssuerOwner);
-        vm.expectRevert(abi.encodeWithSelector(Errors.ClaimUriImmutable.selector, claimId));
+        vm.expectRevert(abi.encodeWithSelector(Errors.ClaimMetadataMismatch.selector, scheme, "ipfs://attacker-doc"));
         ERC734Validator(address(aliceIdentity))
             .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "ipfs://attacker-doc");
 
+        bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), FRESH_TOPIC);
         (,,,,, string memory storedUri) = IIdentity(address(aliceIdentity)).getClaim(claimId);
         assertEq(storedUri, "ipfs://issuer-doc");
     }
 
-    /// @notice scheme is left free: it is a hint for verifying the claim signature, so pinning it
-    ///         against the signature it describes would be circular. Only the uri is pinned.
-    function test_reAddClaim_withDifferentScheme_succeeds() public {
+    /// @notice scheme is inside the commitment on the same terms as the uri, so it cannot be
+    ///         swapped to misroute how a consumer verifies or processes the claim.
+    function test_reAddClaim_sameSignature_differentScheme_reverts() public {
         (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
-            _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
+            _buildCommittedClaim(FRESH_TOPIC, 1, "ipfs://issuer-doc");
 
         vm.prank(claimIssuerOwner);
         ERC734Validator(address(aliceIdentity))
             .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "ipfs://issuer-doc");
 
         vm.prank(claimIssuerOwner);
+        vm.expectRevert(abi.encodeWithSelector(Errors.ClaimMetadataMismatch.selector, scheme + 1, "ipfs://issuer-doc"));
         ERC734Validator(address(aliceIdentity))
             .addClaimByTrustedIssuer(FRESH_TOPIC, scheme + 1, issuer, signature, data, "ipfs://issuer-doc");
-
-        bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), FRESH_TOPIC);
-        (, uint256 storedScheme,,,,) = IIdentity(address(aliceIdentity)).getClaim(claimId);
-        assertEq(storedScheme, scheme + 1);
     }
 
-    /// @notice Re-adding with the uri unchanged still refreshes the claim, so an issuer can
-    ///         re-attest with new data without first removing the record.
-    function test_reAddClaim_withSameUri_succeeds() public {
-        (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
-            _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
+    /// @notice A stale-but-still-valid attestation carries its own commitment, so replaying an
+    ///         earlier (data, signature) pair with an arbitrary uri fails too. The binding is
+    ///         per-attestation, not a comparison against whatever happens to be stored.
+    function test_reAddClaim_olderAttestation_differentUri_reverts() public {
+        (uint256 scheme, address issuer, bytes memory firstSig, Structs.ClaimData memory firstData) =
+            _buildCommittedClaim(FRESH_TOPIC, 1, "ipfs://v1");
 
         vm.prank(claimIssuerOwner);
         ERC734Validator(address(aliceIdentity))
-            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "ipfs://issuer-doc");
+            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, firstSig, firstData, "ipfs://v1");
 
-        // A fresh signature over new data, same uri.
-        Structs.ClaimData memory newData =
-            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: hex"02" });
-        bytes memory newSignature = ClaimSignerHelper.signClaim(
-            claimIssuerOwnerPk, claimIssuerOwner, address(claimIssuer), address(aliceIdentity), FRESH_TOPIC, newData
-        );
-
+        // The issuer renews the claim, so two attestations are valid at once.
+        (,, bytes memory secondSig, Structs.ClaimData memory secondData) =
+            _buildCommittedClaim(FRESH_TOPIC, 1, "ipfs://v2");
         vm.prank(claimIssuerOwner);
         ERC734Validator(address(aliceIdentity))
-            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, newSignature, newData, "ipfs://issuer-doc");
+            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, secondSig, secondData, "ipfs://v2");
 
-        bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), FRESH_TOPIC);
-        (,,,, Structs.ClaimData memory storedData,) = IIdentity(address(aliceIdentity)).getClaim(claimId);
-        assertEq(storedData.payload, hex"02");
+        // Roll back to the older pair while pointing it somewhere new.
+        vm.prank(claimIssuerOwner);
+        vm.expectRevert(abi.encodeWithSelector(Errors.ClaimMetadataMismatch.selector, scheme, "ipfs://attacker"));
+        ERC734Validator(address(aliceIdentity))
+            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, firstSig, firstData, "ipfs://attacker");
     }
 
-    /// @notice An issuer stuck with a bad uri recovers by re-attesting: new data forces a fresh
-    ///         signature, and a uri change is accepted alongside it in a single call.
-    function test_reAddClaim_newData_differentUri_succeeds() public {
+    /// @notice The issuer stays free to correct a bad uri: a fresh attestation commits to the new
+    ///         one, and the record repoints in a single call.
+    function test_reAddClaim_freshCommitment_newUri_succeeds() public {
         (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
-            _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
+            _buildCommittedClaim(FRESH_TOPIC, 1, "ipfs://typo");
 
         vm.prank(claimIssuerOwner);
         ERC734Validator(address(aliceIdentity))
             .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "ipfs://typo");
 
-        // Fresh attestation over new data, carrying the corrected uri.
-        Structs.ClaimData memory newData =
-            Structs.ClaimData({ issuedAt: block.timestamp + 1, validUntil: 0, payload: hex"01" });
-        bytes memory newSignature = ClaimSignerHelper.signClaim(
-            claimIssuerOwnerPk, claimIssuerOwner, address(claimIssuer), address(aliceIdentity), FRESH_TOPIC, newData
-        );
+        (,, bytes memory newSig, Structs.ClaimData memory newData) =
+            _buildCommittedClaim(FRESH_TOPIC, 1, "ipfs://corrected");
 
-        vm.warp(block.timestamp + 2);
         vm.prank(claimIssuerOwner);
         ERC734Validator(address(aliceIdentity))
-            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, newSignature, newData, "ipfs://corrected");
+            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, newSig, newData, "ipfs://corrected");
 
         bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), FRESH_TOPIC);
         (,,,,, string memory storedUri) = IIdentity(address(aliceIdentity)).getClaim(claimId);
         assertEq(storedUri, "ipfs://corrected");
     }
 
+    /// @notice The commitment is mandatory: a claim signed without one (metadataHash = 0) is
+    ///         rejected outright, so no claim can be stored with a floating uri or scheme.
+    function test_addClaim_zeroMetadataHash_reverts() public {
+        Structs.ClaimData memory data =
+            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, metadataHash: 0, payload: hex"01" });
+        bytes memory signature = ClaimSignerHelper.signClaim(
+            claimIssuerOwnerPk, claimIssuerOwner, address(claimIssuer), address(aliceIdentity), FRESH_TOPIC, data
+        );
+
+        vm.prank(claimIssuerOwner);
+        vm.expectRevert(abi.encodeWithSelector(Errors.ClaimMetadataMismatch.selector, uint256(1), "ipfs://any"));
+        ERC734Validator(address(aliceIdentity))
+            .addClaimByTrustedIssuer(FRESH_TOPIC, 1, address(claimIssuer), signature, data, "ipfs://any");
+    }
+
+    /// @notice The published helper produces the hash the add path checks against.
+    function test_getMetadataHash_matchesTheCheckedCommitment() public view {
+        assertEq(
+            onchainidSetup.signatureValidator.getMetadataHash(7, "ipfs://doc"),
+            keccak256(abi.encode(uint256(7), keccak256(bytes("ipfs://doc"))))
+        );
+    }
+
     // ============ Helper ============
 
     /// @dev Build the four signed-claim components used by addClaimByTrustedIssuer.
     ///      Signed by `claimIssuerOwner`, who is a CLAIM_SIGNER on `claimIssuer`'s
-    ///      identity. Carol-signed claims are built inline in the tests that need them.
+    ///      identity, committed to scheme 1 and an empty uri. Carol-signed claims are
+    ///      built inline in the tests that need them.
     function _buildSignedClaim(address targetIdentity, address declaredIssuer, uint256 topic)
         internal
         view
         returns (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data)
     {
-        data = Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: hex"01" });
+        data = Structs.ClaimData({
+            issuedAt: block.timestamp,
+            validUntil: 0,
+            metadataHash: ClaimSignerHelper.metadataHash(1, ""),
+            payload: hex"01"
+        });
         signature = ClaimSignerHelper.signClaim(
             claimIssuerOwnerPk, claimIssuerOwner, declaredIssuer, targetIdentity, topic, data
         );
         scheme = 1;
         issuer = declaredIssuer;
+    }
+
+    /// @dev Like {_buildSignedClaim} but targeting aliceIdentity with claimIssuer as the
+    ///      declared issuer, committed to the given scheme and uri.
+    function _buildCommittedClaim(uint256 topic, uint256 scheme_, string memory uri)
+        internal
+        view
+        returns (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data)
+    {
+        data = Structs.ClaimData({
+            issuedAt: block.timestamp,
+            validUntil: 0,
+            metadataHash: ClaimSignerHelper.metadataHash(scheme_, uri),
+            payload: hex"01"
+        });
+        signature = ClaimSignerHelper.signClaim(
+            claimIssuerOwnerPk, claimIssuerOwner, address(claimIssuer), address(aliceIdentity), topic, data
+        );
+        scheme = scheme_;
+        issuer = address(claimIssuer);
     }
 
 }

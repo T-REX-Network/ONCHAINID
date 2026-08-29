@@ -22,8 +22,12 @@ contract VersionUpgradeTest is OnchainIDSetup {
         assertEq(aliceIdentity.version(), "3.0.0");
 
         uint256 claimTopic = uint256(keccak256(bytes("test")));
-        Structs.ClaimData memory claimData =
-            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: bytes("test data") });
+        Structs.ClaimData memory claimData = Structs.ClaimData({
+            issuedAt: block.timestamp,
+            validUntil: 0,
+            metadataHash: ClaimSignerHelper.metadataHash(1, "https://example.com"),
+            payload: bytes("test data")
+        });
         string memory claimUri = "https://example.com";
 
         // Add CLAIM_SIGNER key for alice on her identity

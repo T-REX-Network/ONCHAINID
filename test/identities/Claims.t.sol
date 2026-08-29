@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
+import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import { IIdentity } from "contracts/interface/IIdentity.sol";
@@ -15,8 +16,12 @@ contract ClaimsTest is OnchainIDSetup {
     ///         still be removable, so the second removal cannot trip on the marked digest.
     function test_RemoveClaim_ReAddedExternalIssuerClaim() public {
         ExternalIssuer issuer = new ExternalIssuer();
-        Structs.ClaimData memory claimData =
-            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: hex"0042" });
+        Structs.ClaimData memory claimData = Structs.ClaimData({
+            issuedAt: block.timestamp,
+            validUntil: 0,
+            metadataHash: ClaimSignerHelper.metadataHash(1, "uri"),
+            payload: hex"0042"
+        });
 
         vm.prank(alice);
         bytes32 claimId =

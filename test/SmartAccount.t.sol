@@ -65,8 +65,12 @@ contract SmartAccountTest is OnchainIDSetup {
     ///         claim. Now the request just stays queued, and the direct call is the way to add it.
     function test_execute_selfCall_byClaimSigner_doesNotAutoApprove_addClaim() public {
         uint256 topic = 42;
-        Structs.ClaimData memory data =
-            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: abi.encode("verified") });
+        Structs.ClaimData memory data = Structs.ClaimData({
+            issuedAt: block.timestamp,
+            validUntil: 0,
+            metadataHash: ClaimSignerHelper.metadataHash(1, "uri"),
+            payload: abi.encode("verified")
+        });
 
         // Self-issued claim: aliceIdentity is the issuer and carol's CLAIM_SIGNER key signs it.
         bytes memory sig =
@@ -106,8 +110,12 @@ contract SmartAccountTest is OnchainIDSetup {
         );
 
         uint256 topic = 7001;
-        Structs.ClaimData memory data =
-            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: abi.encode("kyc") });
+        Structs.ClaimData memory data = Structs.ClaimData({
+            issuedAt: block.timestamp,
+            validUntil: 0,
+            metadataHash: ClaimSignerHelper.metadataHash(1, "uri"),
+            payload: abi.encode("kyc")
+        });
 
         // carol holds CLAIM_SIGNER and signs; the adder submits.
         bytes memory sig =
@@ -470,7 +478,7 @@ contract SmartAccountTest is OnchainIDSetup {
 
         // Self-issued claims now require a valid signature from one of the identity's CLAIM_SIGNER keys.
         Structs.ClaimData memory data =
-            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: bytes("payload") });
+            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, metadataHash: 0, payload: bytes("payload") });
         bytes memory signature =
             ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(aliceIdentity), 42, data);
 
@@ -550,7 +558,7 @@ contract SmartAccountTest is OnchainIDSetup {
 
         // Self-issued claims now require a valid signature from one of the identity's CLAIM_SIGNER keys.
         Structs.ClaimData memory data =
-            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: bytes("payload") });
+            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, metadataHash: 0, payload: bytes("payload") });
         bytes memory signature =
             ClaimSignerHelper.signClaim(carolPk, carol, address(aliceIdentity), address(aliceIdentity), 43, data);
 
@@ -634,7 +642,7 @@ contract SmartAccountTest is OnchainIDSetup {
                     uint256(1),
                     address(aliceIdentity),
                     bytes(""),
-                    Structs.ClaimData({ issuedAt: 0, validUntil: 0, payload: bytes("payload") }),
+                    Structs.ClaimData({ issuedAt: 0, validUntil: 0, metadataHash: 0, payload: bytes("payload") }),
                     string("")
                 )
             )
@@ -774,7 +782,7 @@ contract SmartAccountTest is OnchainIDSetup {
                 uint256(1),
                 address(aliceIdentity),
                 bytes(""),
-                Structs.ClaimData({ issuedAt: 0, validUntil: 0, payload: bytes("payload") }),
+                Structs.ClaimData({ issuedAt: 0, validUntil: 0, metadataHash: 0, payload: bytes("payload") }),
                 string("")
             )
         );

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
+import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 import {
     AttestationRequest,
@@ -78,7 +79,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         adapter.setAttester(TOPIC, attester, true);
         vm.stopPrank();
 
-        emptyData = Structs.ClaimData({ issuedAt: 0, validUntil: 0, payload: "" });
+        emptyData = Structs.ClaimData({ issuedAt: 0, validUntil: 0, metadataHash: 0, payload: "" });
     }
 
     /* ----- helpers ----- */
@@ -449,9 +450,12 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         bytes32 uid = _attestValid(address(aliceIdentity));
         bytes memory sig = _encodeUid(uid);
 
+        Structs.ClaimData memory data = Structs.ClaimData({
+            issuedAt: 0, validUntil: 0, metadataHash: ClaimSignerHelper.metadataHash(1, "eas://uid"), payload: ""
+        });
+
         vm.prank(alice);
-        bytes32 claimId =
-            IIdentity(address(aliceIdentity)).addClaim(TOPIC, 1, address(adapter), sig, emptyData, "eas://uid");
+        bytes32 claimId = IIdentity(address(aliceIdentity)).addClaim(TOPIC, 1, address(adapter), sig, data, "eas://uid");
 
         assertEq(claimId, keccak256(abi.encode(address(adapter), TOPIC)));
 
@@ -472,9 +476,12 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         bytes32 uid = _attestValid(address(aliceIdentity));
         bytes memory sig = _encodeUid(uid);
 
+        Structs.ClaimData memory data = Structs.ClaimData({
+            issuedAt: 0, validUntil: 0, metadataHash: ClaimSignerHelper.metadataHash(1, "eas://uid"), payload: ""
+        });
+
         vm.prank(alice);
-        bytes32 claimId =
-            IIdentity(address(aliceIdentity)).addClaim(TOPIC, 1, address(adapter), sig, emptyData, "eas://uid");
+        bytes32 claimId = IIdentity(address(aliceIdentity)).addClaim(TOPIC, 1, address(adapter), sig, data, "eas://uid");
         (,,, bytes memory sigOut, Structs.ClaimData memory dataOut,) =
             IIdentity(address(aliceIdentity)).getClaim(claimId);
         assertTrue(adapter.isClaimValid(IIdentity(address(aliceIdentity)), TOPIC, sigOut, dataOut));
@@ -491,9 +498,13 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         bytes32 uid = keccak256("never-issued");
         bytes memory sig = _encodeUid(uid);
 
+        Structs.ClaimData memory data = Structs.ClaimData({
+            issuedAt: 0, validUntil: 0, metadataHash: ClaimSignerHelper.metadataHash(1, ""), payload: ""
+        });
+
         vm.prank(alice);
         vm.expectRevert(Errors.InvalidClaim.selector);
-        IIdentity(address(aliceIdentity)).addClaim(TOPIC, 1, address(adapter), sig, emptyData, "");
+        IIdentity(address(aliceIdentity)).addClaim(TOPIC, 1, address(adapter), sig, data, "");
     }
 
     /* ----- unsupported surface ----- */
