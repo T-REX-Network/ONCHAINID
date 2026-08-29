@@ -1,4 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0
+//
+// ONCHAINID Smart Contracts
+// Digital identities for the T-REX ecosystem.
+//
+// Copyright (C) 2026 Digital Asset Operational Services ISAC Ltd. ("T-REX Network")
+//
+// This file is part of the ONCHAINID smart contract suite.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 pragma solidity ^0.8.28;
 
 import {
@@ -9,6 +30,7 @@ import {
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 
 import { IERC734 } from "../../interface/IERC734.sol";
+import { IKeyExecutor } from "../../interface/IKeyExecutor.sol";
 import { Errors } from "../../libraries/Errors.sol";
 import { hashAddress } from "../../libraries/Hashing.sol";
 import { KeyPurposes } from "../../libraries/KeyPurposes.sol";
@@ -36,6 +58,13 @@ interface IIdentityAccount {
  *         queue or the event log. PROPOSER is a queue-only purpose: it lets a key queue
  *         a request that then waits for an approver and never auto-runs by itself.
  *
+ *         A queued request records the key that proposed it. Approving re-checks that key, so a
+ *         request whose proposer was revoked can no longer be dispatched. Rejecting does not:
+ *         any authorized approver can still close a stale entry.
+ *
+ *         Uninstalling the module (the executor or any of its fallback selectors) voids every
+ *         request queued so far, so a pending queue cannot be resurrected across a reinstall.
+ *
  *         Auto-approval rules (unchanged by the propose gate):
  *         - MANAGEMENT: anything.
  *         - ACTION: external targets only.
@@ -48,11 +77,13 @@ interface IIdentityAccount {
  *         refused. To add or remove a claim on the identity itself, call that selector on the
  *         account directly instead of queueing it here.
  */
-contract KeyApprovalModule is IERC7579Module {
+contract KeyApprovalModule is IERC7579Module, IKeyExecutor {
 
-    /// @dev Per-identity queue state. One slot per installing account.
+    /// @dev Per-identity queue state. One slot per installing account. Requests with an id
+    ///      below `firstValidId` are void; {onUninstall} bumps the floor to the current nonce.
     struct AccountState {
         uint256 executionNonce;
+        uint256 firstValidId;
         mapping(uint256 => Execution) executions;
     }
 
@@ -61,6 +92,7 @@ contract KeyApprovalModule is IERC7579Module {
         address to;
         uint256 value;
         bytes data;
+        address proposer;
         bool approved;
         bool executed;
         // `executed` only says the request was attempted and is closed; it is set on a failed
@@ -71,22 +103,6 @@ contract KeyApprovalModule is IERC7579Module {
     /// @dev Storage shared across all identities that install this module singleton.
     mapping(address => AccountState) private _state;
 
-    /// @dev Emitted when an identity queues an execution via {execute}.
-    event ExecutionRequested(
-        address indexed account, uint256 indexed executionId, address indexed to, uint256 value, bytes data
-    );
-
-    /// @dev Emitted when an execution is approved (or rejected) via {approve}.
-    event Approved(address indexed account, uint256 indexed executionId, bool approved);
-
-    /// @dev Emitted when an approved execution successfully dispatches through the account.
-    event Executed(address indexed account, uint256 indexed executionId, address indexed to, uint256 value, bytes data);
-
-    /// @dev Emitted when an approved execution reverts inside the account.
-    event ExecutionFailed(
-        address indexed account, uint256 indexed executionId, address indexed to, uint256 value, bytes data
-    );
-
     /// @inheritdoc IERC7579Module
     function isModuleType(uint256 moduleTypeId) public pure returns (bool) {
         return moduleTypeId == MODULE_TYPE_EXECUTOR || moduleTypeId == MODULE_TYPE_FALLBACK;
@@ -96,7 +112,17 @@ contract KeyApprovalModule is IERC7579Module {
     function onInstall(bytes calldata) external pure { }
 
     /// @inheritdoc IERC7579Module
-    function onUninstall(bytes calldata) external pure { }
+    /// @dev Voids every request queued so far by the uninstalling account. Runs on each
+    ///      uninstall of this module (the executor or any fallback selector), so even a
+    ///      partial teardown kills the queue. Fails closed: nothing here can revert.
+    function onUninstall(bytes calldata) external {
+        AccountState storage state = _state[msg.sender];
+        uint256 nonce = state.executionNonce;
+        if (state.firstValidId < nonce) {
+            state.firstValidId = nonce;
+            emit QueueInvalidated(msg.sender, nonce);
+        }
+    }
 
     /// @notice Queue an execution for the calling identity. Auto-runs if the caller's key
     ///         purpose authorizes it; otherwise waits for {approve}.
@@ -122,10 +148,11 @@ contract KeyApprovalModule is IERC7579Module {
         // 2. Allocate the next execution id and persist the request.
         AccountState storage state = _state[account];
         executionId = state.executionNonce++;
-        state.executions[executionId] =
-            Execution({ to: _to, value: _value, data: _data, approved: false, executed: false, succeeded: false });
+        state.executions[executionId] = Execution({
+            to: _to, value: _value, data: _data, proposer: proposer, approved: false, executed: false, succeeded: false
+        });
 
-        emit ExecutionRequested(account, executionId, _to, _value, _data);
+        emit ExecutionRequested(account, executionId, _to, _value, _data, proposer);
 
         // 3. Auto-approve dispatches now; otherwise the request stays pending for {approve}.
         if (_canAutoApprove(account, callerKeyHash, _to)) {
@@ -145,8 +172,10 @@ contract KeyApprovalModule is IERC7579Module {
         AccountState storage state = _state[account];
         Execution storage execution = state.executions[_id];
 
-        // 2. Sanity-check the request id and that it isn't already executed.
+        // 2. Sanity-check the request id, that it wasn't voided by an uninstall, and that
+        //    it isn't already executed.
         require(_id < state.executionNonce, Errors.InvalidRequestId());
+        require(_id >= state.firstValidId, Errors.RequestInvalidated());
         require(!execution.executed, Errors.RequestAlreadyExecuted());
 
         // 3. Authorize the approver. A management-grade target (the account, its factory, or the
@@ -166,8 +195,14 @@ contract KeyApprovalModule is IERC7579Module {
 
         emit Approved(account, _id, _shouldApprove);
 
-        // 4. Approval ⇒ dispatch now. Rejection ⇒ mark closed and exit.
+        // 4. Approval ⇒ the key that queued the request must still be able to propose, then
+        //    dispatch now. A request whose proposer was revoked cannot run, but any authorized
+        //    approver can still reject it and close the stale entry.
         if (_shouldApprove) {
+            require(
+                _canPropose(account, hashAddress(execution.proposer)),
+                Errors.ProposerNoLongerAuthorized(execution.proposer)
+            );
             return _runApproved(account, _id);
         }
         execution.executed = true;
@@ -267,7 +302,7 @@ contract KeyApprovalModule is IERC7579Module {
     function _msgSender() internal view returns (address sender) {
         if (msg.data.length >= 24) {
             // solhint-disable-next-line no-inline-assembly
-            assembly {
+            assembly ("memory-safe") {
                 sender := shr(96, calldataload(sub(calldatasize(), 20)))
             }
         } else {

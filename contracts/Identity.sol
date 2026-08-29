@@ -1,4 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0
+//
+// ONCHAINID Smart Contracts
+// Digital identities for the T-REX ecosystem.
+//
+// Copyright (C) 2026 Digital Asset Operational Services ISAC Ltd. ("T-REX Network")
+//
+// This file is part of the ONCHAINID smart contract suite.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 pragma solidity ^0.8.27;
 
 import { SmartAccount } from "./SmartAccount.sol";
@@ -107,7 +128,7 @@ contract Identity is Initializable, SmartAccount, ERC165 {
 
     /// @notice The factory that deploys this identity. Fixed at implementation deploy time like
     ///         {registryModule}. The account uses it to require MANAGEMENT for the factory's
-    ///         wallet-binding calls (linkAccount, revokeAccount, confirmCrossChainLink).
+    ///         wallet-binding calls (linkAccount, revokeAccount, settlePendingCrossChainLink).
     function identityFactory() public view override returns (address) {
         return _identityFactory;
     }
@@ -171,6 +192,13 @@ contract Identity is Initializable, SmartAccount, ERC165 {
         return _getIdentityMetadata().identityType;
     }
 
+    /// @notice The Initializable version stored on this contract. On an implementation whose
+    ///         constructor ran `_disableInitializers` this is `type(uint64).max`. The factory
+    ///         reads it before a beacon upgrade to reject an unlocked implementation.
+    function initializedVersion() external view returns (uint64) {
+        return _getInitializedVersion();
+    }
+
     /// @notice ERC-7579 account identifier.
     function accountId() public view virtual override returns (string memory) {
         return string.concat("trex.onchainid.identity.v", _VERSION);
@@ -181,12 +209,19 @@ contract Identity is Initializable, SmartAccount, ERC165 {
         return _VERSION;
     }
 
-    /// @notice ERC-165 surface. Returns true for the ERC-734 / ERC-735 / IIdentity selectors
-    ///         even though the ERC-735 methods are served by an installed module via the
-    ///         fallback handler — the interface contract is still honored at runtime.
+    /// @notice ERC-165 surface. The claim interface is only advertised while the fallback
+    ///         handler serving it is installed, probed via one representative selector. The
+    ///         key registry reads are enshrined functions on the account itself, so that
+    ///         surface cannot be uninstalled and is always advertised.
+    /// @dev The advertised ERC-734 id is this repo's registry-only {IERC734}. execute/approve
+    ///      moved to {IKeyExecutor}, so the legacy monolithic id is intentionally not claimed.
     function supportsInterface(bytes4 interfaceId) public view override returns (bool) {
-        return (interfaceId == type(IERC734).interfaceId || interfaceId == type(IERC735).interfaceId
-                || interfaceId == type(IIdentity).interfaceId || super.supportsInterface(interfaceId));
+        bool hasClaims = _fallbackHandler(IERC735.getClaim.selector) != address(0);
+
+        if (interfaceId == type(IERC734).interfaceId) return true;
+        if (interfaceId == type(IERC735).interfaceId) return hasClaims;
+        if (interfaceId == type(IIdentity).interfaceId) return hasClaims;
+        return super.supportsInterface(interfaceId);
     }
 
     /// @dev Returns the identity metadata storage at its ERC-7201 slot.

@@ -1,4 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0
+//
+// ONCHAINID Smart Contracts
+// Digital identities for the T-REX ecosystem.
+//
+// Copyright (C) 2026 Digital Asset Operational Services ISAC Ltd. ("T-REX Network")
+//
+// This file is part of the ONCHAINID smart contract suite.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 pragma solidity ^0.8.27;
 
 /**
@@ -11,29 +32,15 @@ pragma solidity ^0.8.27;
  *         the registry interface decoupled from the execution surface.
  *
  *         See {IKeyExecutor} for the queue ABI, and {KeyApprovalModule} for the implementation.
+ *
+ *         Note on events: this interface declares none. The key registry and the execution
+ *         queue are served by module singletons shared across identities, so the canonical
+ *         ERC-734 events (which carry no subject) could not attribute a log to an identity.
+ *         The real event ABI is the account-carrying variants — `KeyAdded` / `KeyRemoved` on
+ *         {ERC734Validator} and the execution lifecycle events on {IKeyExecutor} — each with
+ *         `address indexed account` (the identity) as its first field.
  */
 interface IERC734 {
-
-    /**
-     * @dev Emitted when an execution request was approved. Lives on {IKeyExecutor} in practice
-     *      (the queue module emits it); declared here for the legacy ERC-734 ABI surface.
-     */
-    event Approved(uint256 indexed executionId, bool approved);
-
-    /// @dev Emitted when an approved execution successfully runs through the queue.
-    event Executed(uint256 indexed executionId, address indexed to, uint256 indexed value, bytes data);
-
-    /// @dev Emitted when an execution is queued.
-    event ExecutionRequested(uint256 indexed executionId, address indexed to, uint256 indexed value, bytes data);
-
-    /// @dev Emitted when an approved execution fails inside the queue.
-    event ExecutionFailed(uint256 indexed executionId, address indexed to, uint256 indexed value, bytes data);
-
-    /// @dev Emitted when a key is added to the identity. MUST be triggered when addKey succeeds.
-    event KeyAdded(bytes32 indexed key, uint256 indexed purpose, uint256 indexed keyType);
-
-    /// @dev Emitted when a purpose is removed from a key.
-    event KeyRemoved(bytes32 indexed key, uint256 indexed purpose, uint256 indexed keyType);
 
     /**
      * @dev Adds a _key to the identity. MUST only be done by keys of purpose MANAGEMENT,

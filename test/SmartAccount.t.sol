@@ -22,14 +22,52 @@ import { Errors } from "contracts/libraries/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
+import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 
 import { ClaimSignerHelper } from "./helpers/ClaimSignerHelper.sol";
 import { OnchainIDSetup } from "./helpers/OnchainIDSetup.sol";
+import { MockLyingERC734Getter } from "./mocks/MockLyingERC734Getter.sol";
 import { MockStockECDSAValidator } from "./mocks/MockStockECDSAValidator.sol";
 
 /// @notice Coverage for the SmartAccount execution surface and ERC-734 purpose invariants.
 contract SmartAccountTest is OnchainIDSetup {
+
+    /// @notice The ERC-734 getters are real functions on the account, so fallback dispatch can
+    ///         never answer them: even with a handler installed for the getter selectors, reads
+    ///         through the identity keep coming from the enshrined registry.
+    function test_erc734Getters_cannotBeHijackedByFallbackHandler() public {
+        MockLyingERC734Getter liar = new MockLyingERC734Getter();
+
+        // MANAGEMENT installs the liar on the getter selectors. The slots are free (the
+        // getters need no fallback wiring), so the installs succeed — but a real function
+        // always wins over fallback dispatch, so the handler is unreachable.
+        vm.startPrank(alice);
+        aliceIdentity.installModule(
+            MODULE_TYPE_FALLBACK, address(liar), abi.encodePacked(IERC734.getKeysByPurpose.selector)
+        );
+        aliceIdentity.installModule(
+            MODULE_TYPE_FALLBACK, address(liar), abi.encodePacked(IERC734.keyHasPurpose.selector)
+        );
+        vm.stopPrank();
+
+        // The liar grants any key any purpose; the registry does not.
+        bytes32 bogusKey = keccak256("bogus");
+        assertFalse(
+            IERC734(address(aliceIdentity)).keyHasPurpose(bogusKey, KeyPurposes.MANAGEMENT),
+            "keyHasPurpose must be answered by the registry, not the handler"
+        );
+
+        // The liar enumerates a single fabricated key hash; the registry enumerates alice.
+        bytes32 aliceKey = keccak256(abi.encodePacked(alice));
+        bytes32[] memory keys = IERC734(address(aliceIdentity)).getKeysByPurpose(KeyPurposes.MANAGEMENT);
+        bool aliceFound = false;
+        for (uint256 i = 0; i < keys.length; i++) {
+            assertNotEq(keys[i], bytes32(uint256(1)), "fabricated key hash must not appear");
+            if (keys[i] == aliceKey) aliceFound = true;
+        }
+        assertTrue(aliceFound, "getKeysByPurpose must be answered by the registry, not the handler");
+    }
 
     /// @notice ACTION key calls execute() on an external target; the queue module auto-approves.
     function test_execute_externalCall_byActionKey_autoApproves() public {
@@ -152,6 +190,65 @@ contract SmartAccountTest is OnchainIDSetup {
         vm.prank(alice);
         vm.expectRevert(Errors.CannotRemoveLastManagementKey.selector);
         aliceIdentity.removeKey(aliceKey, KeyPurposes.MANAGEMENT);
+    }
+
+    /// @notice The KeyApprovalModule holds MANAGEMENT as a MODULE key, which cannot sign.
+    ///         It does not count toward the last-manager guard, so alice is the only real
+    ///         manager and removing her MANAGEMENT purpose must revert.
+    function test_removeKey_lastSigningManagementKey_revertsDespiteModuleKey() public {
+        bytes32 aliceKey = keccak256(abi.encodePacked(alice));
+        bytes32 moduleKey = keccak256(abi.encodePacked(address(onchainidSetup.keyApprovalModule)));
+
+        // The module holds MANAGEMENT (executor gating reads this).
+        assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(moduleKey, KeyPurposes.MANAGEMENT),
+            "module key holds MANAGEMENT"
+        );
+        // But the MANAGEMENT index only counts signers, so alice is the last manager.
+        assertEq(
+            IERC734(address(aliceIdentity)).getKeysByPurpose(KeyPurposes.MANAGEMENT).length,
+            1,
+            "MANAGEMENT index counts signer keys only"
+        );
+
+        vm.prank(alice);
+        vm.expectRevert(Errors.CannotRemoveLastManagementKey.selector);
+        aliceIdentity.removeKey(aliceKey, KeyPurposes.MANAGEMENT);
+    }
+
+    /// @notice A MODULE key granted MANAGEMENT keeps its authority through keyHasPurpose but
+    ///         never shows up in the MANAGEMENT enumeration. Both sides asserted directly so a
+    ///         refactor of the index can't silently drop either one.
+    function test_moduleManagementKey_hasPurposeButNotEnumerated() public view {
+        bytes32 moduleKey = keccak256(abi.encodePacked(address(onchainidSetup.keyApprovalModule)));
+
+        assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(moduleKey, KeyPurposes.MANAGEMENT),
+            "module key holds MANAGEMENT"
+        );
+
+        bytes32[] memory managers = IERC734(address(aliceIdentity)).getKeysByPurpose(KeyPurposes.MANAGEMENT);
+        for (uint256 i = 0; i < managers.length; i++) {
+            assertTrue(managers[i] != moduleKey, "module key must not be enumerated as a manager");
+        }
+    }
+
+    /// @notice The guard is skipped for MODULE keys, so a module's registration can always
+    ///         be dropped and uninstall keeps working.
+    function test_removeKey_moduleManagementKey_alwaysRemovable() public {
+        bytes32 aliceKey = keccak256(abi.encodePacked(alice));
+        bytes32 moduleKey = keccak256(abi.encodePacked(address(onchainidSetup.keyApprovalModule)));
+
+        vm.prank(alice);
+        aliceIdentity.removeKey(moduleKey, KeyPurposes.MANAGEMENT);
+
+        assertFalse(
+            IERC734(address(aliceIdentity)).keyHasPurpose(moduleKey, KeyPurposes.MANAGEMENT),
+            "module registration dropped"
+        );
+        assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(aliceKey, KeyPurposes.MANAGEMENT), "alice still manages"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -379,16 +476,28 @@ contract SmartAccountTest is OnchainIDSetup {
         assertEq(counter.count(), 1, "executor dispatch should keep working after the selector drop");
     }
 
-    /// When the module's key is the only MANAGEMENT holder, the old strip-everything path
-    /// hit `CannotRemoveLastManagementKey` and the handler could not be uninstalled at all.
-    /// Fallback uninstalls no longer touch keys, so the drop goes through.
-    function test_uninstallModule_fallbackSelector_whenModuleIsLastManagement_succeeds() public {
+    /// A module key never counts towards MANAGEMENT, so KAM holding MANAGEMENT does not keep
+    /// alice's key removable: hers is the only one the index sees, and the last-manager guard
+    /// rejects the removal. The identity therefore cannot reach a state where a module is the
+    /// sole manager.
+    function test_removeKey_lastSignerManagement_revertsEvenWhenModuleHoldsManagement() public {
         address kam = address(onchainidSetup.keyApprovalModule);
         bytes32 aliceKey = keccak256(abi.encodePacked(alice));
 
-        // Leave KAM as the sole MANAGEMENT key.
+        assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(keccak256(abi.encodePacked(kam)), KeyPurposes.MANAGEMENT),
+            "KAM holds MANAGEMENT authority"
+        );
+
         vm.prank(alice);
+        vm.expectRevert(ERC734Validator.CannotRemoveLastManagementKey.selector);
         aliceIdentity.removeKey(aliceKey, KeyPurposes.MANAGEMENT);
+    }
+
+    /// A fallback selector drop leaves the module's key alone even when the caller is the module
+    /// itself. This is the L-06 property, checked from the module's own call frame.
+    function test_uninstallModule_fallbackSelector_calledByModule_keepsItsKey() public {
+        address kam = address(onchainidSetup.keyApprovalModule);
 
         vm.prank(kam);
         aliceIdentity.uninstallModule(
@@ -397,7 +506,7 @@ contract SmartAccountTest is OnchainIDSetup {
 
         assertTrue(
             IERC734(address(aliceIdentity)).keyHasPurpose(keccak256(abi.encodePacked(kam)), KeyPurposes.MANAGEMENT),
-            "the last MANAGEMENT key survives the selector drop"
+            "the module's key survives the selector drop"
         );
     }
 
@@ -594,8 +703,9 @@ contract SmartAccountTest is OnchainIDSetup {
     }
 
     /// @notice Ernest's r3230643398 shape: a CLAIM_ADDER-only key must not be able to dispatch
-    ///         an arbitrary external call. The executor-as-key path mirrors what `_validateUserOp`
-    ///         would do for a UserOp signer with the same purpose.
+    ///         an arbitrary external call. The executor-as-key path mirrors the scoping
+    ///         {ERC734Validator} applies to a UserOp signer with the same purpose — the
+    ///         account itself only purpose-checks executor callers.
     function test_executeFromExecutor_claimAdderExecutor_cannotCallExternal() public {
         TestExecutor testExec = new TestExecutor();
         vm.startPrank(alice);
@@ -848,7 +958,8 @@ contract SmartAccountTest is OnchainIDSetup {
     }
 
     /// @notice Happy path: ACTION key signs a UserOp that calls an external target.
-    ///         All three gates pass (validator + ACTION purpose + per-target rule).
+    ///         All three gates pass, all inside the installed {ERC734Validator}:
+    ///         signature + ACTION membership + per-target rule.
     function test_validateUserOp_actionKey_externalTarget_succeeds() public {
         Counter counter = new Counter();
         bytes memory innerCall = abi.encodeCall(Counter.increment, ());
@@ -882,11 +993,10 @@ contract SmartAccountTest is OnchainIDSetup {
         );
     }
 
-    /// @notice A validator that is installed but NOT granted ACTION cannot authorize
-    ///         a userOp against an external target. Under "validators-as-keys" the
-    ///         per-target rule is checked against `hashAddress(validator)`, not
-    ///         against the recovered signer, so an unauthorized validator fails
-    ///         even when its signature is cryptographically valid.
+    /// @notice A validator that is installed but NOT granted any purpose can still
+    ///         authorize a userOp against an external target: the account performs no
+    ///         ERC-734 purpose check on the user-op path, so the installed validator
+    ///         alone decides whether the signature authorizes the call.
     /// @dev Documents the same trade-off from the validator-authorization angle. Previously
     ///      the account required the installed validator to hold an ACTION purpose to act.
     ///      That check moved out of the account: the OZ base only dispatches to an installed

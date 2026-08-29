@@ -1,4 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0
+//
+// ONCHAINID Smart Contracts
+// Digital identities for the T-REX ecosystem.
+//
+// Copyright (C) 2026 Digital Asset Operational Services ISAC Ltd. ("T-REX Network")
+//
+// This file is part of the ONCHAINID smart contract suite.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 pragma solidity ^0.8.27;
 
 import { Structs } from "../storage/Structs.sol";
@@ -6,10 +27,15 @@ import { Structs } from "../storage/Structs.sol";
 /**
  * @dev interface of the ERC735 (Claim Holder) standard as defined in the EIP.
  *
- * Note on ABI: this interface follows the EIP-735 shape, with one OnchainID-specific
- * adjustment: the claim's signed payload (`data`) is structured as `Structs.ClaimData`
- * (`issuedAt`, `validUntil`, `payload`) instead of raw bytes. This makes typed-data
- * signing legible to wallets and lets claims carry time bounds without convention.
+ * Note on ABI: this interface follows the EIP-735 shape, with two OnchainID-specific
+ * adjustments. The claim's signed payload (`data`) is structured as `Structs.ClaimData`
+ * (`issuedAt`, `validUntil`, `payload`) instead of raw bytes, which makes typed-data
+ * signing legible to wallets and lets claims carry time bounds without convention. And
+ * the events carry the subject identity as their first indexed field: the claim registry
+ * is served by a module singleton shared across identities, so neither the emitter
+ * address nor `claimId` (derived from `(issuer, topic)` alone) can attribute a log to an
+ * identity. `claimId` is unindexed to make room — it stays filterable through the
+ * indexed `topic` and `issuer` it is derived from.
  */
 interface IERC735 {
 
@@ -19,7 +45,8 @@ interface IERC735 {
      * Specification: MUST be triggered when a claim was successfully added.
      */
     event ClaimAdded(
-        bytes32 indexed claimId,
+        address indexed identity,
+        bytes32 claimId,
         uint256 indexed topic,
         uint256 scheme,
         address indexed issuer,
@@ -34,7 +61,8 @@ interface IERC735 {
      * Specification: MUST be triggered when removeClaim was successfully called.
      */
     event ClaimRemoved(
-        bytes32 indexed claimId,
+        address indexed identity,
+        bytes32 claimId,
         uint256 indexed topic,
         uint256 scheme,
         address indexed issuer,
@@ -49,7 +77,8 @@ interface IERC735 {
      * Specification: MUST be triggered when addClaim was successfully called on an existing claimId.
      */
     event ClaimChanged(
-        bytes32 indexed claimId,
+        address indexed identity,
+        bytes32 claimId,
         uint256 indexed topic,
         uint256 scheme,
         address indexed issuer,
