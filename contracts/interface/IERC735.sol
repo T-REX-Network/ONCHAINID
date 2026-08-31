@@ -97,9 +97,11 @@ interface IERC735 {
      * _signature is over an EIP-712 typed data hash computed by the issuer contract's `getClaimHash()`.
      * The EIP-712 type is:
      *   `Claim(uint256 topic,address subject,ClaimData data)`
-     *   `ClaimData(uint256 issuedAt,uint256 validUntil,bytes32 metadataHash,bytes payload)`
-     * `_data.metadataHash` must equal `keccak256(abi.encode(_scheme, keccak256(bytes(_uri))))`,
-     * which binds `_scheme` and `_uri` to the signature; a mismatch reverts.
+     *   `ClaimData(uint256 issuedAt,uint256 validUntil,Metadata metadata,bytes payload)`
+     *   `Metadata(uint256 scheme,string uri)`
+     * `_data.metadataHash` must equal the EIP-712 hash of `Metadata(_scheme, _uri)`, which binds
+     * both fields to the signature; a mismatch reverts. Signers see the actual scheme and uri
+     * in their wallet, while on-chain only the struct hash is stored.
      * Claim IDs are generated using `keccak256(abi.encode(address issuer_address, uint256 topic))`.
      */
     function addClaim(

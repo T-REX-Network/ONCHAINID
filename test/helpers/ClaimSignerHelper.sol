@@ -10,8 +10,9 @@ import { Vm } from "forge-std/Vm.sol";
 ///         follows ERC-7913 (`len==20` for EOA / ERC-1271; `len>20` for verifier(20) || key(rest)).
 ///         The claim is signed against the nested EIP-712 struct
 ///         `Claim(uint256 topic,address subject,ClaimData data)` with
-///         `ClaimData(uint256 issuedAt,uint256 validUntil,bytes32 metadataHash,bytes payload)`.
-///         `metadataHash` must commit to the scheme and uri the claim is added with.
+///         `ClaimData(uint256 issuedAt,uint256 validUntil,Metadata metadata,bytes payload)` and
+///         `Metadata(uint256 scheme,string uri)`. `metadataHash` holds the hash of the Metadata
+///         struct and must commit to the scheme and uri the claim is added with.
 library ClaimSignerHelper {
 
     struct Claim {
@@ -35,9 +36,12 @@ library ClaimSignerHelper {
         return keccak256(abi.encodePacked(addr));
     }
 
-    /// @notice The scheme+uri commitment `_addClaim` checks `ClaimData.metadataHash` against.
+    bytes32 internal constant METADATA_TYPEHASH = keccak256("Metadata(uint256 scheme,string uri)");
+
+    /// @notice The scheme+uri commitment `_addClaim` checks `ClaimData.metadataHash` against:
+    ///         the EIP-712 hash of `Metadata(uint256 scheme,string uri)`.
     function metadataHash(uint256 scheme, string memory uri) internal pure returns (bytes32) {
-        return keccak256(abi.encode(scheme, keccak256(bytes(uri))));
+        return keccak256(abi.encode(METADATA_TYPEHASH, scheme, keccak256(bytes(uri))));
     }
 
     /// @notice Signs a claim using the issuer contract's EIP-712 domain.

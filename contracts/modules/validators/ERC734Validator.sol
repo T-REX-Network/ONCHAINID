@@ -135,12 +135,19 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     ///      rule for nested struct types.
     bytes32 internal constant _CLAIM_TYPEHASH = keccak256(
         "Claim(uint256 topic,address subject,ClaimData data)"
-        "ClaimData(uint256 issuedAt,uint256 validUntil,bytes32 metadataHash,bytes payload)"
+        "ClaimData(uint256 issuedAt,uint256 validUntil,Metadata metadata,bytes payload)"
+        "Metadata(uint256 scheme,string uri)"
     );
 
     /// @dev EIP-712 typehash for the nested `ClaimData` envelope.
-    bytes32 internal constant _CLAIM_DATA_TYPEHASH =
-        keccak256("ClaimData(uint256 issuedAt,uint256 validUntil,bytes32 metadataHash,bytes payload)");
+    bytes32 internal constant _CLAIM_DATA_TYPEHASH = keccak256(
+        "ClaimData(uint256 issuedAt,uint256 validUntil,Metadata metadata,bytes payload)"
+        "Metadata(uint256 scheme,string uri)"
+    );
+
+    /// @dev EIP-712 typehash for the nested `Metadata` struct. Signers see the actual scheme and
+    ///      uri in their wallet instead of an opaque hash.
+    bytes32 internal constant _METADATA_TYPEHASH = keccak256("Metadata(uint256 scheme,string uri)");
 
     /// @notice Emitted when a claim digest is marked revoked by the issuer. Holder-side removals
     ///         emit `ClaimRemoved` (from IERC735) instead.
@@ -873,9 +880,10 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         emit ClaimAddedTo(address(_identity), _topic, _signature, _data);
     }
 
-    /// @notice The `metadataHash` a claim's `ClaimData` must carry for `_scheme` and `_uri`.
+    /// @notice The `metadataHash` a claim's `ClaimData` must carry for `_scheme` and `_uri`:
+    ///         the EIP-712 hash of `Metadata(uint256 scheme,string uri)`.
     function getMetadataHash(uint256 _scheme, string memory _uri) public pure returns (bytes32) {
-        return keccak256(abi.encode(_scheme, keccak256(bytes(_uri))));
+        return keccak256(abi.encode(_METADATA_TYPEHASH, _scheme, keccak256(bytes(_uri))));
     }
 
     // --- claims internals ------------------------------------------------

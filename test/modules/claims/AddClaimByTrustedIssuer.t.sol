@@ -337,7 +337,9 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
     function test_getMetadataHash_matchesTheCheckedCommitment() public view {
         assertEq(
             onchainidSetup.signatureValidator.getMetadataHash(7, "ipfs://doc"),
-            keccak256(abi.encode(uint256(7), keccak256(bytes("ipfs://doc"))))
+            keccak256(
+                abi.encode(keccak256("Metadata(uint256 scheme,string uri)"), uint256(7), keccak256(bytes("ipfs://doc")))
+            )
         );
     }
 
