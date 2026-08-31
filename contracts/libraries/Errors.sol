@@ -325,6 +325,9 @@ library Errors {
     /// @notice Topic 0 is the "no claim" sentinel and cannot be used for a stored claim.
     error InvalidClaimTopic();
 
+    /// @notice The submitted scheme and uri do not match the metadataHash signed in the claim data.
+    error ClaimMetadataMismatch(uint256 scheme, string uri);
+
     /* ----- SmartAccount ----- */
 
     /// @notice The signature is invalid.

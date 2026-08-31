@@ -96,7 +96,7 @@ contract ClaimsTest is OnchainIDSetup {
     uint256 internal claimTopic = uint256(keccak256(bytes("test")));
 
     function _claimData(bytes memory payload) internal view returns (Structs.ClaimData memory) {
-        return Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: payload });
+        return Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, metadataHash: 0, payload: payload });
     }
 
     // ============ Dynamic field caps ============
@@ -133,6 +133,7 @@ contract ClaimsTest is OnchainIDSetup {
     function test_AddClaim_AcceptsFieldsAtCap() public {
         Structs.ClaimData memory claimData = _claimData(new bytes(Structs.MAX_CLAIM_PAYLOAD_LENGTH));
         string memory uri = string(new bytes(Structs.MAX_CLAIM_URI_LENGTH));
+        claimData.metadataHash = ClaimSignerHelper.metadataHash(1, uri);
 
         vm.prank(alice);
         aliceIdentity.addKey(ClaimSignerHelper.addressToKey(alice), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
@@ -157,8 +158,12 @@ contract ClaimsTest is OnchainIDSetup {
     ///         still be removable, so the second removal cannot trip on the marked digest.
     function test_RemoveClaim_ReAddedExternalIssuerClaim() public {
         ExternalIssuer issuer = new ExternalIssuer();
-        Structs.ClaimData memory claimData =
-            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: hex"0042" });
+        Structs.ClaimData memory claimData = Structs.ClaimData({
+            issuedAt: block.timestamp,
+            validUntil: 0,
+            metadataHash: ClaimSignerHelper.metadataHash(1, "uri"),
+            payload: hex"0042"
+        });
 
         vm.prank(alice);
         bytes32 claimId =

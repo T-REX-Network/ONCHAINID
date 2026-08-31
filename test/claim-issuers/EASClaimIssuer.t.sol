@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
+import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 import {
     AttestationRequest,
@@ -78,7 +79,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         adapter.setAttester(TOPIC, attester, true);
         vm.stopPrank();
 
-        emptyData = Structs.ClaimData({ issuedAt: 0, validUntil: 0, payload: "" });
+        emptyData = Structs.ClaimData({ issuedAt: 0, validUntil: 0, metadataHash: 0, payload: "" });
     }
 
     /* ----- helpers ----- */
@@ -116,7 +117,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
     ///      attestation. This is what a caller builds before adding the claim on-chain.
     function _mirrorOf(bytes32 uid) internal view returns (Structs.ClaimData memory) {
         Attestation memory a = IEAS(EAS_ADDR).getAttestation(uid);
-        return Structs.ClaimData({ issuedAt: a.time, validUntil: a.expirationTime, payload: a.data });
+        return Structs.ClaimData({ issuedAt: a.time, validUntil: a.expirationTime, metadataHash: 0, payload: a.data });
     }
 
     /// @dev Revoke an attestation as its attester (EAS enforces `msg.sender == attester`).
@@ -426,6 +427,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
 
         Structs.ClaimData memory forged = _mirrorOf(uid);
         forged.payload = hex"beef";
+        forged.metadataHash = ClaimSignerHelper.metadataHash(1, "eas://uid");
 
         vm.prank(alice);
         vm.expectRevert(Errors.InvalidClaim.selector);
@@ -439,6 +441,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         bytes32 uid = _attestAs(attester, SCHEMA, address(aliceIdentity), 0, payload);
 
         Structs.ClaimData memory data = _mirrorOf(uid);
+        data.metadataHash = ClaimSignerHelper.metadataHash(1, "");
 
         vm.prank(alice);
         bytes32 claimId =
@@ -456,8 +459,12 @@ contract EASClaimIssuerTest is OnchainIDSetup {
     function test_removeClaim_worksForDomainlessIssuer() public {
         bytes32 uid = _attestValid(address(aliceIdentity));
         // The envelope has to mirror the attestation: same issue time, no expiry, no payload.
-        Structs.ClaimData memory mirrored =
-            Structs.ClaimData({ issuedAt: IEAS(EAS_ADDR).getAttestation(uid).time, validUntil: 0, payload: hex"" });
+        Structs.ClaimData memory mirrored = Structs.ClaimData({
+            issuedAt: IEAS(EAS_ADDR).getAttestation(uid).time,
+            validUntil: 0,
+            metadataHash: ClaimSignerHelper.metadataHash(1, "https://example.com/eas"),
+            payload: hex""
+        });
 
         vm.prank(carol);
         bytes32 claimId = IIdentity(address(aliceIdentity))
@@ -473,9 +480,11 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         assertEq(topic, 0, "claim record must be gone");
 
         // Re-adding is still blocked: the adapter re-reads EAS and sees the revocation.
+        Structs.ClaimData memory reAdd = emptyData;
+        reAdd.metadataHash = ClaimSignerHelper.metadataHash(1, "");
         vm.prank(carol);
         vm.expectRevert(Errors.InvalidClaim.selector);
-        IIdentity(address(aliceIdentity)).addClaim(TOPIC, 1, address(adapter), _encodeUid(uid), emptyData, "");
+        IIdentity(address(aliceIdentity)).addClaim(TOPIC, 1, address(adapter), _encodeUid(uid), reAdd, "");
     }
 
     /// @notice An unlinked recipient resolves to the zero identity on the factory, so a query
@@ -559,6 +568,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         bytes32 uid = _attestValid(address(aliceIdentity));
         bytes memory sig = _encodeUid(uid);
         Structs.ClaimData memory data = _mirrorOf(uid);
+        data.metadataHash = ClaimSignerHelper.metadataHash(1, "eas://uid");
 
         vm.prank(alice);
         bytes32 claimId = IIdentity(address(aliceIdentity)).addClaim(TOPIC, 1, address(adapter), sig, data, "eas://uid");
@@ -582,6 +592,7 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         bytes32 uid = _attestValid(address(aliceIdentity));
         bytes memory sig = _encodeUid(uid);
         Structs.ClaimData memory data = _mirrorOf(uid);
+        data.metadataHash = ClaimSignerHelper.metadataHash(1, "eas://uid");
 
         vm.prank(alice);
         bytes32 claimId = IIdentity(address(aliceIdentity)).addClaim(TOPIC, 1, address(adapter), sig, data, "eas://uid");
@@ -601,9 +612,13 @@ contract EASClaimIssuerTest is OnchainIDSetup {
         bytes32 uid = keccak256("never-issued");
         bytes memory sig = _encodeUid(uid);
 
+        Structs.ClaimData memory data = Structs.ClaimData({
+            issuedAt: 0, validUntil: 0, metadataHash: ClaimSignerHelper.metadataHash(1, ""), payload: ""
+        });
+
         vm.prank(alice);
         vm.expectRevert(Errors.InvalidClaim.selector);
-        IIdentity(address(aliceIdentity)).addClaim(TOPIC, 1, address(adapter), sig, emptyData, "");
+        IIdentity(address(aliceIdentity)).addClaim(TOPIC, 1, address(adapter), sig, data, "");
     }
 
     /* ----- unsupported surface ----- */

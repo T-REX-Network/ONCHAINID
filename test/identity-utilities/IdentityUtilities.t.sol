@@ -897,10 +897,18 @@ contract IdentityUtilitiesTest is Test {
         );
 
         // Build claims
-        Structs.ClaimData memory claimData1 =
-            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: abi.encode("verified") });
-        Structs.ClaimData memory claimData2 =
-            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: abi.encode(uint8(2)) });
+        Structs.ClaimData memory claimData1 = Structs.ClaimData({
+            issuedAt: block.timestamp,
+            validUntil: 0,
+            metadataHash: ClaimSignerHelper.metadataHash(1, "https://example.com/kyc"),
+            payload: abi.encode("verified")
+        });
+        Structs.ClaimData memory claimData2 = Structs.ClaimData({
+            issuedAt: block.timestamp,
+            validUntil: 0,
+            metadataHash: ClaimSignerHelper.metadataHash(1, "https://example.com/aml"),
+            payload: abi.encode(uint8(2))
+        });
 
         bytes memory sig1 = ClaimSignerHelper.signClaim(
             claimIssuerOwnerPk, claimIssuerOwner, address(ci), address(identity), 1001, claimData1
@@ -962,8 +970,12 @@ contract IdentityUtilitiesTest is Test {
         identity.addKey(ClaimSignerHelper.addressToKey(admin), KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
 
         // Sign claim properly for self-attested claim
-        Structs.ClaimData memory claimData =
-            Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: hex"" });
+        Structs.ClaimData memory claimData = Structs.ClaimData({
+            issuedAt: block.timestamp,
+            validUntil: 0,
+            metadataHash: ClaimSignerHelper.metadataHash(1, "https://example.com/claim"),
+            payload: hex""
+        });
         bytes memory signature =
             ClaimSignerHelper.signClaim(adminPk, admin, address(identity), address(identity), 3004, claimData);
 
@@ -989,7 +1001,8 @@ contract IdentityUtilitiesTest is Test {
         TestIdentityUtilities testUtil = new TestIdentityUtilities();
         (Identity identity,) = IdentityHelper.deployIdentityWithProxy(admin);
 
-        Structs.ClaimData memory emptyData = Structs.ClaimData({ issuedAt: 0, validUntil: 0, payload: hex"" });
+        Structs.ClaimData memory emptyData =
+            Structs.ClaimData({ issuedAt: 0, validUntil: 0, metadataHash: 0, payload: hex"" });
         bool result = testUtil.checkIsClaimValid(address(identity), 3007, address(0), hex"", emptyData);
         assertFalse(result);
     }
@@ -1001,7 +1014,8 @@ contract IdentityUtilitiesTest is Test {
         // Deploy a contract that does not implement isClaimValid (catches and returns false)
         TestContract invalidContract = new TestContract();
 
-        Structs.ClaimData memory emptyData = Structs.ClaimData({ issuedAt: 0, validUntil: 0, payload: hex"" });
+        Structs.ClaimData memory emptyData =
+            Structs.ClaimData({ issuedAt: 0, validUntil: 0, metadataHash: 0, payload: hex"" });
         bool result = testUtil.checkIsClaimValid(address(identity), 3008, address(invalidContract), hex"", emptyData);
         assertFalse(result);
     }

@@ -27,7 +27,12 @@ contract ClaimToTest is OnchainIDSetup {
         view
         returns (bytes memory signature, Structs.ClaimData memory data)
     {
-        data = Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, payload: hex"1337" });
+        data = Structs.ClaimData({
+            issuedAt: block.timestamp,
+            validUntil: 0,
+            metadataHash: ClaimSignerHelper.metadataHash(1, "uri"),
+            payload: hex"1337"
+        });
         signature = ClaimSignerHelper.signClaim(
             claimIssuerOwnerPk, claimIssuerOwner, address(claimIssuer), subject, TOPIC, data
         );

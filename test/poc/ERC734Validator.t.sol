@@ -250,7 +250,7 @@ contract ERC734ValidatorTest is OnchainIDSetup {
                     uint256(1),
                     address(claimIssuer),
                     bytes("s"),
-                    Structs.ClaimData({ issuedAt: 0, validUntil: 0, payload: bytes("d") }),
+                    Structs.ClaimData({ issuedAt: 0, validUntil: 0, metadataHash: 0, payload: bytes("d") }),
                     "u"
                 )
             );
@@ -285,7 +285,7 @@ contract ERC734ValidatorTest is OnchainIDSetup {
                 uint256(1),
                 address(claimIssuer),
                 bytes("s"),
-                Structs.ClaimData({ issuedAt: 0, validUntil: 0, payload: bytes("d") }),
+                Structs.ClaimData({ issuedAt: 0, validUntil: 0, metadataHash: 0, payload: bytes("d") }),
                 "u"
             )
         );
