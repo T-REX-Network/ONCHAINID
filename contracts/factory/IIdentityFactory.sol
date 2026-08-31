@@ -83,9 +83,6 @@ interface IIdentityFactory {
     // event emitted when a wallet is revoked from its identity (binding stays on-chain, status flips)
     event AccountRevoked(bytes account, address indexed identity);
 
-    // event emitted when a token is linked to an ONCHAINID contract (tokens are EVM-only)
-    event TokenLinked(address indexed token, address indexed identity);
-
     /// @notice Emitted when the policy for a given identity type is set. Setting a policy
     ///         registers the type. `selfDeployable` gates {createIdentity}: true allows
     ///         self-deploy, false reserves the type for {createIdentityFor}. `singleBinding`
