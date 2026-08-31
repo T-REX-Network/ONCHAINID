@@ -513,6 +513,55 @@ contract IdentityFactoryTest is OnchainIDSetup {
         onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 7, true, false);
     }
 
+    /// @notice One transaction can deploy several identities via multicall.
+    function test_multicall_batchesCreateIdentityFor() public {
+        bytes[] memory calls = new bytes[](2);
+        calls[0] = abi.encodeCall(
+            onchainidSetup.idFactory.createIdentityFor,
+            (carol, IdentityTypes.INDIVIDUAL, "batch-carol", _makeSingleMgmtKeys(carol))
+        );
+        calls[1] = abi.encodeCall(
+            onchainidSetup.idFactory.createIdentityFor,
+            (david, IdentityTypes.INDIVIDUAL, "batch-david", _makeSingleMgmtKeys(david))
+        );
+
+        vm.prank(alice);
+        bytes[] memory results = onchainidSetup.idFactory.multicall(calls);
+
+        address carolIdentity = abi.decode(results[0], (address));
+        address davidIdentity = abi.decode(results[1], (address));
+        assertTrue(carolIdentity != address(0));
+        assertTrue(davidIdentity != address(0));
+        assertTrue(carolIdentity != davidIdentity);
+    }
+
+    /// @notice A failing entry reverts the whole batch: nothing is deployed.
+    function test_multicall_revertsAtomically() public {
+        bytes[] memory calls = new bytes[](2);
+        calls[0] = abi.encodeCall(
+            onchainidSetup.idFactory.createIdentityFor,
+            (carol, IdentityTypes.INDIVIDUAL, "batch-dup", _makeSingleMgmtKeys(carol))
+        );
+        // Same account + salt + keys -> same CREATE3 slot -> the second deploy reverts.
+        calls[1] = calls[0];
+
+        vm.prank(alice);
+        vm.expectRevert();
+        onchainidSetup.idFactory.multicall(calls);
+    }
+
+    /// @notice multicall preserves msg.sender, so restricted functions stay gated.
+    function test_multicall_restrictedStillEnforcedForNonAdmin() public {
+        bytes[] memory calls = new bytes[](1);
+        calls[0] = abi.encodeCall(
+            onchainidSetup.idFactory.setIdentityTypePolicy, (IdentityTypes.CLAIM_ISSUER, 7, true, false)
+        );
+
+        vm.prank(alice);
+        vm.expectRevert(); // AccessManagerUnauthorizedAccount
+        onchainidSetup.idFactory.multicall(calls);
+    }
+
     /// @notice createIdentity rejects unregistered types up front (same as createIdentityFor).
     function test_createIdentity_revertOnUnregisteredType() public {
         uint256 unknownType = 99999999;

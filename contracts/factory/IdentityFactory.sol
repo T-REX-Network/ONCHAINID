@@ -25,6 +25,7 @@ pragma solidity ^0.8.27;
 import { AccessManaged } from "@openzeppelin/contracts/access/manager/AccessManaged.sol";
 import { IAccessManager } from "@openzeppelin/contracts/access/manager/IAccessManager.sol";
 import { ERC7786Recipient } from "@openzeppelin/contracts/crosschain/ERC7786Recipient.sol";
+import { Multicall } from "@openzeppelin/contracts/utils/Multicall.sol";
 import { Nonces } from "@openzeppelin/contracts/utils/Nonces.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import { SignatureChecker } from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
@@ -73,7 +74,11 @@ import { IIdentityFactory } from "./IIdentityFactory.sol";
 ///
 ///         Wallets and signers share the same bytes shape. Bindings are sticky and
 ///         revocation is terminal.
-contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC7786Recipient {
+///
+///         Multicall allows batching several calls in one transaction, e.g. deploying
+///         many identities at once. msg.sender is preserved in sub-calls, so role checks
+///         behave as in direct calls.
+contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC7786Recipient, Multicall {
 
     using EnumerableSet for EnumerableSet.Bytes32Set;
 
