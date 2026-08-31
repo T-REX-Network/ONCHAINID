@@ -39,7 +39,6 @@ import { Identity } from "../Identity.sol";
 import { IIdentity } from "../interface/IIdentity.sol";
 import { Errors } from "../libraries/Errors.sol";
 import { hashAddress } from "../libraries/Hashing.sol";
-import { IdentityTypes } from "../libraries/IdentityTypes.sol";
 import { KeyPurposes } from "../libraries/KeyPurposes.sol";
 import { KeyTypes } from "../libraries/KeyTypes.sol";
 import { Create3 } from "@openzeppelin/contracts/utils/Create3.sol";
@@ -641,7 +640,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     ///      keys and modules are applied without any cross-contract dance and without the
     ///      factory ever holding a MANAGEMENT key. After deploy we check the post-state
     ///      shape (at least one MANAGEMENT key), mark the identity as factory-deployed,
-    ///      auto-link the account, and emit TokenLinked for ASSET.
+    ///      and auto-link the account.
     function _doCreateIdentity(
         bytes memory _account,
         uint256 _identityType,
@@ -669,10 +668,11 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // is auto-linked as the identity's sole wallet like any other signer; the difference
         // is the identity's `type`. Off-chain readers can recover the token by reading
         // `getAccounts(identity, 0, 1)[0]` and checking `getIdentityType()`.
+        //
+        // Refuse a zero account: it gets linked as a wallet below and bindings are sticky,
+        // so the identity would be stuck with an account nobody can sign for.
         (, address account) = InteroperableAddress.parseEvmV1(_account);
-        if (_identityType == IdentityTypes.ASSET) {
-            require(account != address(0), Errors.ZeroAddress());
-        }
+        require(account != address(0), Errors.ZeroAddress());
 
         // Salt covers type, user salt, keys and the account that gets auto-linked, but not
         // modules: a module config change should not move the identity's address, so the
@@ -702,10 +702,6 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // to be a non-factory caller.
         _storage().isFactoryIdentity[identity] = true;
         _linkAccount(_account, identity);
-
-        if (_identityType == IdentityTypes.ASSET) {
-            emit TokenLinked(account, identity);
-        }
     }
 
     /// @dev Link rule. Enforces sticky binding and terminal revocation. Tokens and
