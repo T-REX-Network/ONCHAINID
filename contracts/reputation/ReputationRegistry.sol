@@ -25,7 +25,6 @@ pragma solidity ^0.8.27;
 import { AccessManaged } from "@openzeppelin/contracts/access/manager/AccessManaged.sol";
 
 import { IIdentityFactory } from "../factory/IIdentityFactory.sol";
-import { IIdentity } from "../interface/IIdentity.sol";
 import { Errors } from "../libraries/Errors.sol";
 import { IReputationRegistry } from "./IReputationRegistry.sol";
 
@@ -41,20 +40,19 @@ import { IReputationRegistry } from "./IReputationRegistry.sol";
 ///           (manager-revoked trust). This path bypasses the factory check
 ///           because the manager may want to score externally-deployed
 ///           identities by hand.
-///         * No explicit entry returns `defaultFor[type]` only if the identity
-///           was deployed by the factory (verified via the immutable
-///           {IIdentityFactory} reference). Any address that was not deployed by
-///           the factory and has no explicit entry reads `0`. This stops a
-///           random contract from inheriting the CLAIM_ISSUER default just by
-///           returning `5` from {getIdentityType}; only the factory can mint
-///           that trust signal.
+///         * No explicit entry returns `defaultFor[type]`, with the type read
+///           from the factory's record (via the immutable {IIdentityFactory}
+///           reference), never from the identity. Any address the factory did
+///           not deploy has a zero record and reads `0`. This stops a random
+///           contract from inheriting the CLAIM_ISSUER default just by
+///           self-declaring a type; only the factory can mint that trust signal.
 ///
 ///         Storage is namespaced under ERC-7201 so a future proxy variant slots
 ///         in without a layout migration. v1 ships non-upgradeable.
 contract ReputationRegistry is IReputationRegistry, AccessManaged {
 
-    /// @notice The factory whose `isFactoryIdentity` view gates the default-tier
-    ///         fallback. Immutable so the trust anchor is pinned at construction.
+    /// @notice The factory whose type record gates the default-tier fallback.
+    ///         Immutable so the trust anchor is pinned at construction.
     IIdentityFactory public immutable factory;
 
     /// @dev EIP-7201 namespaced storage. All mutable state lives here so a
@@ -126,13 +124,14 @@ contract ReputationRegistry is IReputationRegistry, AccessManaged {
         if (entry.setAt != 0) {
             return entry.score;
         }
-        // Lazy fallback: gated on factory membership so an arbitrary contract
-        // that self-declares its type cannot inherit a default. Manager-set
+        // Lazy fallback: the type comes from the factory's record, never from the
+        // identity, so an arbitrary contract that self-declares its type cannot
+        // inherit a default. A zero record means not factory-deployed. Manager-set
         // entries above bypass this gate by design.
-        if (!factory.isFactoryIdentity(identity)) {
+        uint256 identityType = factory.identityTypeOf(identity);
+        if (identityType == 0) {
             return 0;
         }
-        uint256 identityType = IIdentity(identity).getIdentityType();
         return _storage().defaultFor[identityType];
     }
 

@@ -689,7 +689,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // guaranteed here. Asset identities are deployed for a token contract and the token
         // is auto-linked as the identity's sole wallet like any other signer; the difference
         // is the identity's `type`. Off-chain readers can recover the token by reading
-        // `getAccounts(identity, 0, 1)[0]` and checking `getIdentityType()`.
+        // `getAccounts(identity, 0, 1)[0]` and checking `identityTypeOf(identity)`.
         //
         // Refuse a zero account: it gets linked as a wallet below and bindings are sticky,
         // so the identity would be stuck with an account nobody can sign for.
