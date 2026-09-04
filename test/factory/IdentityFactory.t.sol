@@ -1017,6 +1017,99 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertTrue(onchainidSetup.idFactory.isFactoryIdentity(identityAddr));
     }
 
+    // ============ identity type record ============
+
+    function test_createIdentity_recordsTypeAndEmitsEvent() public {
+        // The identity address isn't known before the call, so only the event data
+        // (the type) is checked, not the indexed address.
+        vm.expectEmit(false, false, false, true);
+        emit IIdentityFactory.IdentityTypeRecorded(address(0), IdentityTypes.INDIVIDUAL);
+
+        vm.prank(david);
+        address identityAddr = onchainidSetup.idFactory
+            .createIdentity(IdentityTypes.INDIVIDUAL, "typeRecordSelfSalt", _makeSingleMgmtKeys(david));
+
+        assertEq(onchainidSetup.idFactory.identityTypeOf(identityAddr), IdentityTypes.INDIVIDUAL);
+    }
+
+    function test_createIdentityFor_recordsType() public {
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(david);
+        vm.prank(deployer);
+        address identityAddr =
+            onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "typeRecordForSalt", keys);
+        assertEq(onchainidSetup.idFactory.identityTypeOf(identityAddr), IdentityTypes.INDIVIDUAL);
+    }
+
+    function test_createIdentityFor_recordsTypeForSingleBindingType() public {
+        address token = makeAddr("typeRecordToken");
+        vm.prank(deployer);
+        address identityAddr = onchainidSetup.idFactory
+            .createIdentityFor(token, IdentityTypes.ASSET, "typeRecordAssetSalt", _makeSingleMgmtKeys(token));
+        assertEq(onchainidSetup.idFactory.identityTypeOf(identityAddr), IdentityTypes.ASSET);
+    }
+
+    function test_identityTypeOf_zeroForNonFactoryContract() public {
+        assertEq(onchainidSetup.idFactory.identityTypeOf(alice), 0);
+        assertFalse(onchainidSetup.idFactory.isFactoryIdentity(alice));
+    }
+
+    function test_getIdentityWithType_returnsPairForLinkedWallet() public {
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(david);
+        vm.prank(deployer);
+        address identityAddr =
+            onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "typePairSalt", keys);
+
+        bytes memory davidAcc = InteroperableAddress.formatEvmV1(block.chainid, david);
+        (address identity, uint256 identityType) = onchainidSetup.idFactory.getIdentityWithType(davidAcc);
+        assertEq(identity, identityAddr);
+        assertEq(identityType, IdentityTypes.INDIVIDUAL);
+    }
+
+    function test_getIdentityWithType_zeroForUnlinkedWallet() public view {
+        bytes memory davidAcc = InteroperableAddress.formatEvmV1(block.chainid, david);
+        (address identity, uint256 identityType) = onchainidSetup.idFactory.getIdentityWithType(davidAcc);
+        assertEq(identity, address(0));
+        assertEq(identityType, 0);
+    }
+
+    function test_getIdentityWithType_zeroForRevokedWallet() public {
+        bytes memory davidAcc = InteroperableAddress.formatEvmV1(block.chainid, david);
+        uint256 expiry = block.timestamp + 1 hours;
+        uint256 nonce = onchainidSetup.idFactory.nonceForAccount(davidAcc);
+        bytes memory sig = _signLink(davidPk, davidAcc, address(aliceIdentity), nonce, expiry);
+        _execLink(aliceIdentity, alice, davidAcc, sig, nonce, expiry);
+        _execRevoke(aliceIdentity, alice, davidAcc);
+
+        (address identity, uint256 identityType) = onchainidSetup.idFactory.getIdentityWithType(davidAcc);
+        assertEq(identity, address(0));
+        assertEq(identityType, 0);
+    }
+
+    function test_setIdentityTypePolicy_revertForTypeZero() public {
+        vm.prank(deployer);
+        vm.expectRevert(Errors.ZeroIdentityType.selector);
+        onchainidSetup.idFactory.setIdentityTypePolicy(0, type(uint64).max, true, false);
+    }
+
+    /// @dev Both creation routes must leave a nonzero record: a zero record would make
+    ///      the identity indistinguishable from a contract the factory never deployed.
+    function testFuzz_createIdentity_alwaysRecordsNonzeroType(bytes32 saltSeed, bool selfDeploy) public {
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(david);
+        string memory salt = vm.toString(saltSeed);
+
+        address identityAddr;
+        if (selfDeploy) {
+            vm.prank(david);
+            identityAddr = onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, salt, keys);
+        } else {
+            vm.prank(deployer);
+            identityAddr = onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, salt, keys);
+        }
+
+        assertGt(onchainidSetup.idFactory.identityTypeOf(identityAddr), 0);
+        assertTrue(onchainidSetup.idFactory.isFactoryIdentity(identityAddr));
+    }
+
     // ============ linkAccount — EIP-712 EOA path ============
 
     function test_linkAccount_eoaSignerLinksThroughIdentity() public {
