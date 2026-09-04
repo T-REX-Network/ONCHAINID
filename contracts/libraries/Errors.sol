@@ -63,11 +63,6 @@ library Errors {
     ///         `PUBLIC_ROLE` for open types.
     error UnknownIdentityType(uint256 identityType);
 
-    /// @notice Reverts when {setIdentityTypePolicy} is called with type 0. In the
-    ///         factory's type record a 0 means "not deployed by this factory", so 0
-    ///         can never be a real type.
-    error ZeroIdentityType();
-
     /// @notice Reverts when {createIdentity} is called for a type whose policy has
     ///         `selfDeployable = false`. Self-deploy is gated per type because some
     ///         types (e.g. ASSET, SMART_CONTRACT) represent contracts, not EOAs, so

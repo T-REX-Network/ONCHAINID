@@ -99,11 +99,6 @@ interface IIdentityFactory {
     ///         identity of that type installs these from then on.
     event IdentityTypeModulesSet(uint256 indexed identityType, Structs.ModuleInstall[] modules);
 
-    /// @notice Emitted once per identity at creation with the type recorded in factory
-    ///         storage. The record never changes, so indexers can rebuild the full
-    ///         identity → type mapping from this event alone.
-    event IdentityTypeRecorded(address indexed identity, uint256 identityType);
-
     /// @notice Emitted when an inbound ERC-7786 message has staged a wallet -> identity
     ///         binding awaiting identity-side confirmation. The link is not active yet.
     event PendingCrossChainLinkProposed(bytes account, address indexed identity, uint256 expiry);
@@ -180,9 +175,7 @@ interface IIdentityFactory {
     ///         (ASSET, SMART_CONTRACT, ...): they keep the account set at deploy and can
     ///         never link or revoke another. Setting a policy registers the type;
     ///         registration is tracked separately from the role, so the AM's `ADMIN_ROLE`
-    ///         (id 0) is usable like any other role. Type 0 reverts: in the type
-    ///         record a 0 means "not deployed by this factory". `restricted` via
-    ///         the AM.
+    ///         (id 0) is usable like any other role. `restricted` via the AM.
     function setIdentityTypePolicy(uint256 _identityType, uint64 _roleId, bool _selfDeployable, bool _singleBinding)
         external;
 
@@ -316,21 +309,9 @@ interface IIdentityFactory {
     /// @notice Number of active wallets currently linked to `identity`.
     function getAccountsCount(address identity) external view returns (uint256);
 
-    /// @notice Resolve a wallet to its bound identity together with the identity's
-    ///         recorded type, in one call. Returns (address(0), 0) when the wallet's
-    ///         status is not `Active`, same rule as {getIdentity}.
-    function getIdentityWithType(bytes calldata account) external view returns (address identity, uint256 identityType);
-
     /// @notice Returns true iff `identity` was deployed by this factory. Used by
     ///         {linkAccount} to reject pulls into non-OnchainID contracts.
     function isFactoryIdentity(address identity) external view returns (bool);
-
-    /// @notice Type recorded for `identity` at creation, 0 for contracts this factory
-    ///         did not deploy. Written once at deploy with no update path, so this is
-    ///         the trustworthy source for type-dependent verification: read the type
-    ///         here rather than from the identity, which is a modular account and
-    ///         answers with whatever its modules say.
-    function identityTypeOf(address identity) external view returns (uint256);
 
     /// @notice Current nonce for a signer. Keyed by `keccak256(account)` cast to address
     ///         so EVM and ERC-7913 signers share the same nonce store.
