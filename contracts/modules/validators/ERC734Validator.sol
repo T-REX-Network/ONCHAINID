@@ -724,9 +724,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     ///        1. The caller wallet resolves through the factory to a non-zero issuer identity
     ///           (i.e. it is a linked account on a factory-deployed identity).
     ///        2. That identity equals the claim's declared issuer (issuer-bound rule).
-    ///        3. The factory's type record for that identity is `CLAIM_ISSUER`. Without this,
-    ///           any identity that happens to be scored above the threshold (e.g. an
-    ///           INDIVIDUAL elevated by the manager) could write claims silently.
+    ///        3. That identity self-declares type `CLAIM_ISSUER`. Without this, any identity
+    ///           that happens to be scored above the threshold (e.g. an INDIVIDUAL elevated by
+    ///           the manager) could write claims silently.
     ///        4. Its reputation in the registry meets the global claim-add threshold.
     ///      `reputationOf` already returns `0` for non-factory identities, so the score check
     ///      implicitly re-confirms factory membership.
@@ -735,7 +735,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         require(callerIdentity != address(0), Errors.CallerNotLinkedToFactoryIdentity(caller));
         require(expectedIssuer == callerIdentity, Errors.DeclaredIssuerMismatch(expectedIssuer, callerIdentity));
         require(
-            factory.identityTypeOf(callerIdentity) == IdentityTypes.CLAIM_ISSUER,
+            IIdentity(callerIdentity).getIdentityType() == IdentityTypes.CLAIM_ISSUER,
             Errors.IdentityNotClaimIssuerType(callerIdentity)
         );
         IReputationRegistry registry = reputationRegistry;
