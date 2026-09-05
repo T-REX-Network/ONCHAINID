@@ -8,6 +8,7 @@ import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import { IERC735 } from "contracts/interface/IERC735.sol";
 import { IIdentity } from "contracts/interface/IIdentity.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
+import { Events } from "contracts/libraries/Events.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { Structs } from "contracts/storage/Structs.sol";
@@ -32,6 +33,8 @@ contract ClaimsTest is OnchainIDSetup {
         );
         assertEq(bobClaim.id, aliceClaim666.id, "same (issuer, topic) => same claimId across identities");
 
+        vm.expectEmit(address(onchainidSetup.signatureValidator));
+        emit Events.CalledBy(bob, IERC735.addClaim.selector);
         vm.expectEmit(true, true, true, true);
         emit IERC735.ClaimAdded(
             address(bobIdentity),

@@ -63,6 +63,8 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
             _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
 
         vm.prank(claimIssuerOwner);
+        vm.expectEmit(address(onchainidSetup.signatureValidator));
+        emit ERC734Validator.ClaimAddedByTrustedIssuer(address(aliceIdentity), claimId, claimIssuerOwner);
         ERC734Validator(address(aliceIdentity))
             .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
 

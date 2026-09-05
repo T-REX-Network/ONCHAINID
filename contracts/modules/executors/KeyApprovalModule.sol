@@ -168,7 +168,8 @@ contract KeyApprovalModule is IERC7579Module, IKeyExecutor {
     function approve(uint256 _id, bool _shouldApprove) external returns (bool success) {
         // 1. Resolve account + ERC-2771 caller, fetch the queued request.
         address account = msg.sender;
-        bytes32 callerKeyHash = hashAddress(_msgSender());
+        address approver = _msgSender();
+        bytes32 callerKeyHash = hashAddress(approver);
         AccountState storage state = _state[account];
         Execution storage execution = state.executions[_id];
 
@@ -193,7 +194,7 @@ contract KeyApprovalModule is IERC7579Module, IKeyExecutor {
             );
         }
 
-        emit Approved(account, _id, _shouldApprove);
+        emit Approved(account, _id, _shouldApprove, approver);
 
         // 4. Approval ⇒ the key that queued the request must still be able to propose, then
         //    dispatch now. A request whose proposer was revoked cannot run, but any authorized

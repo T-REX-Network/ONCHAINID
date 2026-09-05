@@ -19,6 +19,7 @@ import { IERC734 } from "contracts/interface/IERC734.sol";
 import { IERC735 } from "contracts/interface/IERC735.sol";
 import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
+import { Events } from "contracts/libraries/Events.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
@@ -73,6 +74,10 @@ contract SmartAccountTest is OnchainIDSetup {
     function test_execute_externalCall_byActionKey_autoApproves() public {
         Counter counter = new Counter();
 
+        vm.expectEmit(address(aliceIdentity));
+        emit SmartAccount.CallDispatched(
+            address(counter), 0, abi.encodeCall(Counter.increment, ()), address(onchainidSetup.keyApprovalModule)
+        );
         vm.prank(david);
         IKeyExecutor(address(aliceIdentity)).execute(address(counter), 0, abi.encodeCall(Counter.increment, ()));
 
@@ -365,6 +370,10 @@ contract SmartAccountTest is OnchainIDSetup {
         // and own its lifecycle for this test.
         MockStockECDSAValidator validator = new MockStockECDSAValidator();
         vm.startPrank(alice);
+        vm.expectEmit(address(aliceIdentity));
+        emit Events.CalledBy(alice, aliceIdentity.installModule.selector);
+        vm.expectEmit(address(aliceIdentity));
+        emit SmartAccount.ModuleInstallData(MODULE_TYPE_VALIDATOR, address(validator), abi.encodePacked(alice));
         aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), abi.encodePacked(alice));
         // Validators don't need an ERC 734 purpose. We add one anyway so we can check
         // that uninstall cleans it up.
@@ -383,6 +392,8 @@ contract SmartAccountTest is OnchainIDSetup {
         );
 
         vm.prank(alice);
+        vm.expectEmit(address(aliceIdentity));
+        emit Events.CalledBy(alice, aliceIdentity.uninstallModule.selector);
         aliceIdentity.uninstallModule(MODULE_TYPE_VALIDATOR, address(validator), "");
 
         assertFalse(
@@ -966,6 +977,8 @@ contract SmartAccountTest is OnchainIDSetup {
 
         (PackedUserOperation memory userOp, bytes32 userOpHash) = _buildAndSignUserOp(address(counter), innerCall);
 
+        vm.expectEmit(address(onchainidSetup.signatureValidator));
+        emit ERC734Validator.KeyUsed(address(aliceIdentity), keccak256(abi.encodePacked(david)), userOpHash);
         vm.prank(ENTRY_POINT);
         uint256 result = IAccount(address(aliceIdentity)).validateUserOp(userOp, userOpHash, 0);
         assertEq(result, ERC4337Utils.SIG_VALIDATION_SUCCESS, "ACTION + external target must succeed");

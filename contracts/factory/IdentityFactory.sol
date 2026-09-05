@@ -210,7 +210,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
             Errors.ImplementationVersionMismatch(expectedVersion, actualVersion)
         );
         UpgradeableBeacon(beacon).upgradeTo(newImplementation);
-        emit BeaconUpgraded(newImplementation);
+        emit BeaconUpgraded(newImplementation, actualVersion);
     }
 
     /// @dev Shape check for an implementation about to sit behind the beacon. An identity's
@@ -489,12 +489,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     ///      Replay across receiveIds is prevented by the gateway per ERC-7786; we
     ///      add wallet-level replay protection via sticky binding (an active or
     ///      revoked entry blocks fresh proposals from taking effect on confirm).
-    function _processMessage(
-        address, /* gateway */
-        bytes32, /* receiveId */
-        bytes calldata sender,
-        bytes calldata payload
-    )
+    function _processMessage(address gateway, bytes32 receiveId, bytes calldata sender, bytes calldata payload)
         internal
         override
     {
@@ -533,7 +528,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // be confirmed. Safe to overwrite because the status check above rejects
         // any wallet that is already linked or revoked.
         _storage().pendingLinks[key] = PendingLink({ identity: identity, expiry: expiry });
-        emit PendingCrossChainLinkProposed(walletEnvelope, identity, expiry);
+        emit PendingCrossChainLinkProposed(walletEnvelope, identity, expiry, gateway, receiveId);
     }
 
     /// @inheritdoc IIdentityFactory

@@ -157,6 +157,8 @@ contract IdentityFactoryTest is OnchainIDSetup {
         Identity freshImpl = new Identity(address(onchainidSetup.signatureValidator), address(freshFactory));
 
         vm.prank(deployer);
+        vm.expectEmit(address(freshFactory));
+        emit IIdentityFactory.BeaconInitialized(address(freshImpl));
         freshFactory.initializeBeacon(address(freshImpl));
 
         assertGt(committed.code.length, 0, "beacon landed exactly at the committed address");
@@ -167,6 +169,8 @@ contract IdentityFactoryTest is OnchainIDSetup {
     function test_upgradeBeacon_byAuthorizedCaller() public {
         Identity newImpl = new Identity(address(onchainidSetup.signatureValidator), address(onchainidSetup.idFactory));
         vm.prank(deployer);
+        vm.expectEmit(address(onchainidSetup.idFactory));
+        emit IIdentityFactory.BeaconUpgraded(address(newImpl), "3.0.0");
         onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.0.0");
         assertEq(
             UpgradeableBeacon(onchainidSetup.idFactory.beacon()).implementation(),
@@ -1615,6 +1619,10 @@ contract IdentityFactoryTest is OnchainIDSetup {
         uint256 expiry = block.timestamp + 1 hours;
 
         bytes memory payload = _crossChainPayload(solanaEnv, address(aliceIdentity), expiry);
+        vm.expectEmit(address(onchainidSetup.idFactory));
+        emit IIdentityFactory.PendingCrossChainLinkProposed(
+            solanaEnv, address(aliceIdentity), expiry, address(gateway), bytes32(uint256(1))
+        );
         gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(1)), solanaEnv, payload);
 
         // Proposal staged but link not yet active.
@@ -1624,6 +1632,8 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertEq(onchainidSetup.idFactory.getIdentity(solanaEnv), address(0), "not active before confirm");
 
         // Identity confirms — wallet is now actively linked.
+        vm.expectEmit(address(onchainidSetup.idFactory));
+        emit IIdentityFactory.CrossChainLinkConfirmed(solanaEnv, address(aliceIdentity));
         vm.prank(address(aliceIdentity));
         onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, true);
 

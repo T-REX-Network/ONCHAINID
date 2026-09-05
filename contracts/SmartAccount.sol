@@ -24,6 +24,7 @@ pragma solidity ^0.8.28;
 
 import { KeyManager } from "./KeyManager.sol";
 import { Errors } from "./libraries/Errors.sol";
+import { Events } from "./libraries/Events.sol";
 import { hashAddress } from "./libraries/Hashing.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
 import { ERC734Validator } from "./modules/validators/ERC734Validator.sol";
@@ -47,6 +48,12 @@ import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 ///         re-check a user op the validator accepted; the per-target purpose rule in
 ///         {_authorizeCall} applies to executor callers only.
 abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 {
+
+    /// @dev Emitted for every call dispatched through the ERC-7579 execute path, before it runs. `caller`
+    event CallDispatched(address target, uint256 value, bytes data, address caller);
+
+    /// @dev Emitted right after ERC-7579 `ModuleInstalled`, which omits the install data.
+    event ModuleInstallData(uint256 moduleTypeId, address module, bytes initData);
 
     /// @notice Install a module. Gated on MANAGEMENT.
     /// @dev The OZ default gate (`onlyEntryPointOrSelf`) is replaced with the stricter
@@ -73,6 +80,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         override
         onlyManagerOrSelf
     {
+        emit Events.CalledBy(msg.sender, msg.sig);
         _installModule(moduleTypeId, module, initData);
     }
 
@@ -85,7 +93,14 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         override
         onlyManagerOrSelf
     {
+        emit Events.CalledBy(msg.sender, msg.sig);
         _uninstallModule(moduleTypeId, module, deInitData);
+    }
+
+    /// @dev Runs the base install, then logs the install data the ERC-7579 `ModuleInstalled` event omits.
+    function _installModule(uint256 moduleTypeId, address module, bytes memory initData) internal virtual override {
+        super._installModule(moduleTypeId, module, initData);
+        emit ModuleInstallData(moduleTypeId, module, initData);
     }
 
     /// @dev Strips every ERC-734 purpose the module holds, then runs the base uninstall.
@@ -142,6 +157,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
             require(executionCalldata.length >= 52, Errors.UnsupportedExecutionMode(Mode.unwrap(mode)));
             address target = address(bytes20(executionCalldata[:20]));
             _authorizeCall(target, executionCalldata[52:], callerKeyHash, callerIsExecutor);
+            emit CallDispatched(target, uint256(bytes32(executionCalldata[20:52])), executionCalldata[52:], msg.sender);
         } else if (callType == ERC7579Utils.CALLTYPE_BATCH) {
             // Every call in the batch must pass. {SafeCalldataBatch} keeps the batch in calldata but
             // validates each entry against the slice bounds, so a backward offset can't point past
@@ -150,6 +166,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
             Execution[] calldata batch = SafeCalldataBatch.decodeBatch(executionCalldata);
             for (uint256 i = 0; i < batch.length; i++) {
                 _authorizeCall(batch[i].target, batch[i].callData, callerKeyHash, callerIsExecutor);
+                emit CallDispatched(batch[i].target, batch[i].value, batch[i].callData, msg.sender);
             }
         } else {
             revert Errors.UnsupportedExecutionMode(Mode.unwrap(mode));
