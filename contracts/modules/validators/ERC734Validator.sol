@@ -130,6 +130,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
 
     event KeyAdded(address indexed account, bytes32 indexed keyHash, uint256 indexed purpose, uint256 keyType);
     event KeyRemoved(address indexed account, bytes32 indexed keyHash, uint256 indexed purpose);
+    event KeyDataSet(address account, bytes32 keyHash, bytes signerData, bytes clientData);
 
     /// @dev EIP-712 typehash for `Claim`. The nested `ClaimData` type is appended per the EIP-712
     ///      rule for nested struct types.
@@ -155,6 +156,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
 
     /// @notice Emitted when `addClaimTo` successfully writes a claim to another identity.
     event ClaimAddedTo(address indexed identity, uint256 topic, bytes signature, Structs.ClaimData data);
+
+    /// @notice Emitted right after `ClaimAdded` / `ClaimChanged` when the write came through
+    event ClaimAddedByTrustedIssuer(address identity, bytes32 claimId, address caller);
 
     /// @notice Factory used by {addClaimByTrustedIssuer} to resolve a caller wallet to
     ///         its issuer identity and to confirm that identity came from the factory.
@@ -591,6 +595,8 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
             key.signerData = signerData;
             key.clientData = clientData;
             key.keyType = keyType;
+            // included to avoid editing KeyAdded event which is ERC-734 standard shape
+            emit KeyDataSet(account, keyHash, signerData, clientData);
         } else {
             // Re-purposing an existing key: keep the stored type, reject a mismatch.
             require(key.keyType == keyType, KeyTypeMismatch(keyHash));
@@ -678,8 +684,10 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         Structs.ClaimData memory _data,
         string memory _uri
     ) public returns (bytes32 claimRequestId) {
-        _requireTrustedIssuer(_msgSender(), _issuer);
-        return _addClaim(msg.sender, _topic, _scheme, _issuer, _signature, _data, _uri);
+        address caller = _msgSender();
+        _requireTrustedIssuer(caller, _issuer);
+        claimRequestId = _addClaim(msg.sender, _topic, _scheme, _issuer, _signature, _data, _uri);
+        emit ClaimAddedByTrustedIssuer(msg.sender, claimRequestId, caller);
     }
 
     /// @dev Shared write path for `addClaim` and `addClaimByTrustedIssuer`. The issuer-side

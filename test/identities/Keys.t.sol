@@ -9,6 +9,7 @@ import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
 import { Structs } from "contracts/storage/Structs.sol";
+import { Vm } from "forge-std/Vm.sol";
 
 /// @notice Tests for Identity Key Management (ERC-734)
 contract KeysTest is OnchainIDSetup {
@@ -237,11 +238,36 @@ contract KeysTest is OnchainIDSetup {
         bytes memory signerData = abi.encodePacked(bob);
 
         vm.prank(alice);
+        vm.expectEmit(address(onchainidSetup.signatureValidator));
+        emit ERC734Validator.KeyDataSet(address(aliceIdentity), keyHash, signerData, "");
+        vm.expectEmit(address(onchainidSetup.signatureValidator));
+        emit ERC734Validator.KeyAdded(address(aliceIdentity), keyHash, KeyPurposes.ACTION, KeyTypes.ECDSA);
         aliceIdentity.addKeyWithData(keyHash, KeyPurposes.ACTION, KeyTypes.ECDSA, signerData, "");
 
         (, uint256 keyType, bytes32 storedKey) = IERC734(address(aliceIdentity)).getKey(keyHash);
         assertEq(storedKey, keyHash);
         assertEq(keyType, KeyTypes.ECDSA);
+    }
+
+    function test_AddKeyWithData_repurposeDoesNotReemitKeyDataSet() public {
+        bytes32 keyHash = keccak256(abi.encodePacked(bob));
+        bytes memory signerData = abi.encodePacked(bob);
+        vm.prank(alice);
+        aliceIdentity.addKeyWithData(keyHash, KeyPurposes.ACTION, KeyTypes.ECDSA, signerData, "");
+
+        vm.recordLogs();
+        vm.prank(alice);
+        aliceIdentity.addKeyWithData(keyHash, KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA, signerData, "");
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        bytes32 dataSetTopic = keccak256("KeyDataSet(address,bytes32,bytes,bytes)");
+        bytes32 addedTopic = keccak256("KeyAdded(address,bytes32,uint256,uint256)");
+        bool addedSeen;
+        for (uint256 i = 0; i < logs.length; i++) {
+            assertTrue(logs[i].topics[0] != dataSetTopic, "KeyDataSet must not fire on re-purpose");
+            if (logs[i].topics[0] == addedTopic) addedSeen = true;
+        }
+        assertTrue(addedSeen, "KeyAdded still fires for the new purpose");
     }
 
     // ============ Dynamic field caps ============

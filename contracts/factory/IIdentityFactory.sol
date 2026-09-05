@@ -101,7 +101,7 @@ interface IIdentityFactory {
 
     /// @notice Emitted when an inbound ERC-7786 message has staged a wallet -> identity
     ///         binding awaiting identity-side confirmation. The link is not active yet.
-    event PendingCrossChainLinkProposed(bytes account, address indexed identity, uint256 expiry);
+    event PendingCrossChainLinkProposed(bytes account, address indexed identity, uint256 expiry, address gateway);
 
     /// @notice Emitted when an identity confirms a pending cross-chain proposal and the
     ///         wallet becomes active.

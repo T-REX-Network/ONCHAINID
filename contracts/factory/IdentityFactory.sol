@@ -490,7 +490,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     ///      add wallet-level replay protection via sticky binding (an active or
     ///      revoked entry blocks fresh proposals from taking effect on confirm).
     function _processMessage(
-        address, /* gateway */
+        address gateway,
         bytes32, /* receiveId */
         bytes calldata sender,
         bytes calldata payload
@@ -533,7 +533,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // be confirmed. Safe to overwrite because the status check above rejects
         // any wallet that is already linked or revoked.
         _storage().pendingLinks[key] = PendingLink({ identity: identity, expiry: expiry });
-        emit PendingCrossChainLinkProposed(walletEnvelope, identity, expiry);
+        emit PendingCrossChainLinkProposed(walletEnvelope, identity, expiry, gateway);
     }
 
     /// @inheritdoc IIdentityFactory
