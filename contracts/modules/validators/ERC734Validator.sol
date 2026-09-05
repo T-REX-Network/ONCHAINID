@@ -47,6 +47,7 @@ import { IERC734 } from "../../interface/IERC734.sol";
 import { IERC735 } from "../../interface/IERC735.sol";
 import { IIdentity } from "../../interface/IIdentity.sol";
 import { Errors } from "../../libraries/Errors.sol";
+import { Events } from "../../libraries/Events.sol";
 import { hashAddress } from "../../libraries/Hashing.sol";
 import { IdentityTypes } from "../../libraries/IdentityTypes.sol";
 import { KeyPurposes } from "../../libraries/KeyPurposes.sol";
@@ -131,6 +132,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     event KeyAdded(address indexed account, bytes32 indexed keyHash, uint256 indexed purpose, uint256 keyType);
     event KeyRemoved(address indexed account, bytes32 indexed keyHash, uint256 indexed purpose);
     event KeyDataSet(address account, bytes32 keyHash, bytes signerData, bytes clientData);
+
+    /// @dev Emitted when a user operation for `account` validates against key `keyHash`.
+    event KeyUsed(address indexed account, bytes32 indexed keyHash, bytes32 userOpHash);
 
     /// @dev EIP-712 typehash for `Claim`. The nested `ClaimData` type is appended per the EIP-712
     ///      rule for nested struct types.
@@ -433,10 +437,12 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         }
 
         (bytes memory signer,) = abi.decode(userOp.signature, (bytes, bytes));
-        if (!_scopeAllows(userOp.sender, keccak256(signer), userOp.callData)) {
+        bytes32 keyHash = keccak256(signer);
+        if (!_scopeAllows(userOp.sender, keyHash, userOp.callData)) {
             return ERC4337Utils.SIG_VALIDATION_FAILED;
         }
 
+        emit KeyUsed(userOp.sender, keyHash, userOpHash);
         return validationData;
     }
 
@@ -656,7 +662,11 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         // the registry), and every other outbound call this module makes is a staticcall. As a
         // last line of defense, {_addKey} rejects the module's own address as a grantee. A new
         // state-changing outbound call added to this module must revisit this rebind.
-        if (caller == address(this)) caller = _issuer;
+        if (caller == address(this)) {
+            caller = _issuer;
+        } else {
+            emit Events.CalledBy(caller, msg.sig);
+        }
         _requireClaimKey(msg.sender, caller, false);
         return _addClaim(msg.sender, _topic, _scheme, _issuer, _signature, _data, _uri);
     }
@@ -757,6 +767,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     ///      the same (issuer, topic, ClaimData) and must sign a fresh claim to re-attest.
     function removeClaim(bytes32 _claimId) public returns (bool success) {
         address account = msg.sender;
+        emit Events.CalledBy(_msgSender(), msg.sig);
         // CLAIM_ADDER cannot remove; only CLAIM_SIGNER (or self-call) is accepted here.
         _requireClaimKey(account, _msgSender(), true);
 
@@ -819,6 +830,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     /// @notice Mark a claim digest revoked. Issuer-side revocation entry point.
     function revokeClaimByDigest(bytes32 digest) external {
         address account = msg.sender;
+        emit Events.CalledBy(_msgSender(), msg.sig);
         _requireManagement(account, _msgSender());
         require(!_store().registries[account].revokedDigests[digest], Errors.ClaimAlreadyRevoked());
 
@@ -873,6 +885,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         IIdentity _identity
     ) external {
         address account = msg.sender;
+        emit Events.CalledBy(_msgSender(), msg.sig);
         _requireManagement(account, _msgSender());
 
         require(

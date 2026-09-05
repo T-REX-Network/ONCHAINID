@@ -170,7 +170,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         Identity newImpl = new Identity(address(onchainidSetup.signatureValidator), address(onchainidSetup.idFactory));
         vm.prank(deployer);
         vm.expectEmit(address(onchainidSetup.idFactory));
-        emit IIdentityFactory.BeaconUpgraded(address(newImpl));
+        emit IIdentityFactory.BeaconUpgraded(address(newImpl), "3.0.0");
         onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.0.0");
         assertEq(
             UpgradeableBeacon(onchainidSetup.idFactory.beacon()).implementation(),
@@ -1620,7 +1620,9 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
         bytes memory payload = _crossChainPayload(solanaEnv, address(aliceIdentity), expiry);
         vm.expectEmit(address(onchainidSetup.idFactory));
-        emit IIdentityFactory.PendingCrossChainLinkProposed(solanaEnv, address(aliceIdentity), expiry, address(gateway));
+        emit IIdentityFactory.PendingCrossChainLinkProposed(
+            solanaEnv, address(aliceIdentity), expiry, address(gateway), bytes32(uint256(1))
+        );
         gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(1)), solanaEnv, payload);
 
         // Proposal staged but link not yet active.

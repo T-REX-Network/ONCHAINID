@@ -101,7 +101,9 @@ interface IIdentityFactory {
 
     /// @notice Emitted when an inbound ERC-7786 message has staged a wallet -> identity
     ///         binding awaiting identity-side confirmation. The link is not active yet.
-    event PendingCrossChainLinkProposed(bytes account, address indexed identity, uint256 expiry, address gateway);
+    event PendingCrossChainLinkProposed(
+        bytes account, address indexed identity, uint256 expiry, address gateway, bytes32 receiveId
+    );
 
     /// @notice Emitted when an identity confirms a pending cross-chain proposal and the
     ///         wallet becomes active.
@@ -123,7 +125,7 @@ interface IIdentityFactory {
     event BeaconInitialized(address indexed implementation);
 
     /// @notice Emitted when the beacon implementation is upgraded via {upgradeBeacon}.
-    event BeaconUpgraded(address indexed implementation);
+    event BeaconUpgraded(address indexed implementation, string version);
 
     /// @notice One-shot bootstrap: deploys the OZ UpgradeableBeacon at the factory's
     ///         predetermined CREATE3 slot ({beacon}), pointing at `implementation` and

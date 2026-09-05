@@ -5,6 +5,7 @@ import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 import { IERC734 } from "contracts/interface/IERC734.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
+import { Events } from "contracts/libraries/Events.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
@@ -238,6 +239,8 @@ contract KeysTest is OnchainIDSetup {
         bytes memory signerData = abi.encodePacked(bob);
 
         vm.prank(alice);
+        vm.expectEmit(address(aliceIdentity));
+        emit Events.CalledBy(alice, aliceIdentity.addKeyWithData.selector);
         vm.expectEmit(address(onchainidSetup.signatureValidator));
         emit ERC734Validator.KeyDataSet(address(aliceIdentity), keyHash, signerData, "");
         vm.expectEmit(address(onchainidSetup.signatureValidator));

@@ -23,6 +23,7 @@
 pragma solidity ^0.8.28;
 
 import { Errors } from "./libraries/Errors.sol";
+import { Events } from "./libraries/Events.sol";
 import { hashAddress } from "./libraries/Hashing.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
 import { ERC734Validator } from "./modules/validators/ERC734Validator.sol";
@@ -73,6 +74,7 @@ abstract contract KeyManager {
         onlyManagerOrSelf
         returns (bool success)
     {
+        emit Events.CalledBy(msg.sender, msg.sig);
         _addKey(_key, _purpose, _type);
         return true;
     }
@@ -90,6 +92,7 @@ abstract contract KeyManager {
     /// @notice Remove a purpose from a key. Caller must hold MANAGEMENT, or be the identity itself.
     /// @dev The module enforces the "can't remove the last MANAGEMENT key" guard.
     function removeKey(bytes32 _key, uint256 _purpose) public virtual onlyManagerOrSelf returns (bool success) {
+        emit Events.CalledBy(msg.sender, msg.sig);
         _removeKeyPurpose(_key, _purpose);
         return true;
     }
@@ -113,6 +116,7 @@ abstract contract KeyManager {
         bytes memory _signerData,
         bytes memory _clientData
     ) external virtual onlyManagerOrSelf {
+        emit Events.CalledBy(msg.sender, msg.sig);
         _addKeyWithData(_key, _purpose, _type, _signerData, _clientData);
     }
 
