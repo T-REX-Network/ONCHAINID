@@ -19,7 +19,6 @@ import { IERC734 } from "contracts/interface/IERC734.sol";
 import { IERC735 } from "contracts/interface/IERC735.sol";
 import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
-import { Events } from "contracts/libraries/Events.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
@@ -371,9 +370,7 @@ contract SmartAccountTest is OnchainIDSetup {
         MockStockECDSAValidator validator = new MockStockECDSAValidator();
         vm.startPrank(alice);
         vm.expectEmit(address(aliceIdentity));
-        emit Events.CalledBy(alice, aliceIdentity.installModule.selector);
-        vm.expectEmit(address(aliceIdentity));
-        emit SmartAccount.ModuleInstallData(MODULE_TYPE_VALIDATOR, address(validator), abi.encodePacked(alice));
+        emit SmartAccount.ModuleInstallData(MODULE_TYPE_VALIDATOR, address(validator), abi.encodePacked(alice), alice);
         aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), abi.encodePacked(alice));
         // Validators don't need an ERC 734 purpose. We add one anyway so we can check
         // that uninstall cleans it up.
@@ -393,7 +390,7 @@ contract SmartAccountTest is OnchainIDSetup {
 
         vm.prank(alice);
         vm.expectEmit(address(aliceIdentity));
-        emit Events.CalledBy(alice, aliceIdentity.uninstallModule.selector);
+        emit SmartAccount.ModuleUninstallData(MODULE_TYPE_VALIDATOR, address(validator), "", alice);
         aliceIdentity.uninstallModule(MODULE_TYPE_VALIDATOR, address(validator), "");
 
         assertFalse(

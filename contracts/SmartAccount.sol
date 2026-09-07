@@ -24,7 +24,6 @@ pragma solidity ^0.8.28;
 
 import { KeyManager } from "./KeyManager.sol";
 import { Errors } from "./libraries/Errors.sol";
-import { Events } from "./libraries/Events.sol";
 import { hashAddress } from "./libraries/Hashing.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
 import { ERC734Validator } from "./modules/validators/ERC734Validator.sol";
@@ -53,7 +52,10 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
     event CallDispatched(address target, uint256 value, bytes data, address caller);
 
     /// @dev Emitted right after ERC-7579 `ModuleInstalled`, which omits the install data.
-    event ModuleInstallData(uint256 moduleTypeId, address module, bytes initData);
+    event ModuleInstallData(uint256 moduleTypeId, address module, bytes initData, address caller);
+
+    /// @dev Emitted right after ERC-7579 `ModuleUninstalled`, which omits the uninstall data.
+    event ModuleUninstallData(uint256 moduleTypeId, address module, bytes deInitData, address caller);
 
     /// @notice Install a module. Gated on MANAGEMENT.
     /// @dev The OZ default gate (`onlyEntryPointOrSelf`) is replaced with the stricter
@@ -80,7 +82,6 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         override
         onlyManagerOrSelf
     {
-        emit Events.CalledBy(msg.sender, msg.sig);
         _installModule(moduleTypeId, module, initData);
     }
 
@@ -93,14 +94,13 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         override
         onlyManagerOrSelf
     {
-        emit Events.CalledBy(msg.sender, msg.sig);
         _uninstallModule(moduleTypeId, module, deInitData);
     }
 
     /// @dev Runs the base install, then logs the install data the ERC-7579 `ModuleInstalled` event omits.
     function _installModule(uint256 moduleTypeId, address module, bytes memory initData) internal virtual override {
         super._installModule(moduleTypeId, module, initData);
-        emit ModuleInstallData(moduleTypeId, module, initData);
+        emit ModuleInstallData(moduleTypeId, module, initData, msg.sender);
     }
 
     /// @dev Strips every ERC-734 purpose the module holds, then runs the base uninstall.
@@ -124,12 +124,13 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
             if (signerData.length != 0) {
                 uint256[] memory purposes = registry.getKeyPurposes(address(this), moduleKey);
                 for (uint256 i = 0; i < purposes.length; i++) {
-                    _removeKeyPurpose(moduleKey, purposes[i]);
+                    _removeKeyPurpose(moduleKey, purposes[i], msg.sender);
                 }
             }
         }
 
         super._uninstallModule(moduleTypeId, module, deInitData);
+        emit ModuleUninstallData(moduleTypeId, module, deInitData, msg.sender);
     }
 
     /// @notice Advertises the modes {_execute} accepts. The OZ base also claims DELEGATECALL,
