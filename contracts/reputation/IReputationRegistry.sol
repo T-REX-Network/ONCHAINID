@@ -36,13 +36,14 @@ pragma solidity ^0.8.27;
 ///           including an explicit `0` (which is how a manager revokes trust
 ///           without deleting the entry).
 ///         * Otherwise the lookup falls back to `defaultFor[type]` where `type`
-///           is read from the identity itself via `IIdentity.getIdentityType()`.
+///           is the factory's record via {IIdentityFactory.identityTypeOf},
+///           never the identity's own answer.
 ///
-///         Factory-membership gating. The fallback path is gated on
-///         {IIdentityFactory.isFactoryIdentity}: an arbitrary contract that
-///         self-declares type 5 cannot inherit the CLAIM_ISSUER default. The
-///         explicit-entry path bypasses the factory check because the manager
-///         may want to score externally-deployed identities by hand.
+///         Factory-membership gating. A zero record means the factory did not
+///         deploy the identity, so an arbitrary contract that self-declares
+///         type 5 cannot inherit the CLAIM_ISSUER default. The explicit-entry
+///         path bypasses the factory check because the manager may want to
+///         score externally-deployed identities by hand.
 interface IReputationRegistry {
 
     /// @dev Per-identity entry. Packs into a single 32-byte slot. `setAt == 0`
