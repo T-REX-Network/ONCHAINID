@@ -69,14 +69,16 @@ interface IReputationRegistry {
     /// @param identityType The identity type whose default changed.
     /// @param oldDefault   Previous default score for that type.
     /// @param newDefault   New default score for that type.
-    event DefaultSet(uint256 indexed identityType, uint128 oldDefault, uint128 newDefault);
+    /// @param setter       `msg.sender` on the call that produced the change.
+    event DefaultSet(uint256 indexed identityType, uint128 oldDefault, uint128 newDefault, address indexed setter);
 
     /// @notice Emitted whenever the global claim-add auto-approval threshold changes.
     ///         Consumers compare this against {reputationOf} to decide whether a
     ///         claim-add should auto-approve.
     /// @param oldThreshold Previous threshold.
     /// @param newThreshold New threshold.
-    event ClaimAddThresholdSet(uint128 oldThreshold, uint128 newThreshold);
+    /// @param setter       `msg.sender` on the call that produced the change.
+    event ClaimAddThresholdSet(uint128 oldThreshold, uint128 newThreshold, address indexed setter);
 
     // ---- Reads (open) ----
 

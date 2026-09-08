@@ -156,7 +156,7 @@ contract KeyApprovalModule is IERC7579Module, IKeyExecutor {
 
         // 3. Auto-approve dispatches now; otherwise the request stays pending for {approve}.
         if (_canAutoApprove(account, callerKeyHash, _to)) {
-            _runApproved(account, executionId);
+            _runApproved(account, executionId, proposer);
         }
     }
 
@@ -204,7 +204,7 @@ contract KeyApprovalModule is IERC7579Module, IKeyExecutor {
                 _canPropose(account, hashAddress(execution.proposer)),
                 Errors.ProposerNoLongerAuthorized(execution.proposer)
             );
-            return _runApproved(account, _id);
+            return _runApproved(account, _id, approver);
         }
         execution.executed = true;
         execution.approved = false;
@@ -268,7 +268,7 @@ contract KeyApprovalModule is IERC7579Module, IKeyExecutor {
     /// @dev `executed`/`approved` are written before the dispatch on purpose: they are what stops
     ///      the target re-entering {approve} on the same id. They therefore cannot double as a
     ///      success flag, so the outcome is recorded separately in `succeeded`.
-    function _runApproved(address account, uint256 executionId) internal returns (bool success) {
+    function _runApproved(address account, uint256 executionId, address executor) internal returns (bool success) {
         Execution storage execution = _state[account].executions[executionId];
 
         execution.executed = true;
@@ -284,10 +284,10 @@ contract KeyApprovalModule is IERC7579Module, IKeyExecutor {
 
         try IERC7579Execution(account).executeFromExecutor(mode, executionCalldata) returns (bytes[] memory) {
             execution.succeeded = true;
-            emit Executed(account, executionId, to, value, data);
+            emit Executed(account, executionId, to, value, data, executor);
             return true;
         } catch {
-            emit ExecutionFailed(account, executionId, to, value, data);
+            emit ExecutionFailed(account, executionId, to, value, data, executor);
             return false;
         }
     }

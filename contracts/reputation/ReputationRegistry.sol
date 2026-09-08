@@ -108,14 +108,14 @@ contract ReputationRegistry is IReputationRegistry, AccessManaged {
     function setDefault(uint256 identityType, uint128 newDefault) external restricted {
         uint128 previousDefault = _storage().defaultFor[identityType];
         _storage().defaultFor[identityType] = newDefault;
-        emit DefaultSet(identityType, previousDefault, newDefault);
+        emit DefaultSet(identityType, previousDefault, newDefault, msg.sender);
     }
 
     /// @inheritdoc IReputationRegistry
     function setClaimAddThreshold(uint128 newThreshold) external restricted {
         uint128 previousThreshold = _storage().claimAddThreshold;
         _storage().claimAddThreshold = newThreshold;
-        emit ClaimAddThresholdSet(previousThreshold, newThreshold);
+        emit ClaimAddThresholdSet(previousThreshold, newThreshold, msg.sender);
     }
 
     /// @inheritdoc IReputationRegistry
