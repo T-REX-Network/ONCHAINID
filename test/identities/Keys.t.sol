@@ -237,6 +237,10 @@ contract KeysTest is OnchainIDSetup {
         bytes memory signerData = abi.encodePacked(bob);
 
         vm.prank(alice);
+        vm.expectEmit(address(onchainidSetup.signatureValidator));
+        emit ERC734Validator.KeyAdded(
+            address(aliceIdentity), keyHash, KeyPurposes.ACTION, KeyTypes.ECDSA, signerData, "", alice
+        );
         aliceIdentity.addKeyWithData(keyHash, KeyPurposes.ACTION, KeyTypes.ECDSA, signerData, "");
 
         (, uint256 keyType, bytes32 storedKey) = IERC734(address(aliceIdentity)).getKey(keyHash);

@@ -24,6 +24,9 @@ v3 is not storage-compatible or interface-compatible with 2.x. It is a new deplo
 - Moved storage to ERC-7201 namespaced layouts across upgradeable contracts.
 - Migrated the toolchain from Hardhat to Foundry (`forge`), with dependencies managed by soldeer. Solidity 0.8.30, EVM version cancun.
 - Renamed the npm package from `@onchain-id/solidity` to `@t-rex-network/onchainid`.
+- Updated project event ABIs for subgraph indexing and audit attribution: key, claim, claim issuer, and module data events now carry caller attribution directly; `KeyAdded` also carries `signerData` and `clientData` directly.
+- Extended `Approved(address account, uint256 executionId, bool approved)` with trailing `address approver`, `PendingCrossChainLinkProposed(bytes account, address identity, uint256 expiry)` with trailing `address gateway` and `bytes32 receiveId`, and `BeaconUpgraded(address implementation)` with trailing `string version`.
+
 ### Added
 
 - ERC-4337 account abstraction: identities validate `UserOperation`s through the installed validator module and can operate with bundlers and paymasters.
@@ -36,6 +39,10 @@ v3 is not storage-compatible or interface-compatible with 2.x. It is a new deplo
 - `ReputationRegistry`: per-identity reputation scores with per-type defaults, writable only through the REPUTATION_MANAGER role via `AccessManager`.
 - `IdentityUtilities` (UUPS-upgradeable): an on-chain registry of structured claim-topic schemas (field names and types), with `FormatResolver` for the supported field formats.
 - Full Foundry test suite with coverage enforced in CI.
+- `CallDispatched(address target, uint256 value, bytes data, address caller)` for identity calls dispatched through the ERC-7579 execute path.
+- `ModuleInstallData(uint256 moduleTypeId, address module, bytes initData, address caller)` and `ModuleUninstallData(uint256 moduleTypeId, address module, bytes deInitData, address caller)` for module lifecycle data omitted by ERC-7579 events.
+- `KeyUsed(address account, bytes32 keyHash, bytes32 userOpHash)` for ERC-4337 validation attribution.
+
 ### Removed
 
 - `Gateway`, superseded by the AccessManager-gated factory and the trusted-gateway model for cross-chain links.

@@ -78,7 +78,7 @@ contract IdentityUtilitiesTest is Test {
 
         vm.prank(admin);
         vm.expectEmit(true, true, true, true, address(utilities));
-        emit IIdentityUtilities.TopicAdded(topicId, "NAV Per Share", encodedNames, encodedTypes);
+        emit IIdentityUtilities.TopicAdded(topicId, "NAV Per Share", encodedNames, encodedTypes, admin);
         utilities.addTopic(topicId, "NAV Per Share", encodedNames, encodedTypes);
 
         (string[] memory retNames, string[] memory retTypes) = utilities.getSchema(topicId);
@@ -232,7 +232,7 @@ contract IdentityUtilitiesTest is Test {
 
         vm.prank(admin);
         vm.expectEmit(true, true, true, true, address(utilities));
-        emit IIdentityUtilities.TopicAdded(1001, "Empty Arrays Topic", encodedNames, encodedTypes);
+        emit IIdentityUtilities.TopicAdded(1001, "Empty Arrays Topic", encodedNames, encodedTypes, admin);
         utilities.addTopic(1001, "Empty Arrays Topic", encodedNames, encodedTypes);
 
         IIdentityUtilities.TopicInfo memory topic = utilities.getTopic(1001);
@@ -260,7 +260,7 @@ contract IdentityUtilitiesTest is Test {
 
         vm.prank(admin);
         vm.expectEmit(true, true, true, true, address(utilities));
-        emit IIdentityUtilities.TopicAdded(1001, "Complex Topic", encodedNames, encodedTypes);
+        emit IIdentityUtilities.TopicAdded(1001, "Complex Topic", encodedNames, encodedTypes, admin);
         utilities.addTopic(1001, "Complex Topic", encodedNames, encodedTypes);
 
         IIdentityUtilities.TopicInfo memory topic = utilities.getTopic(1001);
@@ -288,7 +288,7 @@ contract IdentityUtilitiesTest is Test {
 
         vm.prank(admin);
         vm.expectEmit(true, true, true, true, address(utilities));
-        emit IIdentityUtilities.TopicUpdated(1001, "Updated", encodedNames, encodedTypes);
+        emit IIdentityUtilities.TopicUpdated(1001, "Updated", encodedNames, encodedTypes, admin);
         utilities.updateTopic(1001, "Updated", encodedNames, encodedTypes);
 
         IIdentityUtilities.TopicInfo memory topic = utilities.getTopic(1001);
@@ -367,7 +367,7 @@ contract IdentityUtilitiesTest is Test {
 
         vm.prank(admin);
         vm.expectEmit(true, true, true, true, address(utilities));
-        emit IIdentityUtilities.TopicRemoved(1001);
+        emit IIdentityUtilities.TopicRemoved(1001, admin);
         utilities.removeTopic(1001);
 
         IIdentityUtilities.TopicInfo memory topic = utilities.getTopic(1001);
@@ -399,7 +399,7 @@ contract IdentityUtilitiesTest is Test {
         utilities.removeTopic(1001);
 
         vm.expectEmit(true, true, true, true, address(utilities));
-        emit IIdentityUtilities.TopicAdded(1001, "Test", encodedNames, encodedTypes);
+        emit IIdentityUtilities.TopicAdded(1001, "Test", encodedNames, encodedTypes, admin);
         utilities.addTopic(1001, "Test", encodedNames, encodedTypes);
         vm.stopPrank();
 
@@ -758,17 +758,17 @@ contract IdentityUtilitiesTest is Test {
 
         // Add
         vm.expectEmit(true, true, true, true, address(utilities));
-        emit IIdentityUtilities.TopicAdded(1001, "Test", encodedNames, encodedTypes);
+        emit IIdentityUtilities.TopicAdded(1001, "Test", encodedNames, encodedTypes, admin);
         utilities.addTopic(1001, "Test", encodedNames, encodedTypes);
 
         // Update
         vm.expectEmit(true, true, true, true, address(utilities));
-        emit IIdentityUtilities.TopicUpdated(1001, "Updated", encodedNames, encodedTypes);
+        emit IIdentityUtilities.TopicUpdated(1001, "Updated", encodedNames, encodedTypes, admin);
         utilities.updateTopic(1001, "Updated", encodedNames, encodedTypes);
 
         // Remove
         vm.expectEmit(true, true, true, true, address(utilities));
-        emit IIdentityUtilities.TopicRemoved(1001);
+        emit IIdentityUtilities.TopicRemoved(1001, admin);
         utilities.removeTopic(1001);
 
         vm.stopPrank();
