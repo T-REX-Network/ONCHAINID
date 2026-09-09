@@ -192,7 +192,7 @@ contract SmartAccountTest is OnchainIDSetup {
         aliceIdentity.removeKey(moduleKey, KeyPurposes.MANAGEMENT);
 
         vm.prank(alice);
-        vm.expectRevert(Errors.CannotRemoveLastManagementKey.selector);
+        vm.expectRevert(ERC734Validator.CannotRemoveLastManagementKey.selector);
         aliceIdentity.removeKey(aliceKey, KeyPurposes.MANAGEMENT);
     }
 
@@ -216,7 +216,7 @@ contract SmartAccountTest is OnchainIDSetup {
         );
 
         vm.prank(alice);
-        vm.expectRevert(Errors.CannotRemoveLastManagementKey.selector);
+        vm.expectRevert(ERC734Validator.CannotRemoveLastManagementKey.selector);
         aliceIdentity.removeKey(aliceKey, KeyPurposes.MANAGEMENT);
     }
 

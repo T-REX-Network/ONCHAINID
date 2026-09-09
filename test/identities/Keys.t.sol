@@ -154,7 +154,7 @@ contract KeysTest is OnchainIDSetup {
     }
 
     function test_RevertRemoveKey_WhenKeyDoesNotExist() public {
-        vm.expectRevert(abi.encodeWithSelector(Errors.KeyNotRegistered.selector, bobKeyHash));
+        vm.expectRevert(abi.encodeWithSelector(ERC734Validator.KeyNotRegistered.selector, bobKeyHash));
         vm.prank(alice);
         aliceIdentity.removeKey(bobKeyHash, KeyPurposes.ACTION);
     }
