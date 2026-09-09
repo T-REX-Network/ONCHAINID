@@ -48,6 +48,15 @@ import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 ///         {_authorizeCall} applies to executor callers only.
 abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 {
 
+    /// @dev Emitted for every call dispatched through the ERC-7579 execute path, before it runs. `caller`
+    event CallDispatched(address target, uint256 value, bytes data, address caller);
+
+    /// @dev Emitted right after ERC-7579 `ModuleInstalled`, which omits the install data.
+    event ModuleInstallData(uint256 moduleTypeId, address module, bytes initData, address caller);
+
+    /// @dev Emitted right after ERC-7579 `ModuleUninstalled`, which omits the uninstall data.
+    event ModuleUninstallData(uint256 moduleTypeId, address module, bytes deInitData, address caller);
+
     /// @notice Install a module. Gated on MANAGEMENT.
     /// @dev The OZ default gate (`onlyEntryPointOrSelf`) is replaced with the stricter
     ///      ERC-734 `onlyManagerOrSelf` check, and `_installModule` is invoked directly instead
@@ -88,6 +97,12 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         _uninstallModule(moduleTypeId, module, deInitData);
     }
 
+    /// @dev Runs the base install, then logs the install data the ERC-7579 `ModuleInstalled` event omits.
+    function _installModule(uint256 moduleTypeId, address module, bytes memory initData) internal virtual override {
+        super._installModule(moduleTypeId, module, initData);
+        emit ModuleInstallData(moduleTypeId, module, initData, msg.sender);
+    }
+
     /// @dev Strips every ERC-734 purpose the module holds, then runs the base uninstall.
     ///      Purposes are read from, and removed on, the enshrined registry module (self-calls).
     ///      Fallback uninstalls don't strip: fallback handlers register per selector, so one
@@ -109,12 +124,13 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
             if (signerData.length != 0) {
                 uint256[] memory purposes = registry.getKeyPurposes(address(this), moduleKey);
                 for (uint256 i = 0; i < purposes.length; i++) {
-                    _removeKeyPurpose(moduleKey, purposes[i]);
+                    _removeKeyPurpose(moduleKey, purposes[i], msg.sender);
                 }
             }
         }
 
         super._uninstallModule(moduleTypeId, module, deInitData);
+        emit ModuleUninstallData(moduleTypeId, module, deInitData, msg.sender);
     }
 
     /// @notice Advertises the modes {_execute} accepts. The OZ base also claims DELEGATECALL,
@@ -142,6 +158,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
             require(executionCalldata.length >= 52, Errors.UnsupportedExecutionMode(Mode.unwrap(mode)));
             address target = address(bytes20(executionCalldata[:20]));
             _authorizeCall(target, executionCalldata[52:], callerKeyHash, callerIsExecutor);
+            emit CallDispatched(target, uint256(bytes32(executionCalldata[20:52])), executionCalldata[52:], msg.sender);
         } else if (callType == ERC7579Utils.CALLTYPE_BATCH) {
             // Every call in the batch must pass. {SafeCalldataBatch} keeps the batch in calldata but
             // validates each entry against the slice bounds, so a backward offset can't point past
@@ -150,6 +167,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
             Execution[] calldata batch = SafeCalldataBatch.decodeBatch(executionCalldata);
             for (uint256 i = 0; i < batch.length; i++) {
                 _authorizeCall(batch[i].target, batch[i].callData, callerKeyHash, callerIsExecutor);
+                emit CallDispatched(batch[i].target, batch[i].value, batch[i].callData, msg.sender);
             }
         } else {
             revert Errors.UnsupportedExecutionMode(Mode.unwrap(mode));

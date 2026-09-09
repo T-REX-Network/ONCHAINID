@@ -128,8 +128,19 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     /// @dev The grantee is this module itself. See the guard in {_addKey}.
     error ModuleCannotBeKey();
 
-    event KeyAdded(address indexed account, bytes32 indexed keyHash, uint256 indexed purpose, uint256 keyType);
-    event KeyRemoved(address indexed account, bytes32 indexed keyHash, uint256 indexed purpose);
+    event KeyAdded(
+        address indexed account,
+        bytes32 indexed keyHash,
+        uint256 indexed purpose,
+        uint256 keyType,
+        bytes signerData,
+        bytes clientData,
+        address caller
+    );
+    event KeyRemoved(address indexed account, bytes32 indexed keyHash, uint256 indexed purpose, address caller);
+
+    /// @dev Emitted when a user operation for `account` validates against key `keyHash`.
+    event KeyUsed(address indexed account, bytes32 indexed keyHash, bytes32 userOpHash);
 
     /// @dev EIP-712 typehash for `Claim`. The nested `ClaimData` type is appended per the EIP-712
     ///      rule for nested struct types.
@@ -151,10 +162,12 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
 
     /// @notice Emitted when a claim digest is marked revoked by the issuer. Holder-side removals
     ///         emit `ClaimRemoved` (from IERC735) instead.
-    event ClaimRevoked(bytes32 indexed digest, address indexed issuer);
+    event ClaimRevoked(bytes32 indexed digest, address indexed issuer, address caller);
 
     /// @notice Emitted when `addClaimTo` successfully writes a claim to another identity.
-    event ClaimAddedTo(address indexed identity, uint256 topic, bytes signature, Structs.ClaimData data);
+    event ClaimAddedTo(
+        address indexed identity, uint256 topic, bytes signature, Structs.ClaimData data, address caller
+    );
 
     /// @notice Factory used by {addClaimByTrustedIssuer} to resolve a caller wallet to
     ///         its issuer identity and to confirm that identity came from the factory.
@@ -196,7 +209,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         // keyType is stored metadata only; _verify dispatches on the signer length, not on this.
         // A 20-byte signer is an EOA (ECDSA=1). A longer one is a generic ERC-7913 verifier+key
         // blob; we can't tell WebAuthn from RSA by length, so we label the common case, WEBAUTHN=3.
-        _addKey(msg.sender, data, "", KeyPurposes.MANAGEMENT, data.length == 20 ? 1 : 3);
+        _addKey(msg.sender, data, "", KeyPurposes.MANAGEMENT, data.length == 20 ? 1 : 3, msg.sender);
     }
 
     /// @dev Works as a validator (userOp signatures), an executor (issuer claim flows), and a
@@ -224,8 +237,14 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     /// @param clientData Non-cryptographic per-key metadata (e.g. WebAuthn credentialId).
     /// @param purpose Purpose to grant.
     /// @param keyType ECDSA / RSA / WEBAUTHN / MODULE.
-    function addKey(bytes calldata signerData, bytes calldata clientData, uint256 purpose, uint256 keyType) external {
-        _addKey(msg.sender, signerData, clientData, purpose, keyType);
+    function addKey(
+        bytes calldata signerData,
+        bytes calldata clientData,
+        uint256 purpose,
+        uint256 keyType,
+        address caller
+    ) external {
+        _addKey(msg.sender, signerData, clientData, purpose, keyType, caller);
     }
 
     /// @notice Remove a purpose from a key for the caller. The last MANAGEMENT key that can
@@ -233,7 +252,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     /// @dev The MANAGEMENT index only holds signer keys (see {_addKey}), so its length is the
     ///      manager count. The guard is skipped for MODULE keys: they hold no signing
     ///      authority, so removing them can never strand the identity.
-    function removeKey(bytes32 keyHash, uint256 purpose) external {
+    function removeKey(bytes32 keyHash, uint256 purpose, address caller) external {
         AccountRegistry storage registry = _store().registries[msg.sender];
         require(registry.allKeys.contains(keyHash), KeyNotRegistered(keyHash));
         Key storage key = registry.keys[keyHash];
@@ -249,7 +268,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
             registry.allKeys.remove(keyHash);
         }
 
-        emit KeyRemoved(msg.sender, keyHash, purpose);
+        emit KeyRemoved(msg.sender, keyHash, purpose, caller);
     }
 
     /// @notice `IERC734.keyHasPurpose`, scoped to `account`. MANAGEMENT satisfies any purpose.
@@ -429,10 +448,12 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         }
 
         (bytes memory signer,) = abi.decode(userOp.signature, (bytes, bytes));
-        if (!_scopeAllows(userOp.sender, keccak256(signer), userOp.callData)) {
+        bytes32 keyHash = keccak256(signer);
+        if (!_scopeAllows(userOp.sender, keyHash, userOp.callData)) {
             return ERC4337Utils.SIG_VALIDATION_FAILED;
         }
 
+        emit KeyUsed(userOp.sender, keyHash, userOpHash);
         return validationData;
     }
 
@@ -566,7 +587,8 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         bytes memory signerData,
         bytes memory clientData,
         uint256 purpose,
-        uint256 keyType
+        uint256 keyType,
+        address caller
     ) internal {
         // An ERC-7913 signer is at least 20 bytes (a 20-byte EOA/1271 address, or verifier+key).
         // Checked here so every caller (onInstall, addKey) is covered by a single guard.
@@ -606,7 +628,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         if (purpose != KeyPurposes.MANAGEMENT || key.keyType != KeyTypes.MODULE) {
             registry.byPurpose[purpose].add(keyHash);
         }
-        emit KeyAdded(account, keyHash, purpose, keyType);
+        emit KeyAdded(account, keyHash, purpose, keyType, key.signerData, key.clientData, caller);
     }
 
     /// @dev The six ERC-734 purposes this module holds (1..6).
@@ -650,9 +672,11 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         // the registry), and every other outbound call this module makes is a staticcall. As a
         // last line of defense, {_addKey} rejects the module's own address as a grantee. A new
         // state-changing outbound call added to this module must revisit this rebind.
-        if (caller == address(this)) caller = _issuer;
+        if (caller == address(this)) {
+            caller = _issuer;
+        }
         _requireClaimKey(msg.sender, caller, false);
-        return _addClaim(msg.sender, _topic, _scheme, _issuer, _signature, _data, _uri);
+        return _addClaim(msg.sender, _topic, _scheme, _issuer, _signature, _data, _uri, caller);
     }
 
     /// @notice Add a claim without holding a CLAIM_ADDER / CLAIM_SIGNER key on the target
@@ -678,8 +702,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         Structs.ClaimData memory _data,
         string memory _uri
     ) public returns (bytes32 claimRequestId) {
-        _requireTrustedIssuer(_msgSender(), _issuer);
-        return _addClaim(msg.sender, _topic, _scheme, _issuer, _signature, _data, _uri);
+        address caller = _msgSender();
+        _requireTrustedIssuer(caller, _issuer);
+        claimRequestId = _addClaim(msg.sender, _topic, _scheme, _issuer, _signature, _data, _uri, caller);
     }
 
     /// @dev Shared write path for `addClaim` and `addClaimByTrustedIssuer`. The issuer-side
@@ -692,7 +717,8 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         address issuer,
         bytes memory signature,
         Structs.ClaimData memory data,
-        string memory uri
+        string memory uri,
+        address caller
     ) internal returns (bytes32 claimId) {
         // removeClaim reads a claim's topic and treats 0 as "no such claim". So a claim stored
         // under topic 0 could never be removed. Reject it up front.
@@ -714,9 +740,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
             Structs.Claim({ topic: topic, scheme: scheme, issuer: issuer, signature: signature, data: data, uri: uri });
 
         if (s.claimsByTopic[topic].add(claimId)) {
-            emit ClaimAdded(account, claimId, topic, scheme, issuer, signature, data, uri);
+            emit ClaimAdded(account, claimId, topic, scheme, issuer, signature, data, uri, caller);
         } else {
-            emit ClaimChanged(account, claimId, topic, scheme, issuer, signature, data, uri);
+            emit ClaimChanged(account, claimId, topic, scheme, issuer, signature, data, uri, caller);
         }
     }
 
@@ -749,8 +775,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     ///      the same (issuer, topic, ClaimData) and must sign a fresh claim to re-attest.
     function removeClaim(bytes32 _claimId) public returns (bool success) {
         address account = msg.sender;
+        address caller = _msgSender();
         // CLAIM_ADDER cannot remove; only CLAIM_SIGNER (or self-call) is accepted here.
-        _requireClaimKey(account, _msgSender(), true);
+        _requireClaimKey(account, caller, true);
 
         AccountRegistry storage s = _store().registries[account];
         Structs.Claim storage c = s.claims[_claimId];
@@ -771,7 +798,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         }
 
         s.claimsByTopic[topic].remove(_claimId);
-        emit ClaimRemoved(account, _claimId, topic, c.scheme, c.issuer, c.signature, c.data, c.uri);
+        emit ClaimRemoved(account, _claimId, topic, c.scheme, c.issuer, c.signature, c.data, c.uri, caller);
         delete s.claims[_claimId];
 
         return true;
@@ -811,11 +838,12 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     /// @notice Mark a claim digest revoked. Issuer-side revocation entry point.
     function revokeClaimByDigest(bytes32 digest) external {
         address account = msg.sender;
-        _requireManagement(account, _msgSender());
+        address caller = _msgSender();
+        _requireManagement(account, caller);
         require(!_store().registries[account].revokedDigests[digest], Errors.ClaimAlreadyRevoked());
 
         _store().registries[account].revokedDigests[digest] = true;
-        emit ClaimRevoked(digest, account);
+        emit ClaimRevoked(digest, account, caller);
     }
 
     /// @notice True if `digest` was marked revoked by the calling issuer (via revoke or removal).
@@ -865,7 +893,8 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         IIdentity _identity
     ) external {
         address account = msg.sender;
-        _requireManagement(account, _msgSender());
+        address caller = _msgSender();
+        _requireManagement(account, caller);
 
         require(
             _getClaimStatus(account, _identity, _topic, _signature, _data) == IClaimIssuer.ClaimStatus.Valid,
@@ -877,7 +906,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         // passed here as the issuer. Keep this the module's only state-changing external call
         // to an arbitrary address; the issuer rebinding in addClaim depends on it.
         _identity.addClaim(_topic, _scheme, account, _signature, _data, _uri);
-        emit ClaimAddedTo(address(_identity), _topic, _signature, _data);
+        emit ClaimAddedTo(address(_identity), _topic, _signature, _data, caller);
     }
 
     /// @notice The `metadataHash` a claim's `ClaimData` must carry for `_scheme` and `_uri`:

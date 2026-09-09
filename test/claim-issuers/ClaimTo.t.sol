@@ -19,7 +19,9 @@ contract ClaimToTest is OnchainIDSetup {
 
     uint256 internal constant TOPIC = Constants.CLAIM_TOPIC_42;
 
-    event ClaimAddedTo(address indexed identity, uint256 topic, bytes signature, Structs.ClaimData data);
+    event ClaimAddedTo(
+        address indexed identity, uint256 topic, bytes signature, Structs.ClaimData data, address caller
+    );
 
     /// @dev Signs a claim about `subject` with the issuer's CLAIM_SIGNER over the issuer's domain.
     function _buildIssuerClaim(address subject)
@@ -53,7 +55,7 @@ contract ClaimToTest is OnchainIDSetup {
         (bytes memory signature, Structs.ClaimData memory data) = _buildIssuerClaim(address(aliceIdentity));
 
         vm.expectEmit(true, false, false, true);
-        emit ClaimAddedTo(address(aliceIdentity), TOPIC, signature, data);
+        emit ClaimAddedTo(address(aliceIdentity), TOPIC, signature, data, claimIssuerOwner);
         vm.prank(claimIssuerOwner);
         IClaimIssuer(address(claimIssuer))
             .addClaimTo(TOPIC, 1, signature, data, "uri", IIdentity(address(aliceIdentity)));

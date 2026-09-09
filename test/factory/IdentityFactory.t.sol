@@ -157,6 +157,8 @@ contract IdentityFactoryTest is OnchainIDSetup {
         Identity freshImpl = new Identity(address(onchainidSetup.signatureValidator), address(freshFactory));
 
         vm.prank(deployer);
+        vm.expectEmit(address(freshFactory));
+        emit IIdentityFactory.BeaconInitialized(address(freshImpl), deployer);
         freshFactory.initializeBeacon(address(freshImpl));
 
         assertGt(committed.code.length, 0, "beacon landed exactly at the committed address");
@@ -167,6 +169,8 @@ contract IdentityFactoryTest is OnchainIDSetup {
     function test_upgradeBeacon_byAuthorizedCaller() public {
         Identity newImpl = new Identity(address(onchainidSetup.signatureValidator), address(onchainidSetup.idFactory));
         vm.prank(deployer);
+        vm.expectEmit(address(onchainidSetup.idFactory));
+        emit IIdentityFactory.BeaconUpgraded(address(newImpl), "3.0.0", deployer);
         onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.0.0");
         assertEq(
             UpgradeableBeacon(onchainidSetup.idFactory.beacon()).implementation(),
@@ -402,6 +406,39 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertTrue(identityAddr != address(0));
     }
 
+    function test_createIdentityFor_emitsIdentityDeployedWithCallerAsDeployer() public {
+        uint64 role = _restrictTypeToFreshRole(IdentityTypes.CLAIM_ISSUER);
+
+        vm.prank(deployer);
+        onchainidSetup.accessManager.grantRole(role, alice, 0);
+
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(david);
+        bytes memory davidAccount = InteroperableAddress.formatEvmV1(block.chainid, david);
+
+        vm.expectEmit(false, true, true, true, address(onchainidSetup.idFactory));
+        emit IIdentityFactory.IdentityDeployed(address(0), davidAccount, IdentityTypes.CLAIM_ISSUER, alice);
+        vm.prank(alice);
+        onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.CLAIM_ISSUER, "deployedFor", keys);
+    }
+
+    function test_createIdentityFor_emitsIdentityDeployedWithContractDeployer() public {
+        uint64 role = _restrictTypeToFreshRole(IdentityTypes.CLAIM_ISSUER);
+        MockERC1271Wallet issuerContract = new MockERC1271Wallet(alice);
+
+        vm.prank(deployer);
+        onchainidSetup.accessManager.grantRole(role, address(issuerContract), 0);
+
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(david);
+        bytes memory davidAccount = InteroperableAddress.formatEvmV1(block.chainid, david);
+
+        vm.expectEmit(false, true, true, true, address(onchainidSetup.idFactory));
+        emit IIdentityFactory.IdentityDeployed(
+            address(0), davidAccount, IdentityTypes.CLAIM_ISSUER, address(issuerContract)
+        );
+        vm.prank(address(issuerContract), bob);
+        onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.CLAIM_ISSUER, "deployedByContract", keys);
+    }
+
     /// @notice Types registered with PUBLIC_ROLE are deployable by anyone.
     function test_createIdentityFor_publicRoleTypeIsOpen() public {
         // The test helper registers INDIVIDUAL with PUBLIC_ROLE at setUp.
@@ -440,7 +477,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
     function test_setIdentityTypePolicy_emitsEventAndUpdatesView() public {
         vm.prank(deployer);
         vm.expectEmit(true, true, false, true, address(onchainidSetup.idFactory));
-        emit IIdentityFactory.IdentityTypePolicySet(IdentityTypes.CLAIM_ISSUER, 123, false, true);
+        emit IIdentityFactory.IdentityTypePolicySet(IdentityTypes.CLAIM_ISSUER, 123, false, true, deployer);
         onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 123, false, true);
         (uint64 roleId, bool selfDeployable, bool singleBinding, bool registered) =
             onchainidSetup.idFactory.getIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER);
@@ -475,7 +512,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
     function test_removeIdentityTypePolicy_unregistersType() public {
         vm.prank(deployer);
         vm.expectEmit(true, false, false, true, address(onchainidSetup.idFactory));
-        emit IIdentityFactory.IdentityTypePolicyRemoved(IdentityTypes.INDIVIDUAL);
+        emit IIdentityFactory.IdentityTypePolicyRemoved(IdentityTypes.INDIVIDUAL, deployer);
         onchainidSetup.idFactory.removeIdentityTypePolicy(IdentityTypes.INDIVIDUAL);
 
         (,,, bool registered) = onchainidSetup.idFactory.getIdentityTypePolicy(IdentityTypes.INDIVIDUAL);
@@ -528,6 +565,10 @@ contract IdentityFactoryTest is OnchainIDSetup {
         onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 999, true, false);
 
         address selfDeployer = makeAddr("selfIssuerOptedIn");
+        bytes memory selfAccount = InteroperableAddress.formatEvmV1(block.chainid, selfDeployer);
+
+        vm.expectEmit(false, true, true, true, address(onchainidSetup.idFactory));
+        emit IIdentityFactory.IdentityDeployed(address(0), selfAccount, IdentityTypes.CLAIM_ISSUER, selfDeployer);
         vm.prank(selfDeployer);
         address identityAddr = onchainidSetup.idFactory
             .createIdentity(IdentityTypes.CLAIM_ISSUER, "selfIssuerOk", _makeSingleMgmtKeys(selfDeployer));
@@ -1638,7 +1679,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
         vm.prank(deployer);
         vm.expectEmit(true, false, false, true);
-        emit IIdentityFactory.TrustedVerifierSet(verifier, true);
+        emit IIdentityFactory.TrustedVerifierSet(verifier, true, deployer);
         onchainidSetup.idFactory.setTrustedVerifier(verifier, true);
         assertTrue(onchainidSetup.idFactory.isTrustedVerifier(verifier));
 
@@ -1708,6 +1749,10 @@ contract IdentityFactoryTest is OnchainIDSetup {
         uint256 expiry = block.timestamp + 1 hours;
 
         bytes memory payload = _crossChainPayload(solanaEnv, address(aliceIdentity), expiry);
+        vm.expectEmit(address(onchainidSetup.idFactory));
+        emit IIdentityFactory.PendingCrossChainLinkProposed(
+            solanaEnv, address(aliceIdentity), expiry, address(gateway), bytes32(uint256(1))
+        );
         gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(1)), solanaEnv, payload);
 
         // Proposal staged but link not yet active.
@@ -1717,6 +1762,8 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertEq(onchainidSetup.idFactory.getIdentity(solanaEnv), address(0), "not active before confirm");
 
         // Identity confirms — wallet is now actively linked.
+        vm.expectEmit(address(onchainidSetup.idFactory));
+        emit IIdentityFactory.CrossChainLinkConfirmed(solanaEnv, address(aliceIdentity));
         vm.prank(address(aliceIdentity));
         onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, true);
 

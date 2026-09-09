@@ -44,12 +44,14 @@ interface IClaimIssuer is IIdentity {
      *      The same digest may also be marked spent by `removeClaim` on the
      *      holder side; that path emits `ClaimRemoved` (see IERC735) instead.
      */
-    event ClaimRevoked(bytes32 indexed digest, address indexed issuer);
+    event ClaimRevoked(bytes32 indexed digest, address indexed issuer, address caller);
 
     /**
      * @dev Emitted when a claim is successfully added to an identity contract by this claim issuer.
      */
-    event ClaimAddedTo(address indexed identity, uint256 topic, bytes signature, Structs.ClaimData data);
+    event ClaimAddedTo(
+        address indexed identity, uint256 topic, bytes signature, Structs.ClaimData data, address caller
+    );
 
     /**
      * @dev Mark a claim digest as spent. Canonical revocation entry point.

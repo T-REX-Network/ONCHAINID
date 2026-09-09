@@ -156,7 +156,7 @@ contract KeyApprovalModule is IERC7579Module, IKeyExecutor {
 
         // 3. Auto-approve dispatches now; otherwise the request stays pending for {approve}.
         if (_canAutoApprove(account, callerKeyHash, _to)) {
-            _runApproved(account, executionId);
+            _runApproved(account, executionId, proposer);
         }
     }
 
@@ -168,7 +168,8 @@ contract KeyApprovalModule is IERC7579Module, IKeyExecutor {
     function approve(uint256 _id, bool _shouldApprove) external returns (bool success) {
         // 1. Resolve account + ERC-2771 caller, fetch the queued request.
         address account = msg.sender;
-        bytes32 callerKeyHash = hashAddress(_msgSender());
+        address approver = _msgSender();
+        bytes32 callerKeyHash = hashAddress(approver);
         AccountState storage state = _state[account];
         Execution storage execution = state.executions[_id];
 
@@ -193,7 +194,7 @@ contract KeyApprovalModule is IERC7579Module, IKeyExecutor {
             );
         }
 
-        emit Approved(account, _id, _shouldApprove);
+        emit Approved(account, _id, _shouldApprove, approver);
 
         // 4. Approval ⇒ the key that queued the request must still be able to propose, then
         //    dispatch now. A request whose proposer was revoked cannot run, but any authorized
@@ -203,7 +204,7 @@ contract KeyApprovalModule is IERC7579Module, IKeyExecutor {
                 _canPropose(account, hashAddress(execution.proposer)),
                 Errors.ProposerNoLongerAuthorized(execution.proposer)
             );
-            return _runApproved(account, _id);
+            return _runApproved(account, _id, approver);
         }
         execution.executed = true;
         execution.approved = false;
@@ -267,7 +268,7 @@ contract KeyApprovalModule is IERC7579Module, IKeyExecutor {
     /// @dev `executed`/`approved` are written before the dispatch on purpose: they are what stops
     ///      the target re-entering {approve} on the same id. They therefore cannot double as a
     ///      success flag, so the outcome is recorded separately in `succeeded`.
-    function _runApproved(address account, uint256 executionId) internal returns (bool success) {
+    function _runApproved(address account, uint256 executionId, address executor) internal returns (bool success) {
         Execution storage execution = _state[account].executions[executionId];
 
         execution.executed = true;
@@ -283,10 +284,10 @@ contract KeyApprovalModule is IERC7579Module, IKeyExecutor {
 
         try IERC7579Execution(account).executeFromExecutor(mode, executionCalldata) returns (bytes[] memory) {
             execution.succeeded = true;
-            emit Executed(account, executionId, to, value, data);
+            emit Executed(account, executionId, to, value, data, executor);
             return true;
         } catch {
-            emit ExecutionFailed(account, executionId, to, value, data);
+            emit ExecutionFailed(account, executionId, to, value, data, executor);
             return false;
         }
     }
