@@ -39,9 +39,6 @@ library Errors {
     /// @notice Reverts if the string is empty
     error EmptyString();
 
-    /// @notice Reverts if the token is already linked
-    error TokenAlreadyLinked(address token);
-
     /// @notice Reverts when a caller tries to deploy an identity of a type whose
     ///         configured AM role they do not hold.
     /// @param caller the address that attempted the deployment.
@@ -192,26 +189,6 @@ library Errors {
     ///         encoding and the registry only accepts that one.
     error NonCanonicalAccount(bytes account);
 
-    /* ----- Verifier ----- */
-
-    /// @notice The claim topic already exists.
-    error ClaimTopicAlreadyExists(uint256 claimTopic);
-
-    /// @notice The maximum number of claim topics is exceeded.
-    error MaxClaimTopicsExceeded();
-
-    /// @notice The maximum number of trusted issuers is exceeded.
-    error MaxTrustedIssuersExceeded();
-
-    /// @notice The trusted issuer already exists.
-    error TrustedIssuerAlreadyExists(address trustedIssuer);
-
-    /// @notice The trusted claim topics cannot be empty.
-    error TrustedClaimTopicsCannotBeEmpty();
-
-    /// @notice The trusted issuer does not exist.
-    error NotATrustedIssuer(address trustedIssuer);
-
     /* ----- ClaimIssuer ----- */
 
     /// @notice The claim already exists.
@@ -300,12 +277,6 @@ library Errors {
     ///         execution. PROPOSER, ACTION, CLAIM_SIGNER, CLAIM_ADDER, or MANAGEMENT works.
     error SenderCannotPropose(address sender);
 
-    /// @notice The key is not registered.
-    error KeyNotRegistered(bytes32 key);
-
-    /// @notice The key already has the purpose.
-    error KeyAlreadyHasPurpose(bytes32 key, uint256 purpose);
-
     /// @notice The key does not have the purpose.
     error KeyDoesNotHavePurpose(bytes32 key, uint256 purpose);
 
@@ -341,18 +312,6 @@ library Errors {
     /// @notice The signer data is invalid or too short.
     error InvalidSignerData();
 
-    /// @notice The last MANAGEMENT key cannot be removed (would render the identity unrecoverable).
-    error CannotRemoveLastManagementKey();
-
-    /// @notice Reverts when a ClaimIssuer attempts to revoke a claim that was not issued by itself.
-    error NotOwnIssuance();
-
-    /// @notice The validator module specified in a UserOp/signature is not installed.
-    error ValidatorModuleNotInstalled(address module);
-
-    /// @notice The signer key does not have the required purpose for the requested execution.
-    error PurposeNotAuthorizedForCall(bytes32 keyHash, address target);
-
     /// @notice The execution mode requested is not supported by the account's purpose check.
     error UnsupportedExecutionMode(bytes32 mode);
 
@@ -370,37 +329,6 @@ library Errors {
 
     /// @notice ETH push from `KeyApprovalModule` back to the identity failed.
     error ReturnToAccountFailed();
-
-    /// @notice `addKey` `_type` doesn't match the existing key's stored type.
-    error KeyTypeMismatch(bytes32 key, uint256 storedType, uint256 providedType);
-
-    /* ----- IdentityUtilities ----- */
-
-    /// @notice 0 is not a valid topic.
-    error EmptyTopic();
-
-    /// @notice 0 is not a valid Format.
-    error EmptyFormat();
-
-    /// @notice Name cannot be left empty.
-    error EmptyName();
-
-    /// @notice Use update function for existing topics.
-    error TopicAlreadyExists(uint256 topic);
-
-    /// @notice Topic is not registered yet.
-    error TopicNotFound(uint256 topic);
-
-    /* ----- ClaimIssuerFactory ----- */
-
-    /// @notice The claim issuer already exists.
-    error ClaimIssuerAlreadyDeployed(address managementKey);
-
-    /// @notice The address is blacklisted.
-    error Blacklisted(address addr);
-
-    /// @notice The call failed.
-    error CallFailed();
 
     /* ----- EASClaimIssuer ----- */
 

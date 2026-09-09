@@ -31,7 +31,6 @@ import { SafeCalldataBatch } from "./vendor/utils/SafeCalldataBatch.sol";
 import {
     AccountERC7579Upgradeable
 } from "@openzeppelin/contracts-upgradeable/account/extensions/draft-AccountERC7579Upgradeable.sol";
-import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/ERC4337Utils.sol";
 import { CallType, ERC7579Utils, ExecType, Mode } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
 import {
     Execution,

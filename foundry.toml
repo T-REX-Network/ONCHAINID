@@ -21,6 +21,8 @@ bracket_spacing = true
 
 [profile.default.lint]
 lint_on_build = true
+ignore = ["test/**/*.sol"]
+exclude_lints = [ "screaming-snake-case-immutable" ]
 
 [rpc_endpoints]
 baseSepolia = "https://base-sepolia.g.alchemy.com/v2/${ALCHEMY_KEY}"
