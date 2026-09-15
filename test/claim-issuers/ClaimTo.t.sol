@@ -10,6 +10,7 @@ import { Errors } from "contracts/libraries/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
+import { ReputationRegistry } from "contracts/reputation/ReputationRegistry.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 
 /// @notice Coverage for `addClaimTo`. The target's claim-key policy must be evaluated against the
@@ -81,12 +82,43 @@ contract ClaimToTest is OnchainIDSetup {
         assertEq(topic, TOPIC);
     }
 
-    /// @notice A target that granted nothing rejects the issuer.
-    function test_addClaimTo_reverts_whenTargetHasNoGrantForIssuer() public {
+    /// @notice A target that granted nothing still accepts the claim when the issuer passes the
+    ///         trusted-issuer gate (factory CLAIM_ISSUER type + reputation threshold). No
+    ///         per-target key grant is needed for a trusted issuer.
+    function test_addClaimTo_writesClaim_whenIssuerIsTrusted_noGrantOnTarget() public {
         (bytes memory signature, Structs.ClaimData memory data) = _buildIssuerClaim(address(bobIdentity));
 
         vm.prank(claimIssuerOwner);
-        vm.expectRevert(Errors.SenderDoesNotHaveClaimSignerKey.selector);
+        IClaimIssuer(address(claimIssuer)).addClaimTo(TOPIC, 1, signature, data, "uri", IIdentity(address(bobIdentity)));
+
+        bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), TOPIC);
+        (uint256 topic,, address issuer,,,) = IIdentity(address(bobIdentity)).getClaim(claimId);
+        assertEq(topic, TOPIC);
+        assertEq(issuer, address(claimIssuer));
+    }
+
+    /// @notice A target that granted nothing rejects an issuer that fails the trusted-issuer
+    ///         gate: with the claim-add threshold above the issuer's score, the keyless path
+    ///         is refused.
+    function test_addClaimTo_reverts_whenTargetHasNoGrantAndIssuerNotTrusted() public {
+        ReputationRegistry registry = onchainidSetup.reputationRegistry;
+        address reputationManager = makeAddr("reputationManager");
+
+        bytes4[] memory selectors = new bytes4[](1);
+        selectors[0] = ReputationRegistry.setClaimAddThreshold.selector;
+        vm.startPrank(deployer);
+        onchainidSetup.accessManager.setTargetFunctionRole(address(registry), selectors, 1001);
+        onchainidSetup.accessManager.grantRole(1001, reputationManager, 0);
+        vm.stopPrank();
+        vm.prank(reputationManager);
+        registry.setClaimAddThreshold(1);
+
+        (bytes memory signature, Structs.ClaimData memory data) = _buildIssuerClaim(address(bobIdentity));
+
+        vm.prank(claimIssuerOwner);
+        vm.expectRevert(
+            abi.encodeWithSelector(Errors.ReputationBelowClaimAddThreshold.selector, address(claimIssuer), 0, 1)
+        );
         IClaimIssuer(address(claimIssuer)).addClaimTo(TOPIC, 1, signature, data, "uri", IIdentity(address(bobIdentity)));
     }
 

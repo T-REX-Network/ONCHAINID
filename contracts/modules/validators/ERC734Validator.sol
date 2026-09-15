@@ -655,9 +655,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         Structs.ClaimData memory _data,
         string memory _uri
     ) public returns (bytes32 claimRequestId) {
-        // CLAIM_SIGNER or CLAIM_ADDER can add a claim. Self-issued claims still need a real
-        // signature (checked by isClaimValid in _addClaim), so CLAIM_ADDER cannot fake
-        // self-attestations.
+        // CLAIM_SIGNER or CLAIM_ADDER can add a claim; so can a trusted issuer identity (see
+        // below). Self-issued claims still need a real signature (checked by isClaimValid in
+        // _addClaim), so CLAIM_ADDER cannot fake self-attestations.
         address caller = _msgSender();
         // If the caller is this module itself, the call came from {addClaimTo}: the module made
         // the outbound call, so the target's fallback appended the module's own address as the
@@ -675,7 +675,13 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         if (caller == address(this)) {
             caller = _issuer;
         }
-        _requireClaimKey(msg.sender, caller, false);
+        // Either a claim key on the target, or the caller is the declared issuer itself and
+        // passes the trusted-issuer gate. A key grant is the target's own authorization, so
+        // it is never overridden by the global gate.
+        if (!_hasClaimKey(msg.sender, caller, false)) {
+            require(caller == _issuer, Errors.SenderDoesNotHaveClaimSignerKey());
+            _requireTrustedIssuer(caller, _issuer);
+        }
         return _addClaim(msg.sender, _topic, _scheme, _issuer, _signature, _data, _uri, caller);
     }
 
@@ -747,8 +753,10 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     }
 
     /// @dev Trusted-issuer gate. Four conditions, all required:
-    ///        1. The caller wallet resolves through the factory to a non-zero issuer identity
-    ///           (i.e. it is a linked account on a factory-deployed identity).
+    ///        1. The caller resolves through the factory to a non-zero issuer identity: either
+    ///           a linked account on a factory-deployed identity, or a factory identity itself
+    ///           (an identity is its own identity, so an issuer smart account executing the
+    ///           call directly resolves to itself — no self-binding needed).
     ///        2. That identity equals the claim's declared issuer (issuer-bound rule).
     ///        3. The factory's type record for that identity is `CLAIM_ISSUER`. Without this,
     ///           any identity that happens to be scored above the threshold (e.g. an
@@ -757,7 +765,12 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     ///      `reputationOf` already returns `0` for non-factory identities, so the score check
     ///      implicitly re-confirms factory membership.
     function _requireTrustedIssuer(address caller, address expectedIssuer) internal view {
-        address callerIdentity = factory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, caller));
+        // An issuer identity executing the call is its own identity. Any other caller
+        // must be a wallet linked to the issuer through the factory.
+        address callerIdentity = caller;
+        if (!factory.isFactoryIdentity(caller)) {
+            callerIdentity = factory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, caller));
+        }
         require(callerIdentity != address(0), Errors.CallerNotLinkedToFactoryIdentity(caller));
         require(expectedIssuer == callerIdentity, Errors.DeclaredIssuerMismatch(expectedIssuer, callerIdentity));
         require(
@@ -776,13 +789,18 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     function removeClaim(bytes32 _claimId) public returns (bool success) {
         address account = msg.sender;
         address caller = _msgSender();
-        // CLAIM_ADDER cannot remove; only CLAIM_SIGNER (or self-call) is accepted here.
-        _requireClaimKey(account, caller, true);
 
         AccountRegistry storage s = _store().registries[account];
         Structs.Claim storage c = s.claims[_claimId];
         uint256 topic = c.topic;
         require(topic != 0, Errors.ClaimNotRegistered(_claimId));
+
+        // CLAIM_ADDER cannot remove; CLAIM_SIGNER can. A trusted issuer can remove
+        // its own claims only, so it can never touch another issuer's claims.
+        if (!_hasClaimKey(account, caller, true)) {
+            require(caller == c.issuer, Errors.SenderDoesNotHaveClaimSignerKey());
+            _requireTrustedIssuer(caller, c.issuer);
+        }
 
         // Revoke the digest on both the holder's and the issuer's sets so _getClaimStatus (which
         // reads the issuer's set) blocks re-adding the same bytes. Marking an already marked
@@ -882,8 +900,10 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         return _getClaimDigest(msg.sender, _identity, _topic, _data);
     }
 
-    /// @notice Verify a claim then write it to the target identity via its `addClaim`. The target
-    ///         must have granted the calling issuer identity a CLAIM_SIGNER or CLAIM_ADDER key.
+    /// @notice Verify a claim then write it to the target identity via its `addClaim`. The write
+    ///         is accepted when the target granted the calling issuer identity a CLAIM_SIGNER or
+    ///         CLAIM_ADDER key, or when the issuer passes the trusted-issuer gate (factory
+    ///         CLAIM_ISSUER type record plus reputation threshold) — no per-target grant needed.
     function addClaimTo(
         uint256 _topic,
         uint256 _scheme,
@@ -983,15 +1003,13 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         return IClaimIssuer.ClaimStatus.Valid;
     }
 
-    /// @dev Require the off-chain caller to hold a claim key on `account`. CLAIM_SIGNER covers add
-    ///      and remove; CLAIM_ADDER is accepted only when `onlyClaimSigner` is false (addClaim).
-    function _requireClaimKey(address account, address caller, bool onlyClaimSigner) internal view {
+    /// @dev Whether `caller` holds a claim key on `account`. CLAIM_SIGNER covers add and
+    ///      remove; CLAIM_ADDER counts only when `onlyClaimSigner` is false (addClaim).
+    function _hasClaimKey(address account, address caller, bool onlyClaimSigner) internal view returns (bool) {
         bytes32 keyHash = hashAddress(caller);
 
-        if (keyHasPurpose(account, keyHash, KeyPurposes.CLAIM_SIGNER)) return;
-        if (!onlyClaimSigner && keyHasPurpose(account, keyHash, KeyPurposes.CLAIM_ADDER)) return;
-
-        revert Errors.SenderDoesNotHaveClaimSignerKey();
+        if (keyHasPurpose(account, keyHash, KeyPurposes.CLAIM_SIGNER)) return true;
+        return !onlyClaimSigner && keyHasPurpose(account, keyHash, KeyPurposes.CLAIM_ADDER);
     }
 
     /// @dev Require the off-chain caller to hold MANAGEMENT on `account`.
