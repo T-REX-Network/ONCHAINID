@@ -724,9 +724,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     ///      CLAIM_ISSUER (the record is written once at deploy, so it also proves factory
     ///      membership) and its reputation must meet the global claim-add threshold.
     function _requireTrustedIssuer(address issuer) internal view {
-        require(
-            factory.identityTypeOf(issuer) == IdentityTypes.CLAIM_ISSUER, Errors.IdentityNotClaimIssuerType(issuer)
-        );
+        require(factory.identityTypeOf(issuer) == IdentityTypes.CLAIM_ISSUER, Errors.IdentityNotClaimIssuerType(issuer));
         IReputationRegistry registry = reputationRegistry;
         uint128 score = registry.reputationOf(issuer);
         uint128 threshold = registry.claimAddThreshold();
