@@ -1424,6 +1424,127 @@ contract IdentityFactoryTest is OnchainIDSetup {
         );
     }
 
+    // ============ factory identity self-resolution ============
+
+    /// @notice A factory identity is its own identity: identities are smart accounts and
+    ///         act on the ecosystem directly, so resolving one must return itself, not
+    ///         address(0). The resolution entry is seeded at deploy, so the getter stays
+    ///         a single registry lookup.
+    function test_getIdentity_factoryIdentityResolvesToItself() public view {
+        bytes memory env = InteroperableAddress.formatEvmV1(block.chainid, address(aliceIdentity));
+        assertEq(onchainidSetup.idFactory.getIdentity(env), address(aliceIdentity));
+    }
+
+    /// @notice Self-resolution also covers single-binding identities (ASSET), whose bound
+    ///         contract is the token, not the identity itself.
+    function test_getIdentity_assetIdentityResolvesToItself() public view {
+        address assetIdentity = onchainidSetup.idFactory
+            .getIdentity(InteroperableAddress.formatEvmV1(block.chainid, Constants.TOKEN_ADDRESS));
+        bytes memory env = InteroperableAddress.formatEvmV1(block.chainid, assetIdentity);
+        assertEq(onchainidSetup.idFactory.getIdentity(env), assetIdentity);
+    }
+
+    /// @notice Self-resolution is resolution, not an account binding: the identity is
+    ///         not one of its own linked accounts, so it never shows up in the account
+    ///         enumeration, the linked-account count only reflects real wallets, and the
+    ///         account-binding views report no Active binding for the identity itself.
+    function test_getIdentity_selfResolutionIsNotALinkedAccount() public view {
+        bytes memory env = InteroperableAddress.formatEvmV1(block.chainid, address(aliceIdentity));
+
+        assertEq(
+            uint256(onchainidSetup.idFactory.getAccountStatus(env)),
+            uint256(IIdentityFactory.AccountStatus.None),
+            "no Active account binding for the identity itself"
+        );
+        (address bound, IIdentityFactory.AccountStatus status) =
+            onchainidSetup.idFactory.getIdentityIncludingRevoked(env);
+        assertEq(bound, address(0), "not reported as a bound wallet");
+        assertEq(uint256(status), uint256(IIdentityFactory.AccountStatus.None));
+
+        bytes32 selfKey = keccak256(env);
+        bytes[] memory accounts = onchainidSetup.idFactory
+            .getAccounts(address(aliceIdentity), 0, onchainidSetup.idFactory.getAccountsCount(address(aliceIdentity)));
+        for (uint256 i = 0; i < accounts.length; i++) {
+            assertTrue(keccak256(accounts[i]) != selfKey, "identity must not appear in its own account list");
+        }
+    }
+
+    /// @notice Deploying an identity emits no AccountLinked for the identity itself:
+    ///         only the auto-linked wallet produces a link event.
+    function test_createIdentity_emitsNoAccountLinkedForIdentityItself() public {
+        address selfDeployer = makeAddr("noSelfLinkEvent");
+        vm.recordLogs();
+        vm.prank(selfDeployer);
+        address identity = onchainidSetup.idFactory
+            .createIdentity(IdentityTypes.INDIVIDUAL, "noSelfLinkEvent", _makeSingleMgmtKeys(selfDeployer));
+
+        bytes memory selfEnv = InteroperableAddress.formatEvmV1(block.chainid, identity);
+        bytes32 linkedSig = keccak256("AccountLinked(bytes,address,address)");
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        uint256 linkEvents = 0;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] != linkedSig) {
+                continue;
+            }
+            linkEvents++;
+            (bytes memory account,) = abi.decode(logs[i].data, (bytes, address));
+            assertTrue(keccak256(account) != keccak256(selfEnv), "no AccountLinked for the identity itself");
+        }
+        assertEq(linkEvents, 1, "exactly one link event: the auto-linked wallet");
+        assertEq(onchainidSetup.idFactory.getIdentity(selfEnv), identity);
+    }
+
+    /// @notice The self-resolution entry cannot be revoked: it is not in the identity's
+    ///         account set, so {_revokeAccount}'s set removal fails. An identity can
+    ///         never break its own resolution.
+    function test_revokeAccount_cannotRevokeSelfResolutionEntry() public {
+        bytes memory env = InteroperableAddress.formatEvmV1(block.chainid, address(aliceIdentity));
+
+        vm.expectRevert(abi.encodeWithSelector(Errors.WalletNotLinkedToIdentity.selector, env));
+        vm.prank(address(aliceIdentity));
+        onchainidSetup.idFactory.revokeAccount(env);
+
+        assertEq(onchainidSetup.idFactory.getIdentity(env), address(aliceIdentity), "resolution intact");
+    }
+
+    function test_getIdentityWithType_factoryIdentityResolvesToItselfWithType() public view {
+        bytes memory env = InteroperableAddress.formatEvmV1(block.chainid, address(claimIssuer));
+        (address identity, uint256 identityType) = onchainidSetup.idFactory.getIdentityWithType(env);
+        assertEq(identity, address(claimIssuer));
+        assertEq(identityType, IdentityTypes.CLAIM_ISSUER);
+    }
+
+    /// @notice An envelope naming the identity's address on another chain says nothing
+    ///         about this chain's contract, so it does not self-resolve.
+    function test_getIdentity_foreignChainEnvelopeOfIdentityReturnsZero() public view {
+        bytes memory foreignEnv = InteroperableAddress.formatEvmV1(block.chainid + 1, address(aliceIdentity));
+        assertEq(onchainidSetup.idFactory.getIdentity(foreignEnv), address(0));
+    }
+
+    /// @notice A factory identity can never become an account of another identity: the
+    ///         binding would create a second, conflicting resolution for its address.
+    ///         Here via the deploy auto-link of {createIdentityFor}.
+    function test_createIdentityFor_factoryIdentityAsAccountReverts() public {
+        vm.prank(deployer);
+        vm.expectRevert(abi.encodeWithSelector(Errors.CannotLinkFactoryIdentity.selector, address(aliceIdentity)));
+        onchainidSetup.idFactory
+            .createIdentityFor(
+                address(aliceIdentity),
+                IdentityTypes.INDIVIDUAL,
+                "identityAsAccount",
+                _makeSingleMgmtKeys(address(aliceIdentity))
+            );
+    }
+
+    /// @notice Same rule on the self-deploy path: an identity executing {createIdentity}
+    ///         would auto-link itself as the new identity's wallet, so it is rejected.
+    function test_createIdentity_calledByFactoryIdentityReverts() public {
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(abi.encodeWithSelector(Errors.CannotLinkFactoryIdentity.selector, address(aliceIdentity)));
+        onchainidSetup.idFactory
+            .createIdentity(IdentityTypes.INDIVIDUAL, "identitySelfDeploy", _makeSingleMgmtKeys(address(aliceIdentity)));
+    }
+
     // ============ ERC-7930 — non-EVM interoperable address ============
 
     /// @dev A non-EVM ERC-7930 envelope. `chainType` is a non-EIP-155 tag (we use

@@ -131,6 +131,11 @@ library Errors {
     ///         it would break the 1:1 token↔identity mapping.
     error CannotLinkToAssetIdentity(address identity);
 
+    /// @notice Reverts when a factory-deployed identity is presented as an account to link
+    ///         to another identity. A factory identity always resolves to itself, so binding
+    ///         it as an account would make identity resolution ambiguous.
+    error CannotLinkFactoryIdentity(address identity);
+
     /// @notice Reverts when {revokeAccount} is called on a non-signing-entity identity
     ///         (ASSET or SMART_CONTRACT). The bound contract cannot sign a fresh
     ///         {linkAccount} digest, so revoking would orphan the factory's discovery
