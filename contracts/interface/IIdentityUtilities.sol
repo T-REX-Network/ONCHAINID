@@ -57,9 +57,11 @@ interface IIdentityUtilities {
      * @param name Human-readable name of the topic
      * @param encodedFieldNames ABI-encoded string[] representing the names of the fields
      * @param encodedFieldTypes ABI-encoded string[] representing the types of the fields
+     * @param caller The account that added the topic
      */
-
-    event TopicAdded(uint256 indexed topicId, string name, bytes encodedFieldNames, bytes encodedFieldTypes);
+    event TopicAdded(
+        uint256 indexed topicId, string name, bytes encodedFieldNames, bytes encodedFieldTypes, address caller
+    );
 
     /**
      * @notice Emitted when an existing topic is updated
@@ -67,14 +69,18 @@ interface IIdentityUtilities {
      * @param name New human-readable name of the topic
      * @param encodedFieldNames Updated ABI-encoded string[] of field names
      * @param encodedFieldTypes Updated ABI-encoded string[] of field types
+     * @param caller The account that updated the topic
      */
-    event TopicUpdated(uint256 indexed topicId, string name, bytes encodedFieldNames, bytes encodedFieldTypes);
+    event TopicUpdated(
+        uint256 indexed topicId, string name, bytes encodedFieldNames, bytes encodedFieldTypes, address caller
+    );
 
     /**
      * @notice Emitted when a topic is removed from the registry
      * @param topicId The ID of the removed topic
+     * @param caller The account that removed the topic
      */
-    event TopicRemoved(uint256 indexed topicId);
+    event TopicRemoved(uint256 indexed topicId, address caller);
 
     /**
      * @notice Registers a new topic with its name and schema definition

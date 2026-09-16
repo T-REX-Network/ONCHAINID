@@ -273,7 +273,7 @@ contract DeployOnchainID is Script {
         pure
         returns (Structs.ModuleInstall[] memory installs)
     {
-        installs = new Structs.ModuleInstall[](20);
+        installs = new Structs.ModuleInstall[](19);
         installs[0] =
             Structs.ModuleInstall({ moduleType: MODULE_TYPE_VALIDATOR, module: validator, initData: "", purpose: 0 });
         installs[1] = Structs.ModuleInstall({
@@ -293,11 +293,10 @@ contract DeployOnchainID is Script {
         installs[12] = _fallback(validator, IClaimIssuer.revokeClaimByDigest.selector);
         installs[13] = _fallback(validator, IClaimIssuer.isDigestRevoked.selector);
         installs[14] = _fallback(validator, IClaimIssuer.addClaimTo.selector);
-        installs[15] = _fallback(validator, ERC734Validator.addClaimByTrustedIssuer.selector);
-        installs[16] = _fallback(validator, IERC734.keyHasPurpose.selector);
-        installs[17] = _fallback(validator, IERC734.getKey.selector);
-        installs[18] = _fallback(validator, IERC734.getKeyPurposes.selector);
-        installs[19] = _fallback(validator, IERC734.getKeysByPurpose.selector);
+        installs[15] = _fallback(validator, IERC734.keyHasPurpose.selector);
+        installs[16] = _fallback(validator, IERC734.getKey.selector);
+        installs[17] = _fallback(validator, IERC734.getKeyPurposes.selector);
+        installs[18] = _fallback(validator, IERC734.getKeysByPurpose.selector);
     }
 
     function _fallback(address module, bytes4 selector) private pure returns (Structs.ModuleInstall memory) {

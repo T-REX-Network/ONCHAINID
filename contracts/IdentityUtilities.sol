@@ -74,7 +74,7 @@ contract IdentityUtilities is IIdentityUtilities, AccessControlUpgradeable, UUPS
         _topics[topicId] =
             TopicInfo({ name: name, encodedFieldNames: encodedFieldNames, encodedFieldTypes: encodedFieldTypes });
 
-        emit TopicAdded(topicId, name, encodedFieldNames, encodedFieldTypes);
+        emit TopicAdded(topicId, name, encodedFieldNames, encodedFieldTypes, msg.sender);
     }
 
     /**
@@ -93,7 +93,7 @@ contract IdentityUtilities is IIdentityUtilities, AccessControlUpgradeable, UUPS
         _topics[topicId] =
             TopicInfo({ name: name, encodedFieldNames: encodedFieldNames, encodedFieldTypes: encodedFieldTypes });
 
-        emit TopicUpdated(topicId, name, encodedFieldNames, encodedFieldTypes);
+        emit TopicUpdated(topicId, name, encodedFieldNames, encodedFieldTypes, msg.sender);
     }
 
     /**
@@ -102,7 +102,7 @@ contract IdentityUtilities is IIdentityUtilities, AccessControlUpgradeable, UUPS
     function removeTopic(uint256 topicId) external override onlyRole(TOPIC_MANAGER_ROLE) {
         require(_topics[topicId].encodedFieldNames.length != 0, "Topic does not exist");
         delete _topics[topicId];
-        emit TopicRemoved(topicId);
+        emit TopicRemoved(topicId, msg.sender);
     }
 
     /**

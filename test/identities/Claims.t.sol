@@ -41,7 +41,8 @@ contract ClaimsTest is OnchainIDSetup {
             bobClaim.issuer,
             bobClaim.signature,
             bobClaim.data,
-            bobClaim.uri
+            bobClaim.uri,
+            bob
         );
         vm.prank(bob);
         IIdentity(address(bobIdentity))
@@ -69,7 +70,8 @@ contract ClaimsTest is OnchainIDSetup {
             updated.issuer,
             updated.signature,
             updated.data,
-            updated.uri
+            updated.uri,
+            alice
         );
         vm.prank(alice);
         IIdentity(address(aliceIdentity))
@@ -87,7 +89,8 @@ contract ClaimsTest is OnchainIDSetup {
             aliceClaim666.issuer,
             aliceClaim666.signature,
             aliceClaim666.data,
-            aliceClaim666.uri
+            aliceClaim666.uri,
+            alice
         );
         vm.prank(alice);
         IIdentity(address(aliceIdentity)).removeClaim(aliceClaim666.id);

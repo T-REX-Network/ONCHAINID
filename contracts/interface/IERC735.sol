@@ -52,7 +52,8 @@ interface IERC735 {
         address indexed issuer,
         bytes signature,
         Structs.ClaimData data,
-        string uri
+        string uri,
+        address caller
     );
 
     /**
@@ -68,7 +69,8 @@ interface IERC735 {
         address indexed issuer,
         bytes signature,
         Structs.ClaimData data,
-        string uri
+        string uri,
+        address caller
     );
 
     /**
@@ -84,7 +86,8 @@ interface IERC735 {
         address indexed issuer,
         bytes signature,
         Structs.ClaimData data,
-        string uri
+        string uri,
+        address caller
     );
 
     /**

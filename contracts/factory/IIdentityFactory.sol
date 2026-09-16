@@ -77,11 +77,19 @@ interface IIdentityFactory {
         Revoked
     }
 
-    // event emitted when a wallet is linked to an identity
-    event AccountLinked(bytes account, address indexed identity);
+    /// @notice Emitted once per deploy, from both {createIdentity} and {createIdentityFor}.
+    ///         `deployer` is the factory caller: the account itself on self-deploy, the
+    ///         issuer or agent that onboarded `account` otherwise.
+    event IdentityDeployed(
+        address indexed identity, bytes account, uint256 indexed identityType, address indexed deployer
+    );
+
+    // event emitted when a wallet is linked to an identity. `caller` is the deployer on the
+    // auto-link at deploy, and the identity itself on every later link
+    event AccountLinked(bytes account, address indexed identity, address caller);
 
     // event emitted when a wallet is revoked from its identity (binding stays on-chain, status flips)
-    event AccountRevoked(bytes account, address indexed identity);
+    event AccountRevoked(bytes account, address indexed identity, address caller);
 
     /// @notice Emitted when the policy for a given identity type is set. Setting a policy
     ///         registers the type. `selfDeployable` gates {createIdentity}: true allows
@@ -89,19 +97,26 @@ interface IIdentityFactory {
     ///         marks types bound to one contract (ASSET, SMART_CONTRACT): they keep the
     ///         account set at deploy and can never link or revoke another.
     event IdentityTypePolicySet(
-        uint256 indexed identityType, uint64 indexed roleId, bool selfDeployable, bool singleBinding
+        uint256 indexed identityType, uint64 indexed roleId, bool selfDeployable, bool singleBinding, address caller
     );
 
     /// @notice Emitted when an identity type is unregistered (both deploy paths revert).
-    event IdentityTypePolicyRemoved(uint256 indexed identityType);
+    event IdentityTypePolicyRemoved(uint256 indexed identityType, address caller);
 
     /// @notice Emitted when the modules registered for an identity type change. Every
     ///         identity of that type installs these from then on.
-    event IdentityTypeModulesSet(uint256 indexed identityType, Structs.ModuleInstall[] modules);
+    event IdentityTypeModulesSet(uint256 indexed identityType, Structs.ModuleInstall[] modules, address caller);
+
+    /// @notice Emitted once per identity at creation with the type recorded in factory
+    ///         storage. The record never changes, so indexers can rebuild the full
+    ///         identity → type mapping from this event alone.
+    event IdentityTypeRecorded(address indexed identity, uint256 identityType);
 
     /// @notice Emitted when an inbound ERC-7786 message has staged a wallet -> identity
     ///         binding awaiting identity-side confirmation. The link is not active yet.
-    event PendingCrossChainLinkProposed(bytes account, address indexed identity, uint256 expiry);
+    event PendingCrossChainLinkProposed(
+        bytes account, address indexed identity, uint256 expiry, address gateway, bytes32 receiveId
+    );
 
     /// @notice Emitted when an identity confirms a pending cross-chain proposal and the
     ///         wallet becomes active.
@@ -114,16 +129,18 @@ interface IIdentityFactory {
 
     /// @notice Emitted when admin adds or removes an authorized ERC-7786 gateway
     ///         for one origin chain.
-    event TrustedGatewaySet(address indexed gateway, bytes2 chainType, bytes chainReference, bool trusted);
+    event TrustedGatewaySet(
+        address indexed gateway, bytes2 chainType, bytes chainReference, bool trusted, address caller
+    );
 
     /// @notice Emitted when admin adds or removes an approved ERC-7913 verifier.
-    event TrustedVerifierSet(address indexed verifier, bool trusted);
+    event TrustedVerifierSet(address indexed verifier, bool trusted, address caller);
 
     /// @notice Emitted when the beacon is deployed via {initializeBeacon}.
-    event BeaconInitialized(address indexed implementation);
+    event BeaconInitialized(address indexed implementation, address caller);
 
     /// @notice Emitted when the beacon implementation is upgraded via {upgradeBeacon}.
-    event BeaconUpgraded(address indexed implementation);
+    event BeaconUpgraded(address indexed implementation, string version, address caller);
 
     /// @notice One-shot bootstrap: deploys the OZ UpgradeableBeacon at the factory's
     ///         predetermined CREATE3 slot ({beacon}), pointing at `implementation` and
@@ -175,7 +192,9 @@ interface IIdentityFactory {
     ///         (ASSET, SMART_CONTRACT, ...): they keep the account set at deploy and can
     ///         never link or revoke another. Setting a policy registers the type;
     ///         registration is tracked separately from the role, so the AM's `ADMIN_ROLE`
-    ///         (id 0) is usable like any other role. `restricted` via the AM.
+    ///         (id 0) is usable like any other role. Type 0 reverts: in the type
+    ///         record a 0 means "not deployed by this factory". `restricted` via
+    ///         the AM.
     function setIdentityTypePolicy(uint256 _identityType, uint64 _roleId, bool _selfDeployable, bool _singleBinding)
         external;
 
@@ -309,9 +328,21 @@ interface IIdentityFactory {
     /// @notice Number of active wallets currently linked to `identity`.
     function getAccountsCount(address identity) external view returns (uint256);
 
+    /// @notice Resolve a wallet to its bound identity together with the identity's
+    ///         recorded type, in one call. Returns (address(0), 0) when the wallet's
+    ///         status is not `Active`, same rule as {getIdentity}.
+    function getIdentityWithType(bytes calldata account) external view returns (address identity, uint256 identityType);
+
     /// @notice Returns true iff `identity` was deployed by this factory. Used by
     ///         {linkAccount} to reject pulls into non-OnchainID contracts.
     function isFactoryIdentity(address identity) external view returns (bool);
+
+    /// @notice Type recorded for `identity` at creation, 0 for contracts this factory
+    ///         did not deploy. Written once at deploy with no update path, so this is
+    ///         the trustworthy source for type-dependent verification: read the type
+    ///         here rather than from the identity, which is a modular account and
+    ///         answers with whatever its modules say.
+    function identityTypeOf(address identity) external view returns (uint256);
 
     /// @notice Current nonce for a signer. Keyed by `keccak256(account)` cast to address
     ///         so EVM and ERC-7913 signers share the same nonce store.

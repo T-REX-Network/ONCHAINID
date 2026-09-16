@@ -11,11 +11,12 @@ import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.so
 import { ReputationRegistry } from "contracts/reputation/ReputationRegistry.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 
-/// @title ClaimsModule.addClaimByTrustedIssuer tests
-/// @dev Exercises the trusted-issuer path. A wallet that holds no key on the target
-///      identity can still write a claim if it resolves through the factory to an
-///      issuer identity whose reputation meets the global claim-add threshold.
-contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
+/// @title Trusted-issuer claim tests
+/// @dev Exercises the trusted-issuer path of `addClaim` / `removeClaim`. A claim issuer
+///      identity that holds no key on the target can write (and remove) its own claims when
+///      it is the caller, its factory type record is CLAIM_ISSUER and its reputation meets
+///      the global claim-add threshold.
+contract TrustedIssuerClaimsTest is OnchainIDSetup {
 
     uint64 internal constant REPUTATION_MANAGER_ROLE = 1001;
 
@@ -52,9 +53,9 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
 
     // ============ Positive path ============
 
-    function test_trustedIssuer_canAddClaimWithoutKeyGrant() public {
-        // claimIssuer is factory-deployed CLAIM_ISSUER; claimIssuerOwner is its auto-linked
-        // wallet. No key has been granted on aliceIdentity for claimIssuerOwner.
+    function test_trustedIssuerIdentity_canAddClaimWithoutKeyGrant() public {
+        // claimIssuer is factory-deployed CLAIM_ISSUER and holds no key on aliceIdentity.
+        // The identity itself is the caller, as when it executes a batched user operation.
         bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), FRESH_TOPIC);
         (,, address issuerBefore,,,) = IIdentity(address(aliceIdentity)).getClaim(claimId);
         assertEq(issuerBefore, address(0));
@@ -62,73 +63,77 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
         (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
             _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
 
-        vm.prank(claimIssuerOwner);
-        ERC734Validator(address(aliceIdentity))
-            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
+        vm.prank(address(claimIssuer));
+        vm.expectEmit(address(onchainidSetup.signatureValidator));
+        emit IERC735.ClaimAdded(
+            address(aliceIdentity), claimId, FRESH_TOPIC, scheme, issuer, signature, data, "", address(claimIssuer)
+        );
+        ERC734Validator(address(aliceIdentity)).addClaim(FRESH_TOPIC, scheme, issuer, signature, data, "");
 
         (uint256 topic,, address issuerAfter,,,) = IIdentity(address(aliceIdentity)).getClaim(claimId);
         assertEq(topic, FRESH_TOPIC);
         assertEq(issuerAfter, address(claimIssuer));
     }
 
+    function test_trustedIssuerIdentity_canRemoveItsOwnClaim() public {
+        (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
+            _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
+        vm.prank(address(claimIssuer));
+        ERC734Validator(address(aliceIdentity)).addClaim(FRESH_TOPIC, scheme, issuer, signature, data, "");
+
+        bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), FRESH_TOPIC);
+        vm.prank(address(claimIssuer));
+        ERC734Validator(address(aliceIdentity)).removeClaim(claimId);
+
+        (,, address issuerAfter,,,) = IIdentity(address(aliceIdentity)).getClaim(claimId);
+        assertEq(issuerAfter, address(0));
+    }
+
     // ============ Negative paths ============
 
     function test_untrustedIssuer_revertsWithReputationBelowThreshold() public {
-        // Drop claimIssuer's reputation below threshold.
         vm.prank(reputationManager);
         onchainidSetup.reputationRegistry.setReputation(address(claimIssuer), 0);
 
         (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
             _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
 
-        vm.prank(claimIssuerOwner);
+        vm.prank(address(claimIssuer));
         vm.expectRevert(
             abi.encodeWithSelector(Errors.ReputationBelowClaimAddThreshold.selector, address(claimIssuer), 0, THRESHOLD)
         );
-        ERC734Validator(address(aliceIdentity))
-            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
+        ERC734Validator(address(aliceIdentity)).addClaim(FRESH_TOPIC, scheme, issuer, signature, data, "");
 
         bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), FRESH_TOPIC);
         (,, address issuerAfter,,,) = IIdentity(address(aliceIdentity)).getClaim(claimId);
         assertEq(issuerAfter, address(0));
     }
 
-    function test_callerNotLinkedToAnyIdentity_revertsWithCallerNotLinked() public {
-        // A wallet the factory does not know cannot use this path.
+    function test_strangerCaller_revertsWithClaimSignerKey() public {
+        // A keyless caller that is not the declared issuer never reaches the trusted gate.
         address stranger = makeAddr("stranger");
         (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
             _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
 
         vm.prank(stranger);
-        vm.expectRevert(abi.encodeWithSelector(Errors.CallerNotLinkedToFactoryIdentity.selector, stranger));
-        ERC734Validator(address(aliceIdentity))
-            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
+        vm.expectRevert(Errors.SenderDoesNotHaveClaimSignerKey.selector);
+        ERC734Validator(address(aliceIdentity)).addClaim(FRESH_TOPIC, scheme, issuer, signature, data, "");
     }
 
-    function test_declaredIssuerMismatch_revertsWithMismatchError() public {
-        // claimIssuerOwner resolves to claimIssuer, but the call declares bobIdentity
-        // as the issuer. Reject so a trusted issuer cannot ship a claim attributed to
-        // someone else.
+    function test_trustedIssuer_cannotShipClaimDeclaringAnotherIssuer() public {
+        // claimIssuer calls but declares bobIdentity as the issuer: caller != issuer, so
+        // the keyless path is refused before any trust check.
         (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
             _buildSignedClaim(address(aliceIdentity), address(bobIdentity), FRESH_TOPIC);
 
-        vm.prank(claimIssuerOwner);
-        vm.expectRevert(
-            abi.encodeWithSelector(Errors.DeclaredIssuerMismatch.selector, address(bobIdentity), address(claimIssuer))
-        );
-        ERC734Validator(address(aliceIdentity))
-            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
+        vm.prank(address(claimIssuer));
+        vm.expectRevert(Errors.SenderDoesNotHaveClaimSignerKey.selector);
+        ERC734Validator(address(aliceIdentity)).addClaim(FRESH_TOPIC, scheme, issuer, signature, data, "");
     }
 
     function test_highScoreNonClaimIssuer_cannotAddClaim() public {
-        // The trusted-issuer path must reject any identity that is not type
-        // CLAIM_ISSUER, even when its reputation is at or above the threshold.
-        // Without the explicit type check, a REPUTATION_MANAGER giving a non-issuer
-        // a high score for any reason would silently grant it claim-add capability.
-        //
-        // Setup: aliceIdentity is factory-deployed INDIVIDUAL. Give it a high score
-        // and try to attest to bobIdentity. Carol is alice's CLAIM_SIGNER, so the
-        // claim signature itself is valid; the new gate is what rejects.
+        // aliceIdentity is factory-deployed INDIVIDUAL. Even with a high score it must be
+        // rejected: the gate is reserved for the CLAIM_ISSUER type record.
         vm.prank(reputationManager);
         onchainidSetup.reputationRegistry.setReputation(address(aliceIdentity), ISSUER_DEFAULT_SCORE);
 
@@ -138,26 +143,43 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
             carolPk, carol, address(aliceIdentity), address(bobIdentity), FRESH_TOPIC, data
         );
 
-        vm.prank(alice);
+        vm.prank(address(aliceIdentity));
         vm.expectRevert(abi.encodeWithSelector(Errors.IdentityNotClaimIssuerType.selector, address(aliceIdentity)));
         ERC734Validator(address(bobIdentity))
-            .addClaimByTrustedIssuer(FRESH_TOPIC, uint256(1), address(aliceIdentity), signature, data, "");
+            .addClaim(FRESH_TOPIC, uint256(1), address(aliceIdentity), signature, data, "");
 
         bytes32 claimId = ClaimSignerHelper.computeClaimId(address(aliceIdentity), FRESH_TOPIC);
         (,, address issuerAfter,,,) = IIdentity(address(bobIdentity)).getClaim(claimId);
         assertEq(issuerAfter, address(0));
     }
 
+    function test_trustedIssuer_cannotRemoveAnotherIssuersClaim() public {
+        // carol (CLAIM_SIGNER on aliceIdentity) stores a self-issued claim; claimIssuer
+        // must not be able to remove it even though it is trusted.
+        Structs.ClaimData memory data = Structs.ClaimData({
+            issuedAt: block.timestamp,
+            validUntil: 0,
+            metadataHash: ClaimSignerHelper.metadataHash(1, ""),
+            payload: hex"01"
+        });
+        bytes memory signature = ClaimSignerHelper.signClaim(
+            carolPk, carol, address(aliceIdentity), address(aliceIdentity), FRESH_TOPIC, data
+        );
+        vm.prank(carol);
+        ERC734Validator(address(aliceIdentity)).addClaim(FRESH_TOPIC, 1, address(aliceIdentity), signature, data, "");
+
+        bytes32 claimId = ClaimSignerHelper.computeClaimId(address(aliceIdentity), FRESH_TOPIC);
+        vm.prank(address(claimIssuer));
+        vm.expectRevert(Errors.SenderDoesNotHaveClaimSignerKey.selector);
+        ERC734Validator(address(aliceIdentity)).removeClaim(claimId);
+    }
+
     function test_loseTrustAfterReputationLowered() public {
-        // First write succeeds (score 50, threshold 50).
         (uint256 firstScheme, address firstIssuer, bytes memory firstSig, Structs.ClaimData memory firstData) =
             _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
-        vm.prank(claimIssuerOwner);
-        ERC734Validator(address(aliceIdentity))
-            .addClaimByTrustedIssuer(FRESH_TOPIC, firstScheme, firstIssuer, firstSig, firstData, "");
+        vm.prank(address(claimIssuer));
+        ERC734Validator(address(aliceIdentity)).addClaim(FRESH_TOPIC, firstScheme, firstIssuer, firstSig, firstData, "");
 
-        // Manager lowers the score. A subsequent attempt for a different topic must
-        // revert with the threshold error.
         vm.prank(reputationManager);
         onchainidSetup.reputationRegistry.setReputation(address(claimIssuer), 0);
 
@@ -165,12 +187,12 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
         (uint256 secondScheme, address secondIssuer, bytes memory secondSig, Structs.ClaimData memory secondData) =
             _buildSignedClaim(address(aliceIdentity), address(claimIssuer), anotherTopic);
 
-        vm.prank(claimIssuerOwner);
+        vm.prank(address(claimIssuer));
         vm.expectRevert(
             abi.encodeWithSelector(Errors.ReputationBelowClaimAddThreshold.selector, address(claimIssuer), 0, THRESHOLD)
         );
         ERC734Validator(address(aliceIdentity))
-            .addClaimByTrustedIssuer(anotherTopic, secondScheme, secondIssuer, secondSig, secondData, "");
+            .addClaim(anotherTopic, secondScheme, secondIssuer, secondSig, secondData, "");
 
         bytes32 secondClaimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), anotherTopic);
         (,, address issuerAfter,,,) = IIdentity(address(aliceIdentity)).getClaim(secondClaimId);
@@ -179,8 +201,7 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
 
     // ============ Threshold boundary ============
 
-    /// @dev Issuer with reputation exactly equal to the threshold passes the gate. Pins
-    ///      the `>=` semantic; a future change to `>` would break this test.
+    /// @dev Reputation exactly at the threshold passes; pins the `>=` semantic.
     function test_reputationExactlyAtThreshold_passes() public {
         vm.prank(reputationManager);
         onchainidSetup.reputationRegistry.setReputation(address(claimIssuer), THRESHOLD);
@@ -188,17 +209,15 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
         (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
             _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
 
-        vm.prank(claimIssuerOwner);
-        ERC734Validator(address(aliceIdentity))
-            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
+        vm.prank(address(claimIssuer));
+        ERC734Validator(address(aliceIdentity)).addClaim(FRESH_TOPIC, scheme, issuer, signature, data, "");
 
         bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), FRESH_TOPIC);
         (,, address issuerAfter,,,) = IIdentity(address(aliceIdentity)).getClaim(claimId);
         assertEq(issuerAfter, address(claimIssuer));
     }
 
-    /// @dev Issuer with reputation one below the threshold fails. Pins the other side of
-    ///      the boundary so an off-by-one in the comparison gets caught by tests.
+    /// @dev Reputation one below the threshold fails; pins the other side of the boundary.
     function test_reputationOneBelowThreshold_reverts() public {
         uint128 belowThreshold = THRESHOLD - 1;
         vm.prank(reputationManager);
@@ -207,119 +226,109 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
         (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
             _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
 
-        vm.prank(claimIssuerOwner);
+        vm.prank(address(claimIssuer));
         vm.expectRevert(
             abi.encodeWithSelector(
                 Errors.ReputationBelowClaimAddThreshold.selector, address(claimIssuer), belowThreshold, THRESHOLD
             )
         );
-        ERC734Validator(address(aliceIdentity))
-            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
+        ERC734Validator(address(aliceIdentity)).addClaim(FRESH_TOPIC, scheme, issuer, signature, data, "");
 
         bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), FRESH_TOPIC);
         (,, address issuerAfter,,,) = IIdentity(address(aliceIdentity)).getClaim(claimId);
         assertEq(issuerAfter, address(0));
     }
 
-    /// @notice A claim on topic 0 is rejected. Topic 0 is the "no claim" sentinel removeClaim
+    /// @notice A claim on topic 0 is rejected: topic 0 is the "no claim" sentinel removeClaim
     ///         reads, so a stored topic-0 claim could never be removed.
     function test_addClaim_topicZero_reverts() public {
         (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
             _buildSignedClaim(address(aliceIdentity), address(claimIssuer), 0);
 
-        vm.prank(claimIssuerOwner);
+        vm.prank(address(claimIssuer));
         vm.expectRevert(Errors.InvalidClaimTopic.selector);
-        ERC734Validator(address(aliceIdentity)).addClaimByTrustedIssuer(0, scheme, issuer, signature, data, "");
+        ERC734Validator(address(aliceIdentity)).addClaim(0, scheme, issuer, signature, data, "");
     }
 
     // ============ scheme and uri are bound through metadataHash ============
 
-    /// @notice The attack from the finding: re-present the issuer's own unchanged signature and
-    ///         data with a different uri, repointing the stored record while it still reads as
-    ///         issuer-attested. The signed commitment no longer matches, so the write is refused.
+    /// @notice Re-presenting the issuer's unchanged signature with a different uri is refused:
+    ///         the signed commitment no longer matches.
     function test_reAddClaim_sameSignature_differentUri_reverts() public {
         (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
             _buildCommittedClaim(FRESH_TOPIC, 1, "ipfs://issuer-doc");
 
-        vm.prank(claimIssuerOwner);
+        vm.prank(address(claimIssuer));
         ERC734Validator(address(aliceIdentity))
-            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "ipfs://issuer-doc");
+            .addClaim(FRESH_TOPIC, scheme, issuer, signature, data, "ipfs://issuer-doc");
 
-        vm.prank(claimIssuerOwner);
+        vm.prank(address(claimIssuer));
         vm.expectRevert(abi.encodeWithSelector(Errors.ClaimMetadataMismatch.selector, scheme, "ipfs://attacker-doc"));
         ERC734Validator(address(aliceIdentity))
-            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "ipfs://attacker-doc");
+            .addClaim(FRESH_TOPIC, scheme, issuer, signature, data, "ipfs://attacker-doc");
 
         bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), FRESH_TOPIC);
         (,,,,, string memory storedUri) = IIdentity(address(aliceIdentity)).getClaim(claimId);
         assertEq(storedUri, "ipfs://issuer-doc");
     }
 
-    /// @notice scheme is inside the commitment on the same terms as the uri, so it cannot be
-    ///         swapped to misroute how a consumer verifies or processes the claim.
+    /// @notice scheme is inside the commitment on the same terms as the uri.
     function test_reAddClaim_sameSignature_differentScheme_reverts() public {
         (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
             _buildCommittedClaim(FRESH_TOPIC, 1, "ipfs://issuer-doc");
 
-        vm.prank(claimIssuerOwner);
+        vm.prank(address(claimIssuer));
         ERC734Validator(address(aliceIdentity))
-            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "ipfs://issuer-doc");
+            .addClaim(FRESH_TOPIC, scheme, issuer, signature, data, "ipfs://issuer-doc");
 
-        vm.prank(claimIssuerOwner);
+        vm.prank(address(claimIssuer));
         vm.expectRevert(abi.encodeWithSelector(Errors.ClaimMetadataMismatch.selector, scheme + 1, "ipfs://issuer-doc"));
         ERC734Validator(address(aliceIdentity))
-            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme + 1, issuer, signature, data, "ipfs://issuer-doc");
+            .addClaim(FRESH_TOPIC, scheme + 1, issuer, signature, data, "ipfs://issuer-doc");
     }
 
-    /// @notice A stale-but-still-valid attestation carries its own commitment, so replaying an
-    ///         earlier (data, signature) pair with an arbitrary uri fails too. The binding is
-    ///         per-attestation, not a comparison against whatever happens to be stored.
+    /// @notice Replaying an older still-valid attestation with an arbitrary uri fails too:
+    ///         the binding is per-attestation.
     function test_reAddClaim_olderAttestation_differentUri_reverts() public {
         (uint256 scheme, address issuer, bytes memory firstSig, Structs.ClaimData memory firstData) =
             _buildCommittedClaim(FRESH_TOPIC, 1, "ipfs://v1");
 
-        vm.prank(claimIssuerOwner);
-        ERC734Validator(address(aliceIdentity))
-            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, firstSig, firstData, "ipfs://v1");
+        vm.prank(address(claimIssuer));
+        ERC734Validator(address(aliceIdentity)).addClaim(FRESH_TOPIC, scheme, issuer, firstSig, firstData, "ipfs://v1");
 
-        // The issuer renews the claim, so two attestations are valid at once.
         (,, bytes memory secondSig, Structs.ClaimData memory secondData) =
             _buildCommittedClaim(FRESH_TOPIC, 1, "ipfs://v2");
-        vm.prank(claimIssuerOwner);
+        vm.prank(address(claimIssuer));
         ERC734Validator(address(aliceIdentity))
-            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, secondSig, secondData, "ipfs://v2");
+            .addClaim(FRESH_TOPIC, scheme, issuer, secondSig, secondData, "ipfs://v2");
 
-        // Roll back to the older pair while pointing it somewhere new.
-        vm.prank(claimIssuerOwner);
+        vm.prank(address(claimIssuer));
         vm.expectRevert(abi.encodeWithSelector(Errors.ClaimMetadataMismatch.selector, scheme, "ipfs://attacker"));
         ERC734Validator(address(aliceIdentity))
-            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, firstSig, firstData, "ipfs://attacker");
+            .addClaim(FRESH_TOPIC, scheme, issuer, firstSig, firstData, "ipfs://attacker");
     }
 
-    /// @notice The issuer stays free to correct a bad uri: a fresh attestation commits to the new
-    ///         one, and the record repoints in a single call.
+    /// @notice A fresh attestation committing to a new uri repoints the record in one call.
     function test_reAddClaim_freshCommitment_newUri_succeeds() public {
         (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
             _buildCommittedClaim(FRESH_TOPIC, 1, "ipfs://typo");
 
-        vm.prank(claimIssuerOwner);
-        ERC734Validator(address(aliceIdentity))
-            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "ipfs://typo");
+        vm.prank(address(claimIssuer));
+        ERC734Validator(address(aliceIdentity)).addClaim(FRESH_TOPIC, scheme, issuer, signature, data, "ipfs://typo");
 
         (,, bytes memory newSig, Structs.ClaimData memory newData) =
             _buildCommittedClaim(FRESH_TOPIC, 1, "ipfs://corrected");
 
-        vm.prank(claimIssuerOwner);
+        vm.prank(address(claimIssuer));
         ERC734Validator(address(aliceIdentity))
-            .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, newSig, newData, "ipfs://corrected");
+            .addClaim(FRESH_TOPIC, scheme, issuer, newSig, newData, "ipfs://corrected");
 
         bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), FRESH_TOPIC);
         (,,,,, string memory storedUri) = IIdentity(address(aliceIdentity)).getClaim(claimId);
         assertEq(storedUri, "ipfs://corrected");
     }
 
-    /// @notice The commitment is mandatory: a claim signed without one (metadataHash = 0) is
-    ///         rejected outright, so no claim can be stored with a floating uri or scheme.
+    /// @notice The commitment is mandatory: a claim signed with metadataHash = 0 is rejected.
     function test_addClaim_zeroMetadataHash_reverts() public {
         Structs.ClaimData memory data =
             Structs.ClaimData({ issuedAt: block.timestamp, validUntil: 0, metadataHash: 0, payload: hex"01" });
@@ -327,10 +336,10 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
             claimIssuerOwnerPk, claimIssuerOwner, address(claimIssuer), address(aliceIdentity), FRESH_TOPIC, data
         );
 
-        vm.prank(claimIssuerOwner);
+        vm.prank(address(claimIssuer));
         vm.expectRevert(abi.encodeWithSelector(Errors.ClaimMetadataMismatch.selector, uint256(1), "ipfs://any"));
         ERC734Validator(address(aliceIdentity))
-            .addClaimByTrustedIssuer(FRESH_TOPIC, 1, address(claimIssuer), signature, data, "ipfs://any");
+            .addClaim(FRESH_TOPIC, 1, address(claimIssuer), signature, data, "ipfs://any");
     }
 
     /// @notice The published helper produces the hash the add path checks against.
@@ -345,10 +354,9 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
 
     // ============ Helper ============
 
-    /// @dev Build the four signed-claim components used by addClaimByTrustedIssuer.
-    ///      Signed by `claimIssuerOwner`, who is a CLAIM_SIGNER on `claimIssuer`'s
-    ///      identity, committed to scheme 1 and an empty uri. Carol-signed claims are
-    ///      built inline in the tests that need them.
+    /// @dev Build the four signed-claim components for the trusted-issuer path. Signed by
+    ///      `claimIssuerOwner`, a CLAIM_SIGNER on the issuer identity, committed to scheme 1
+    ///      and an empty uri.
     function _buildSignedClaim(address targetIdentity, address declaredIssuer, uint256 topic)
         internal
         view

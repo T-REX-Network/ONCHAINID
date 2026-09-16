@@ -36,13 +36,14 @@ pragma solidity ^0.8.27;
 ///           including an explicit `0` (which is how a manager revokes trust
 ///           without deleting the entry).
 ///         * Otherwise the lookup falls back to `defaultFor[type]` where `type`
-///           is read from the identity itself via `IIdentity.getIdentityType()`.
+///           is the factory's record via {IIdentityFactory.identityTypeOf},
+///           never the identity's own answer.
 ///
-///         Factory-membership gating. The fallback path is gated on
-///         {IIdentityFactory.isFactoryIdentity}: an arbitrary contract that
-///         self-declares type 5 cannot inherit the CLAIM_ISSUER default. The
-///         explicit-entry path bypasses the factory check because the manager
-///         may want to score externally-deployed identities by hand.
+///         Factory-membership gating. A zero record means the factory did not
+///         deploy the identity, so an arbitrary contract that self-declares
+///         type 5 cannot inherit the CLAIM_ISSUER default. The explicit-entry
+///         path bypasses the factory check because the manager may want to
+///         score externally-deployed identities by hand.
 interface IReputationRegistry {
 
     /// @dev Per-identity entry. Packs into a single 32-byte slot. `setAt == 0`
@@ -68,14 +69,16 @@ interface IReputationRegistry {
     /// @param identityType The identity type whose default changed.
     /// @param oldDefault   Previous default score for that type.
     /// @param newDefault   New default score for that type.
-    event DefaultSet(uint256 indexed identityType, uint128 oldDefault, uint128 newDefault);
+    /// @param setter       `msg.sender` on the call that produced the change.
+    event DefaultSet(uint256 indexed identityType, uint128 oldDefault, uint128 newDefault, address indexed setter);
 
     /// @notice Emitted whenever the global claim-add auto-approval threshold changes.
     ///         Consumers compare this against {reputationOf} to decide whether a
     ///         claim-add should auto-approve.
     /// @param oldThreshold Previous threshold.
     /// @param newThreshold New threshold.
-    event ClaimAddThresholdSet(uint128 oldThreshold, uint128 newThreshold);
+    /// @param setter       `msg.sender` on the call that produced the change.
+    event ClaimAddThresholdSet(uint128 oldThreshold, uint128 newThreshold, address indexed setter);
 
     // ---- Reads (open) ----
 

@@ -36,7 +36,6 @@ import { UpgradeableBeacon } from "@openzeppelin/contracts/proxy/beacon/Upgradea
 import { InteroperableAddress } from "@openzeppelin/contracts/utils/draft-InteroperableAddress.sol";
 
 import { Identity } from "../Identity.sol";
-import { IIdentity } from "../interface/IIdentity.sol";
 import { Errors } from "../libraries/Errors.sol";
 import { hashAddress } from "../libraries/Hashing.sol";
 import { KeyPurposes } from "../libraries/KeyPurposes.sol";
@@ -134,7 +133,9 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     struct IdentityFactoryStorage {
         mapping(bytes32 walletKey => WalletEntry entry) wallets;
         mapping(address identity => EnumerableSet.Bytes32Set walletKeys) accounts;
-        mapping(address identity => bool deployedByFactory) isFactoryIdentity;
+        /// @dev Type recorded at creation, written once, no setter. Zero means "not
+        ///      deployed by this factory", so this doubles as the factory-identity flag.
+        mapping(address identity => uint256 identityType) identityTypes;
         /// @dev Per-type deploy policy. Unregistered types revert.
         mapping(uint256 identityType => TypePolicy policy) typePolicies;
         /// @dev Gateways trusted per origin chain. The key is
@@ -194,7 +195,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // somewhere other than the address committed in the constructor. Fail loudly instead of
         // leaving the factory permanently pointed at empty code.
         require(deployed == beacon, Errors.BeaconAddressMismatch(beacon, deployed));
-        emit BeaconInitialized(implementation);
+        emit BeaconInitialized(implementation, msg.sender);
     }
 
     /// @inheritdoc IIdentityFactory
@@ -210,7 +211,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
             Errors.ImplementationVersionMismatch(expectedVersion, actualVersion)
         );
         UpgradeableBeacon(beacon).upgradeTo(newImplementation);
-        emit BeaconUpgraded(newImplementation);
+        emit BeaconUpgraded(newImplementation, actualVersion, msg.sender);
     }
 
     /// @dev Shape check for an implementation about to sit behind the beacon. An identity's
@@ -243,18 +244,20 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         external
         restricted
     {
+        // Type 0 means "not deployed by this factory", so it can never be a real type.
+        require(_identityType != 0, Errors.ZeroIdentityType());
         // Single binding types skip the sole management check, their role gate is the only
         // thing standing between an open deploy and a hijacked contract identity. Refuse
         // the config instead of trusting every operator to remember that.
         require(!_singleBinding || _roleId != type(uint64).max, Errors.SingleBindingTypeCannotBePublic(_identityType));
         _storage().typePolicies[_identityType] = TypePolicy(_roleId, _selfDeployable, _singleBinding, true);
-        emit IdentityTypePolicySet(_identityType, _roleId, _selfDeployable, _singleBinding);
+        emit IdentityTypePolicySet(_identityType, _roleId, _selfDeployable, _singleBinding, msg.sender);
     }
 
     /// @inheritdoc IIdentityFactory
     function removeIdentityTypePolicy(uint256 _identityType) external restricted {
         delete _storage().typePolicies[_identityType];
-        emit IdentityTypePolicyRemoved(_identityType);
+        emit IdentityTypePolicyRemoved(_identityType, msg.sender);
     }
 
     /// @inheritdoc IIdentityFactory
@@ -269,7 +272,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         for (uint256 i = 0; i < _modules.length; i++) {
             stored.push(_modules[i]);
         }
-        emit IdentityTypeModulesSet(_identityType, _modules);
+        emit IdentityTypeModulesSet(_identityType, _modules, msg.sender);
     }
 
     /// @inheritdoc IIdentityFactory
@@ -367,7 +370,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
 
         // Only identities this factory deployed can pull wallets in. Otherwise random
         // contracts could register themselves and feed bogus claims to T-REX modules.
-        require(_storage().isFactoryIdentity[msg.sender], Errors.NotFactoryIdentity(msg.sender));
+        require(_storage().identityTypes[msg.sender] != 0, Errors.NotFactoryIdentity(msg.sender));
 
         bytes32 digest = _hashTypedDataV4(
             keccak256(abi.encode(_LINK_ACCOUNT_TYPEHASH, keccak256(account), msg.sender, nonce, expiry))
@@ -384,7 +387,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // encoding of the same wallet consumes one nonce sequence.
         _useCheckedNonce(_addressKeyForAccount(account), nonce);
 
-        _linkAccount(account, msg.sender);
+        _linkAccount(account, msg.sender, msg.sender);
     }
 
     /// @inheritdoc IIdentityFactory
@@ -392,14 +395,15 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // Symmetric with the link guard: a single-binding identity cannot re-link a
         // fresh account because the bound contract can't sign a LinkAccount digest,
         // so allowing revoke would orphan the factory's discovery entry permanently.
+        // The type is read from our own record, never from the caller.
         require(
-            !_storage().typePolicies[IIdentity(msg.sender).getIdentityType()].singleBinding,
+            !_storage().typePolicies[_storage().identityTypes[msg.sender]].singleBinding,
             Errors.CannotRevokeFromNonSigningIdentity(msg.sender)
         );
 
         bytes32 key = _walletKey(account);
         require(_storage().wallets[key].identity == msg.sender, Errors.WalletNotLinkedToIdentity(account));
-        _revokeAccount(account, msg.sender);
+        _revokeAccount(account, msg.sender, msg.sender);
     }
 
     // ============ ERC-7786 — cross-chain wallet linking ============
@@ -411,7 +415,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     {
         require(gateway != address(0), Errors.ZeroAddress());
         _storage().trustedGateways[gateway][_originKey(chainType, chainReference)] = trusted;
-        emit TrustedGatewaySet(gateway, chainType, chainReference, trusted);
+        emit TrustedGatewaySet(gateway, chainType, chainReference, trusted, msg.sender);
     }
 
     /// @inheritdoc IIdentityFactory
@@ -427,7 +431,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     function setTrustedVerifier(address verifier, bool trusted) external restricted {
         require(verifier != address(0), Errors.ZeroAddress());
         _storage().trustedVerifiers[verifier] = trusted;
-        emit TrustedVerifierSet(verifier, trusted);
+        emit TrustedVerifierSet(verifier, trusted, msg.sender);
     }
 
     /// @inheritdoc IIdentityFactory
@@ -467,7 +471,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         }
 
         require(block.timestamp <= pending.expiry, Errors.PendingCrossChainLinkExpired(pending.expiry));
-        _linkAccount(account, msg.sender);
+        _linkAccount(account, msg.sender, msg.sender);
         emit CrossChainLinkConfirmed(account, msg.sender);
     }
 
@@ -489,12 +493,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     ///      Replay across receiveIds is prevented by the gateway per ERC-7786; we
     ///      add wallet-level replay protection via sticky binding (an active or
     ///      revoked entry blocks fresh proposals from taking effect on confirm).
-    function _processMessage(
-        address, /* gateway */
-        bytes32, /* receiveId */
-        bytes calldata sender,
-        bytes calldata payload
-    )
+    function _processMessage(address gateway, bytes32 receiveId, bytes calldata sender, bytes calldata payload)
         internal
         override
     {
@@ -518,7 +517,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         require(!isEvm || chainId != block.chainid, Errors.CrossChainLinkForLocalWallet(walletEnvelope));
 
         require(block.timestamp <= expiry, Errors.PendingCrossChainLinkExpired(expiry));
-        require(_storage().isFactoryIdentity[identity], Errors.NotFactoryIdentity(identity));
+        require(_storage().identityTypes[identity] != 0, Errors.NotFactoryIdentity(identity));
 
         // The canonical key collapses padded variants of the envelope, so a linked
         // or revoked wallet cannot be re-proposed under a different encoding.
@@ -533,7 +532,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // be confirmed. Safe to overwrite because the status check above rejects
         // any wallet that is already linked or revoked.
         _storage().pendingLinks[key] = PendingLink({ identity: identity, expiry: expiry });
-        emit PendingCrossChainLinkProposed(walletEnvelope, identity, expiry);
+        emit PendingCrossChainLinkProposed(walletEnvelope, identity, expiry, gateway, receiveId);
     }
 
     /// @inheritdoc IIdentityFactory
@@ -568,8 +567,26 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     }
 
     /// @inheritdoc IIdentityFactory
+    function getIdentityWithType(bytes calldata account)
+        external
+        view
+        returns (address identity, uint256 identityType)
+    {
+        WalletEntry storage entry = _storage().wallets[_walletKey(account)];
+        if (entry.status != AccountStatus.Active) {
+            return (address(0), 0);
+        }
+        return (entry.identity, _storage().identityTypes[entry.identity]);
+    }
+
+    /// @inheritdoc IIdentityFactory
     function isFactoryIdentity(address identity) external view returns (bool) {
-        return _storage().isFactoryIdentity[identity];
+        return _storage().identityTypes[identity] != 0;
+    }
+
+    /// @inheritdoc IIdentityFactory
+    function identityTypeOf(address identity) external view returns (uint256) {
+        return _storage().identityTypes[identity];
     }
 
     /// @inheritdoc IIdentityFactory
@@ -667,7 +684,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // guaranteed here. Asset identities are deployed for a token contract and the token
         // is auto-linked as the identity's sole wallet like any other signer; the difference
         // is the identity's `type`. Off-chain readers can recover the token by reading
-        // `getAccounts(identity, 0, 1)[0]` and checking `getIdentityType()`.
+        // `getAccounts(identity, 0, 1)[0]` and checking `identityTypeOf(identity)`.
         //
         // Refuse a zero account: it gets linked as a wallet below and bindings are sticky,
         // so the identity would be stuck with an account nobody can sign for.
@@ -698,16 +715,21 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
             Errors.NoManagementKeyInKeys()
         );
 
-        // Mark factory-deployed BEFORE linking so a re-entrant module can't pretend
-        // to be a non-factory caller.
-        _storage().isFactoryIdentity[identity] = true;
-        _linkAccount(_account, identity);
+        // Record the type BEFORE linking so a re-entrant module can't pretend to be a
+        // non-factory caller. This is the authoritative type record: consumers read it
+        // from here instead of asking the identity, which could answer anything. Nonzero
+        // by construction and written exactly once, so it doubles as the factory flag.
+        _storage().identityTypes[identity] = _identityType;
+        emit IdentityTypeRecorded(identity, _identityType);
+        _linkAccount(_account, identity, msg.sender);
+
+        emit IdentityDeployed(identity, _account, _identityType, msg.sender);
     }
 
     /// @dev Link rule. Enforces sticky binding and terminal revocation. Tokens and
     ///      wallets share the same keyspace, so the same address or signer can only
     ///      live in one entry, so there's no separate collision check needed.
-    function _linkAccount(bytes memory account, address identity) internal {
+    function _linkAccount(bytes memory account, address identity, address caller) internal {
         // Normalize first so the key, the stored record and the emitted event all
         // carry the canonical form no matter which encoding the caller supplied.
         // This parses too, so a raw byte string can never become an enumerable record.
@@ -715,9 +737,10 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
 
         // A single-binding identity takes exactly one account: the first, which is
         // the factory's auto-link at deploy. Anything after that would break the
-        // 1:1 contract↔identity mapping.
+        // 1:1 contract↔identity mapping. The type is read from our own record
+        // (written before the auto-link runs), never from the identity.
         require(
-            !_storage().typePolicies[IIdentity(identity).getIdentityType()].singleBinding
+            !_storage().typePolicies[_storage().identityTypes[identity]].singleBinding
                 || _storage().accounts[identity].length() == 0,
             Errors.CannotLinkToAssetIdentity(identity)
         );
@@ -742,7 +765,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
             entry.record = account;
         }
 
-        emit AccountLinked(account, identity);
+        emit AccountLinked(account, identity, caller);
     }
 
     /// @dev Revoke rule. Flips status to Revoked and drops the wallet from the active
@@ -750,7 +773,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     ///      getIdentityIncludingRevoked. Revoking the last wallet leaves the active set
     ///      empty but the identity manageable: keys are a separate namespace, so a
     ///      MANAGEMENT key can still link a fresh wallet.
-    function _revokeAccount(bytes memory account, address identity) internal {
+    function _revokeAccount(bytes memory account, address identity, address caller) internal {
         account = _canonicalEnvelope(account);
         bytes32 key = keccak256(account);
         WalletEntry storage entry = _storage().wallets[key];
@@ -759,7 +782,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
 
         entry.status = AccountStatus.Revoked;
 
-        emit AccountRevoked(account, identity);
+        emit AccountRevoked(account, identity, caller);
     }
 
     function _accountsRange(address identity, uint256 start, uint256 end) private view returns (bytes[] memory out) {

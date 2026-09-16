@@ -158,8 +158,10 @@ contract ExecutionsTest is OnchainIDSetup {
         vm.prank(proposer);
         uint256 id = IKeyExecutor(address(aliceIdentity)).execute(address(0xBEEF), 0, "");
 
-        // david holds ACTION, which is the approve gate for an external target.
+        // david holds ACTION, which is the approve gate for an external target. `Approved` names him.
         vm.prank(david);
+        vm.expectEmit(address(onchainidSetup.keyApprovalModule));
+        emit IKeyExecutor.Approved(address(aliceIdentity), id, false, david);
         IKeyExecutor(address(aliceIdentity)).approve(id, false);
 
         KeyApprovalModule.Execution memory exec =
