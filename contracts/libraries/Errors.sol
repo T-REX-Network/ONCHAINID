@@ -196,17 +196,6 @@ library Errors {
 
     /* ----- ERC734Validator trusted-issuer path ----- */
 
-    /// @notice Reverts when {ERC734Validator.addClaimByTrustedIssuer} is called by a wallet
-    ///         that the factory does not resolve to any identity. The trusted-issuer path
-    ///         requires the caller wallet to be a linked account on a factory-deployed
-    ///         identity.
-    error CallerNotLinkedToFactoryIdentity(address caller);
-
-    /// @notice Reverts when the claim's declared `issuer` field does not match the
-    ///         identity the caller wallet resolves to. A trusted issuer cannot ship a
-    ///         claim attributed to a different issuer.
-    error DeclaredIssuerMismatch(address declaredIssuer, address resolvedIdentity);
-
     /// @notice Reverts when the resolved issuer identity is not of type
     ///         {IdentityTypes.CLAIM_ISSUER}. The trusted-issuer path is reserved for
     ///         identities deployed under the role-gated CLAIM_ISSUER type so a high
