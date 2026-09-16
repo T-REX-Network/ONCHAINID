@@ -306,16 +306,28 @@ interface IIdentityFactory {
 
     /// @notice Resolve a wallet to its bound identity. Returns `address(0)` when the
     ///         wallet's status is not `Active` (never linked, or revoked).
+    ///
+    ///         A factory-deployed identity resolves to itself: identities are smart
+    ///         accounts and act on the ecosystem directly, so
+    ///         `getIdentity(identity) == identity`. This is resolution, not an account
+    ///         binding — the identity is not one of its own linked wallets, so no
+    ///         AccountLinked event is ever emitted for it, it never appears in
+    ///         {getAccounts}, and its resolution entry can never be revoked. It also
+    ///         means an identity can never be linked as an account of another identity.
     function getIdentity(bytes calldata account) external view returns (address);
 
     /// @notice Same as {getIdentity}, but also returns the wallet's current lifecycle
-    ///         status. Distinguishes "never linked" from "revoked".
+    ///         status. Distinguishes "never linked" from "revoked". Unlike {getIdentity},
+    ///         a factory identity does not self-resolve here: this view answers account
+    ///         bindings only, and an identity is not a wallet linked to itself, so it
+    ///         reports (address(0), None).
     function getIdentityIncludingRevoked(bytes calldata account)
         external
         view
         returns (address identity, AccountStatus status);
 
-    /// @notice Read the current lifecycle status of a wallet entry.
+    /// @notice Read the current lifecycle status of a wallet entry. A factory identity's
+    ///         own address reports `None`: its self-resolution is not an account binding.
     function getAccountStatus(bytes calldata account) external view returns (AccountStatus);
 
     /// @notice Enumerate the active wallets currently linked to `identity`, paginated
@@ -330,7 +342,8 @@ interface IIdentityFactory {
 
     /// @notice Resolve a wallet to its bound identity together with the identity's
     ///         recorded type, in one call. Returns (address(0), 0) when the wallet's
-    ///         status is not `Active`, same rule as {getIdentity}.
+    ///         status is not `Active`, same rule as {getIdentity}, including
+    ///         self-resolution of factory identities.
     function getIdentityWithType(bytes calldata account) external view returns (address identity, uint256 identityType);
 
     /// @notice Returns true iff `identity` was deployed by this factory. Used by

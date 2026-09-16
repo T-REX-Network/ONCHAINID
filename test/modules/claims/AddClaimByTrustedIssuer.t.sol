@@ -5,6 +5,7 @@ import { ClaimSignerHelper } from "../../helpers/ClaimSignerHelper.sol";
 import { OnchainIDSetup } from "../../helpers/OnchainIDSetup.sol";
 import { IERC735 } from "contracts/interface/IERC735.sol";
 import { IIdentity } from "contracts/interface/IIdentity.sol";
+import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
@@ -70,6 +71,27 @@ contract AddClaimAsTrustedIssuerTest is OnchainIDSetup {
         ERC734Validator(address(aliceIdentity))
             .addClaimByTrustedIssuer(FRESH_TOPIC, scheme, issuer, signature, data, "");
 
+        (uint256 topic,, address issuerAfter,,,) = IIdentity(address(aliceIdentity)).getClaim(claimId);
+        assertEq(topic, FRESH_TOPIC);
+        assertEq(issuerAfter, address(claimIssuer));
+    }
+
+    /// @notice The issue-90 flow: the Claim Issuer Identity itself calls
+    ///         addClaimByTrustedIssuer on the investor identity through its own
+    ///         execution path. The investor identity sees the issuer identity as the
+    ///         caller, and the factory resolves it to itself, so the trusted-issuer
+    ///         gate passes without any wallet in between.
+    function test_trustedIssuerIdentity_canAddClaimThroughItsExecutionFlow() public {
+        (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
+            _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
+
+        bytes memory call = abi.encodeCall(
+            ERC734Validator.addClaimByTrustedIssuer, (FRESH_TOPIC, scheme, issuer, signature, data, "")
+        );
+        vm.prank(claimIssuerOwner);
+        IKeyExecutor(address(claimIssuer)).execute(address(aliceIdentity), 0, call);
+
+        bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), FRESH_TOPIC);
         (uint256 topic,, address issuerAfter,,,) = IIdentity(address(aliceIdentity)).getClaim(claimId);
         assertEq(topic, FRESH_TOPIC);
         assertEq(issuerAfter, address(claimIssuer));

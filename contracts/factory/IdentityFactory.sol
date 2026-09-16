@@ -548,12 +548,27 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         returns (address identity, AccountStatus status)
     {
         WalletEntry storage entry = _storage().wallets[_walletKey(account)];
+        if (_isSelfResolutionEntry(entry)) {
+            return (address(0), AccountStatus.None);
+        }
         return (entry.identity, entry.status);
     }
 
     /// @inheritdoc IIdentityFactory
     function getAccountStatus(bytes calldata account) external view returns (AccountStatus) {
-        return _storage().wallets[_walletKey(account)].status;
+        WalletEntry storage entry = _storage().wallets[_walletKey(account)];
+        if (_isSelfResolutionEntry(entry)) {
+            return AccountStatus.None;
+        }
+        return entry.status;
+    }
+
+    /// @dev An identity's self-resolution entry, seeded at deploy. It is the only Active
+    ///      entry without a record: every real link writes the record on first link. The
+    ///      account-binding views report it as None because the identity is not a wallet
+    ///      linked to itself; only {getIdentity} resolution answers it.
+    function _isSelfResolutionEntry(WalletEntry storage entry) private view returns (bool) {
+        return entry.status == AccountStatus.Active && entry.record.length == 0;
     }
 
     /// @inheritdoc IIdentityFactory
@@ -721,6 +736,16 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // by construction and written exactly once, so it doubles as the factory flag.
         _storage().identityTypes[identity] = _identityType;
         emit IdentityTypeRecorded(identity, _identityType);
+
+        // An identity resolves to itself: seed the entry directly so `getIdentity(identity)`
+        // returns the identity without an extra branch in the getters. This is not a real
+        // account binding: it skips the `accounts` set, so it can never be revoked or
+        // enumerated, and it emits no AccountLinked.
+        WalletEntry storage selfEntry =
+            _storage().wallets[keccak256(InteroperableAddress.formatEvmV1(block.chainid, identity))];
+        selfEntry.identity = identity;
+        selfEntry.status = AccountStatus.Active;
+
         _linkAccount(_account, identity, msg.sender);
 
         emit IdentityDeployed(identity, _account, _identityType, msg.sender);
@@ -734,6 +759,16 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // carry the canonical form no matter which encoding the caller supplied.
         // This parses too, so a raw byte string can never become an enumerable record.
         account = _canonicalEnvelope(account);
+
+        // The wallet being linked must not itself be an identity deployed by this factory
+        // (nonzero type record). Such an address already resolves to itself (see
+        // {getIdentity}), so linking it as a wallet of another identity would give one
+        // address two resolutions. Every link path funnels through here (deploy
+        // auto-link, linkAccount, cross-chain confirm), so that state is unreachable.
+        (bool isEvm, uint256 chainId, address addr) = InteroperableAddress.tryParseEvmV1(account);
+        if (isEvm && chainId == block.chainid) {
+            require(_storage().identityTypes[addr] == 0, Errors.CannotLinkFactoryIdentity(addr));
+        }
 
         // A single-binding identity takes exactly one account: the first, which is
         // the factory's auto-link at deploy. Anything after that would break the

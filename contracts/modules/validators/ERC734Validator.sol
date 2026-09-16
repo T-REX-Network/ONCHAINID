@@ -683,9 +683,10 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     ///         identity, by proving the caller is a trusted issuer in the {ReputationRegistry}.
     ///
     ///         Trust check (see {_requireTrustedIssuer}):
-    ///           1. The caller's wallet resolves through the factory to a non-zero issuer
-    ///              identity (i.e. the wallet is a linked account on a factory-deployed
-    ///              identity).
+    ///           1. The caller resolves through the factory to a non-zero issuer identity:
+    ///              either a wallet linked to a factory-deployed identity, or the issuer
+    ///              identity itself calling through its own execution path (identities
+    ///              self-resolve in the factory).
     ///           2. `_issuer` equals that resolved identity. A trusted issuer cannot ship a
     ///              claim attributed to a different issuer.
     ///           3. The identity self-declares type CLAIM_ISSUER.
@@ -747,8 +748,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     }
 
     /// @dev Trusted-issuer gate. Four conditions, all required:
-    ///        1. The caller wallet resolves through the factory to a non-zero issuer identity
-    ///           (i.e. it is a linked account on a factory-deployed identity).
+    ///        1. The caller resolves through the factory to a non-zero issuer identity: a
+    ///           linked account on a factory-deployed identity, or that identity itself
+    ///           (identities self-resolve in the factory).
     ///        2. That identity equals the claim's declared issuer (issuer-bound rule).
     ///        3. The factory's type record for that identity is `CLAIM_ISSUER`. Without this,
     ///           any identity that happens to be scored above the threshold (e.g. an
