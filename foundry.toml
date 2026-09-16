@@ -12,7 +12,10 @@ via_ir = true
 
 evm_version = "cancun"
 
-fs_permissions = [{ access = "read", path = "test/vendored" }]
+fs_permissions = [
+    { access = "read", path = "test/vendored" },
+    { access = "read-write", path = "deployments" },
+]
 
 [profile.default.fmt]
 sort_imports = true
@@ -27,6 +30,11 @@ exclude_lints = [ "screaming-snake-case-immutable" ]
 [rpc_endpoints]
 baseSepolia = "https://base-sepolia.g.alchemy.com/v2/${ALCHEMY_KEY}"
 base = "https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}"
+zenith = "${ZENITH_RPC}"
+
+[etherscan]
+baseSepolia = { key = "${BASESCAN_API_KEY}", chain = 84532 }
+base = { key = "${BASESCAN_API_KEY}", chain = 8453 }
 
 [soldeer]
 remappings_regenerate = false

@@ -44,8 +44,13 @@ import { Structs } from "contracts/storage/Structs.sol";
  *   9. AccessManager role wiring (per-identity-type role mapping)
  *  10. Module bundle registered per identity type on the factory
  *
+ * Reads DEPLOYER_PRIVATE_KEY from the environment (see .env.example). Optional
+ * FINAL_ADMIN_ADDRESS rotates ADMIN_ROLE + ROLE_BEACON_UPGRADER off the deployer once
+ * setup is done; omit it (or set it equal to the deployer) to leave the deployer in
+ * control.
+ *
  * Usage:
- *   forge script scripts/DeployOnchainID.s.sol --rpc-url <RPC> --private-key <PK> --broadcast --verify
+ *   forge script scripts/DeployOnchainID.s.sol --rpc-url baseSepolia --broadcast --verify
  */
 contract DeployOnchainID is Script {
 
@@ -68,7 +73,7 @@ contract DeployOnchainID is Script {
 
     /// @dev Can create PUBLIC_AUTHORITY identities. Kept off PUBLIC_ROLE because an
     ///      authority may not have a key to sign with.
-    uint64 internal constant ROLE_PUBLIC_AUTHORITY = 3;
+    uint64 internal constant ROLE_PUBLIC_AUTHORITY = 5;
 
     /// @dev Can create INDIVIDUAL, CORPORATE, IOT and AI_AGENT identities for a third
     ///      party. Third-party onboarding stays with named issuers because bindings are
@@ -76,9 +81,10 @@ contract DeployOnchainID is Script {
     uint64 internal constant ROLE_ISSUER = 4;
 
     function run() external {
-        vm.startBroadcast();
+        uint256 deployerKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
+        vm.startBroadcast(deployerKey);
 
-        address deployer = msg.sender;
+        address deployer = vm.addr(deployerKey);
         console.log("Deployer:", deployer);
         console.log("");
 
@@ -220,6 +226,24 @@ contract DeployOnchainID is Script {
         // Approve it for linkAccount: ERC-7913 signers only link through a
         // verifier on this list.
         idFactory.setTrustedVerifier(address(webAuthnVerifier), true);
+
+        // ===== 12. Admin handoff =====
+        // FINAL_ADMIN_ADDRESS is optional. Unset (or equal to the deployer) leaves the
+        // deployer holding ADMIN_ROLE and ROLE_BEACON_UPGRADER — fine for a throwaway/dev
+        // deploy. Set it to rotate both roles to the real owner and strip the deployer's
+        // access entirely; grant-then-revoke order keeps the AccessManager from ever having
+        // zero admins mid-transaction.
+        address finalAdmin = vm.envOr("FINAL_ADMIN_ADDRESS", deployer);
+        if (finalAdmin != deployer) {
+            am.grantRole(am.ADMIN_ROLE(), finalAdmin, 0);
+            am.grantRole(ROLE_BEACON_UPGRADER, finalAdmin, BEACON_UPGRADE_DELAY);
+            am.revokeRole(ROLE_BEACON_UPGRADER, deployer);
+            am.revokeRole(am.ADMIN_ROLE(), deployer);
+            console.log("Admin + beacon-upgrader rotated to:", finalAdmin);
+            console.log("Deployer access revoked.");
+        } else {
+            console.log("FINAL_ADMIN_ADDRESS unset - deployer retains admin + beacon-upgrader roles.");
+        }
 
         vm.stopBroadcast();
 
