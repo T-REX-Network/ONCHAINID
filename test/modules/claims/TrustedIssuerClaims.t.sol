@@ -5,6 +5,7 @@ import { ClaimSignerHelper } from "../../helpers/ClaimSignerHelper.sol";
 import { OnchainIDSetup } from "../../helpers/OnchainIDSetup.sol";
 import { IERC735 } from "contracts/interface/IERC735.sol";
 import { IIdentity } from "contracts/interface/IIdentity.sol";
+import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
@@ -70,6 +71,24 @@ contract TrustedIssuerClaimsTest is OnchainIDSetup {
         );
         ERC734Validator(address(aliceIdentity)).addClaim(FRESH_TOPIC, scheme, issuer, signature, data, "");
 
+        (uint256 topic,, address issuerAfter,,,) = IIdentity(address(aliceIdentity)).getClaim(claimId);
+        assertEq(topic, FRESH_TOPIC);
+        assertEq(issuerAfter, address(claimIssuer));
+    }
+
+    /// @notice The issue-90 flow end to end: a MANAGEMENT key drives the Claim Issuer
+    ///         Identity's own execution path, so the investor identity sees the issuer
+    ///         identity as the caller and the trusted-issuer gate passes without any
+    ///         key grant on the target.
+    function test_trustedIssuerIdentity_canAddClaimThroughItsExecutionFlow() public {
+        (uint256 scheme, address issuer, bytes memory signature, Structs.ClaimData memory data) =
+            _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
+
+        bytes memory call = abi.encodeCall(IERC735.addClaim, (FRESH_TOPIC, scheme, issuer, signature, data, ""));
+        vm.prank(claimIssuerOwner);
+        IKeyExecutor(address(claimIssuer)).execute(address(aliceIdentity), 0, call);
+
+        bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), FRESH_TOPIC);
         (uint256 topic,, address issuerAfter,,,) = IIdentity(address(aliceIdentity)).getClaim(claimId);
         assertEq(topic, FRESH_TOPIC);
         assertEq(issuerAfter, address(claimIssuer));
