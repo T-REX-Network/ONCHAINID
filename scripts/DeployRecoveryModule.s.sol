@@ -11,10 +11,13 @@ import { Script, console } from "forge-std/Script.sol";
 /// @title DeployRecoveryModule
 /// @notice Deploys the social {RecoveryModule} and installs it on one identity.
 ///
-/// The module is deployed fresh (`new RecoveryModule()`), so every run mints a new
-/// address — there is deliberately no shared RecoveryModule. It is installed as an
-/// ERC-7579 executor (type 2) and then granted a MANAGEMENT MODULE key, matching the
-/// two-transaction `prepareInstallRecovery` flow in identity-sdk.
+/// The module is a shared singleton: one deployment per chain serves every identity,
+/// each identity keeps its own guardians, threshold and schedule in module storage
+/// keyed by account. This script deploys a fresh one only because no singleton is
+/// recorded yet; on a chain that already has one, install that address instead.
+/// It is installed as an ERC-7579 executor (type 2) and then granted a MANAGEMENT
+/// MODULE key, matching the two-transaction `prepareInstallRecovery` flow in
+/// identity-sdk.
 ///
 /// Env:
 ///   DEPLOYER_PRIVATE_KEY  private key of a MANAGEMENT key holder on `RECOVERY_IDENTITY`

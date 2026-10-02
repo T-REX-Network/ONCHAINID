@@ -295,6 +295,49 @@ contract RecoveryModuleTest is OnchainIDSetup {
         recovery.startRecovery(address(bobIdentity), salt, mode, recoveryData, abi.encode(signers, sigs));
     }
 
+    /// @notice A guardian bundle signed for one module deployment must not be
+    ///         accepted by a second module installed on the same identity with the
+    ///         same guardian set, because the typed data commits to the module
+    ///         address.
+    function test_revertOnCrossModuleReplay() public {
+        // Install a second module on alice with the exact same config as `recovery`.
+        RecoveryModule other = new RecoveryModule();
+        bytes memory execArgs = abi.encodePacked(DELAY, EXPIRATION);
+        bytes[] memory guardians = new bytes[](3);
+        guardians[0] = abi.encodePacked(g1);
+        guardians[1] = abi.encodePacked(g2);
+        guardians[2] = abi.encodePacked(g3);
+        uint64[] memory weights = new uint64[](3);
+        weights[0] = 1;
+        weights[1] = 1;
+        weights[2] = 1;
+        bytes memory msigArgs = abi.encode(guardians, THRESHOLD, weights);
+        bytes memory installData =
+            abi.encodePacked(uint16(execArgs.length), execArgs, uint16(msigArgs.length), msigArgs);
+        vm.prank(alice);
+        aliceIdentity.installModule(2, address(other), installData);
+
+        bytes32 salt = bytes32(uint256(13));
+        bytes32 mode = bytes32(0);
+        bytes memory recoveryData = _addNewOwnerCalldata();
+
+        // Guardians sign for `recovery`, not `other`.
+        bytes32 digest = _scheduleDigest(address(aliceIdentity), salt, mode, recoveryData);
+        bytes[] memory signers = new bytes[](2);
+        bytes[] memory sigs = new bytes[](2);
+        signers[0] = abi.encodePacked(g1);
+        signers[1] = abi.encodePacked(g2);
+        sigs[0] = _sign(g1Pk, digest);
+        sigs[1] = _sign(g2Pk, digest);
+
+        // Same identity, same guardians, same calldata: still rejected by `other`.
+        vm.expectRevert();
+        other.startRecovery(address(aliceIdentity), salt, mode, recoveryData, abi.encode(signers, sigs));
+
+        // And accepted by the module it was signed for.
+        recovery.startRecovery(address(aliceIdentity), salt, mode, recoveryData, abi.encode(signers, sigs));
+    }
+
     /// @notice Schedule signatures and cancel signatures use different EIP-712
     ///         typehashes, so a schedule bundle should not double as a cancel
     ///         bundle. Otherwise guardians who agreed to schedule a recovery
@@ -574,14 +617,16 @@ contract RecoveryModuleTest is OnchainIDSetup {
 
     /// @dev Builds the SCHEDULE digest a guardian needs to sign. The domain we use
     ///      here is the identity's, not the module's, because OZ's _getTypedHash
-    ///      reads it via IERC5267(account).eip712Domain().
+    ///      reads it via IERC5267(account).eip712Domain(). The struct commits to the
+    ///      module address, so the same bundle is rejected by any other module.
     function _scheduleDigest(address account, bytes32 salt, bytes32 mode, bytes memory recoveryData)
         internal
         view
         returns (bytes32)
     {
-        bytes32 structHash =
-            keccak256(abi.encode(recovery.SCHEDULE_RECOVER_TYPEHASH(), salt, mode, keccak256(recoveryData)));
+        bytes32 structHash = keccak256(
+            abi.encode(recovery.SCHEDULE_RECOVER_TYPEHASH(), address(recovery), salt, mode, keccak256(recoveryData))
+        );
         return _domainHash(account, structHash);
     }
 
@@ -611,8 +656,9 @@ contract RecoveryModuleTest is OnchainIDSetup {
         view
         returns (bytes32)
     {
-        bytes32 structHash =
-            keccak256(abi.encode(recovery.CANCEL_RECOVER_TYPEHASH(), salt, mode, keccak256(recoveryData)));
+        bytes32 structHash = keccak256(
+            abi.encode(recovery.CANCEL_RECOVER_TYPEHASH(), address(recovery), salt, mode, keccak256(recoveryData))
+        );
         return _domainHash(account, structHash);
     }
 
@@ -644,7 +690,9 @@ contract RecoveryModuleTest is OnchainIDSetup {
         bytes32 mode,
         bytes memory recoveryData
     ) internal view returns (bytes32) {
-        bytes32 structHash = keccak256(abi.encode(mod.SCHEDULE_RECOVER_TYPEHASH(), salt, mode, keccak256(recoveryData)));
+        bytes32 structHash = keccak256(
+            abi.encode(mod.SCHEDULE_RECOVER_TYPEHASH(), address(mod), salt, mode, keccak256(recoveryData))
+        );
         return _domainHash(account, structHash);
     }
 
