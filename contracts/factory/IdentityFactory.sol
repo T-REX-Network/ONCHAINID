@@ -548,27 +548,12 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         returns (address identity, AccountStatus status)
     {
         WalletEntry storage entry = _storage().wallets[_walletKey(account)];
-        if (_isSelfResolutionEntry(entry)) {
-            return (address(0), AccountStatus.None);
-        }
         return (entry.identity, entry.status);
     }
 
     /// @inheritdoc IIdentityFactory
     function getAccountStatus(bytes calldata account) external view returns (AccountStatus) {
-        WalletEntry storage entry = _storage().wallets[_walletKey(account)];
-        if (_isSelfResolutionEntry(entry)) {
-            return AccountStatus.None;
-        }
-        return entry.status;
-    }
-
-    /// @dev An identity's self-resolution entry, seeded at deploy. It is the only Active
-    ///      entry without a record: every real link writes the record on first link. The
-    ///      account-binding views report it as None because the identity is not a wallet
-    ///      linked to itself; only {getIdentity} resolution answers it.
-    function _isSelfResolutionEntry(WalletEntry storage entry) private view returns (bool) {
-        return entry.status == AccountStatus.Active && entry.record.length == 0;
+        return _storage().wallets[_walletKey(account)].status;
     }
 
     /// @inheritdoc IIdentityFactory
@@ -737,10 +722,11 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         _storage().identityTypes[identity] = _identityType;
         emit IdentityTypeRecorded(identity, _identityType);
 
-        // An identity resolves to itself: seed the entry directly so `getIdentity(identity)`
-        // returns the identity without an extra branch in the getters. This is not a real
-        // account binding: it skips the `accounts` set, so it can never be revoked or
-        // enumerated, and it emits no AccountLinked.
+        // An identity resolves to itself: seed the entry directly so every resolution view
+        // answers it as Active without an extra branch. T-REX attributes positions through
+        // getIdentityIncludingRevoked, so that view must agree with getIdentity here. This
+        // is not a real account binding: it skips the `accounts` set, so it can never be
+        // revoked or enumerated, and it emits no AccountLinked.
         WalletEntry storage selfEntry =
             _storage().wallets[keccak256(InteroperableAddress.formatEvmV1(block.chainid, identity))];
         selfEntry.identity = identity;

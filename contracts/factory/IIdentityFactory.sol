@@ -317,17 +317,17 @@ interface IIdentityFactory {
     function getIdentity(bytes calldata account) external view returns (address);
 
     /// @notice Same as {getIdentity}, but also returns the wallet's current lifecycle
-    ///         status. Distinguishes "never linked" from "revoked". Unlike {getIdentity},
-    ///         a factory identity does not self-resolve here: this view answers account
-    ///         bindings only, and an identity is not a wallet linked to itself, so it
-    ///         reports (address(0), None).
+    ///         status. Distinguishes "never linked" from "revoked". A factory identity
+    ///         self-resolves here too, as `(identity, Active)`: attribution readers rely
+    ///         on this view to keep naming an owner after revocation, so it must agree
+    ///         with {getIdentity} on an identity's own address.
     function getIdentityIncludingRevoked(bytes calldata account)
         external
         view
         returns (address identity, AccountStatus status);
 
     /// @notice Read the current lifecycle status of a wallet entry. A factory identity's
-    ///         own address reports `None`: its self-resolution is not an account binding.
+    ///         own address reports `Active`: it self-resolves and can never be revoked.
     function getAccountStatus(bytes calldata account) external view returns (AccountStatus);
 
     /// @notice Enumerate the active wallets currently linked to `identity`, paginated
