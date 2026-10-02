@@ -1444,22 +1444,23 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertEq(onchainidSetup.idFactory.getIdentity(env), assetIdentity);
     }
 
-    /// @notice Self-resolution is resolution, not an account binding: the identity is
-    ///         not one of its own linked accounts, so it never shows up in the account
-    ///         enumeration, the linked-account count only reflects real wallets, and the
-    ///         account-binding views report no Active binding for the identity itself.
+    /// @notice Every resolution view agrees on an identity's own address: the status and
+    ///         including-revoked views answer `(identity, Active)` like {getIdentity}, so
+    ///         attribution readers that go through them (T-REX does) find the identity.
+    ///         It is still not an account binding: the identity never shows up in its own
+    ///         account enumeration and the linked-account count only reflects real wallets.
     function test_getIdentity_selfResolutionIsNotALinkedAccount() public view {
         bytes memory env = InteroperableAddress.formatEvmV1(block.chainid, address(aliceIdentity));
 
         assertEq(
             uint256(onchainidSetup.idFactory.getAccountStatus(env)),
-            uint256(IIdentityFactory.AccountStatus.None),
-            "no Active account binding for the identity itself"
+            uint256(IIdentityFactory.AccountStatus.Active),
+            "identity's own address is Active"
         );
         (address bound, IIdentityFactory.AccountStatus status) =
             onchainidSetup.idFactory.getIdentityIncludingRevoked(env);
-        assertEq(bound, address(0), "not reported as a bound wallet");
-        assertEq(uint256(status), uint256(IIdentityFactory.AccountStatus.None));
+        assertEq(bound, address(aliceIdentity), "self-resolves on the including-revoked view too");
+        assertEq(uint256(status), uint256(IIdentityFactory.AccountStatus.Active));
 
         bytes32 selfKey = keccak256(env);
         bytes[] memory accounts = onchainidSetup.idFactory
