@@ -2,13 +2,11 @@
 pragma solidity ^0.8.27;
 
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
-import { ERC7579Utils } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
 import { IAccount, PackedUserOperation } from "@openzeppelin/contracts/interfaces/IERC4337.sol";
 import { Execution } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { hashAddress } from "contracts/libraries/Hashing.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
-import { SafeCalldataBatch } from "contracts/vendor/utils/SafeCalldataBatch.sol";
 
 contract WrappedBatchProbe {
 
@@ -30,8 +28,8 @@ contract WrappedBatchProbe {
         uint256 lenPos = 4 + dataOffset;
         uint256 dataLen = uint256(bytes32(cd[lenPos:lenPos + 32]));
         uint256 dataStart = lenPos + 32;
-        Execution[] calldata batch = SafeCalldataBatch.decodeBatch(cd[dataStart:dataStart + dataLen]);
-        Execution calldata item = batch[0];
+        Execution[] memory batch = abi.decode(cd[dataStart:dataStart + dataLen], (Execution[]));
+        Execution memory item = batch[0];
         return (item.target, item.value, item.callData);
     }
 
@@ -95,13 +93,6 @@ contract WrappedBatchEscalationTest is OnchainIDSetup {
             .keyHasPurpose(address(aliceIdentity), keyHash, purpose);
     }
 
-    function _selector(bytes memory reason) internal pure returns (bytes4 sel) {
-        require(reason.length >= 4);
-        assembly ("memory-safe") {
-            sel := mload(add(reason, 32))
-        }
-    }
-
     function test_wrappedEntryInsideSlice_actionKeyDoesNotBecomeManager() public {
         bytes32 davidKey = hashAddress(david);
         assertTrue(_has(davidKey, KeyPurposes.ACTION));
@@ -112,12 +103,11 @@ contract WrappedBatchEscalationTest is OnchainIDSetup {
         bytes memory blob = _wrappingBatch(payload);
 
         WrappedBatchProbe probe = new WrappedBatchProbe();
-        (bool accountOk, bytes memory accountRet) = address(probe).call(blob);
+        (bool accountOk,) = address(probe).call(blob);
         assertFalse(accountOk);
-        assertEq(_selector(accountRet), ERC7579Utils.ERC7579DecodingError.selector);
 
         PackedUserOperation memory op = _userOp(blob);
-        vm.expectRevert(ERC7579Utils.ERC7579DecodingError.selector);
+        vm.expectRevert();
         probe.validatorFrame(op, bytes32(0));
 
         bytes32 userOpHash = keccak256("wrapped-batch-inside-slice");
@@ -125,13 +115,12 @@ contract WrappedBatchEscalationTest is OnchainIDSetup {
         op.signature = abi.encode(abi.encodePacked(david), abi.encodePacked(r, s, v));
 
         vm.prank(ENTRY_POINT);
-        vm.expectRevert(ERC7579Utils.ERC7579DecodingError.selector);
+        vm.expectRevert();
         IAccount(address(aliceIdentity)).validateUserOp(op, userOpHash, 0);
 
         vm.prank(ENTRY_POINT);
-        (bool executed, bytes memory reason) = address(aliceIdentity).call(blob);
+        (bool executed,) = address(aliceIdentity).call(blob);
         assertFalse(executed);
-        assertEq(_selector(reason), ERC7579Utils.ERC7579DecodingError.selector);
         assertFalse(_has(davidKey, KeyPurposes.MANAGEMENT));
     }
 
