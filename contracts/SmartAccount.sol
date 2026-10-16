@@ -27,7 +27,6 @@ import { Errors } from "./libraries/Errors.sol";
 import { hashAddress } from "./libraries/Hashing.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
 import { ERC734Validator } from "./modules/validators/ERC734Validator.sol";
-import { SafeCalldataBatch } from "./vendor/utils/SafeCalldataBatch.sol";
 import {
     AccountERC7579Upgradeable
 } from "@openzeppelin/contracts-upgradeable/account/extensions/draft-AccountERC7579Upgradeable.sol";
@@ -159,11 +158,10 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
             _authorizeCall(target, executionCalldata[52:], callerKeyHash, callerIsExecutor);
             emit CallDispatched(target, uint256(bytes32(executionCalldata[20:52])), executionCalldata[52:], msg.sender);
         } else if (callType == ERC7579Utils.CALLTYPE_BATCH) {
-            // Every call in the batch must pass. {SafeCalldataBatch} keeps the batch in calldata but
-            // validates each entry against the slice bounds, so a backward offset can't point past
-            // the batch and let us authorize a different target than we run. The validator decodes
-            // the same way, so the two checks always agree.
-            Execution[] calldata batch = SafeCalldataBatch.decodeBatch(executionCalldata);
+            // Every call in the batch must pass. Decode into memory so a bad offset can't point
+            // past the batch and let us authorize a different target than we run, and so the
+            // validator (which decodes the same way) and this check always agree.
+            Execution[] memory batch = abi.decode(executionCalldata, (Execution[]));
             for (uint256 i = 0; i < batch.length; i++) {
                 _authorizeCall(batch[i].target, batch[i].callData, callerKeyHash, callerIsExecutor);
                 emit CallDispatched(batch[i].target, batch[i].value, batch[i].callData, msg.sender);
@@ -178,7 +176,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
     /// @dev Authorizes one call: no dispatched call may target one of the account's own modules
     ///      (unless the account itself is the caller), and an executor caller needs a key
     ///      purpose for the target.
-    function _authorizeCall(address target, bytes calldata inner, bytes32 callerKeyHash, bool callerIsExecutor)
+    function _authorizeCall(address target, bytes memory inner, bytes32 callerKeyHash, bool callerIsExecutor)
         private
         view
     {
