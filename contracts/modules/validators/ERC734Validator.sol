@@ -473,16 +473,14 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         return false;
     }
 
-    /// @dev Purpose required for one (target, inner-call) pair. MANAGEMENT already short-circuited
-    ///      in {_scopeAllows}, so this only decides the sub-MANAGEMENT cases:
-    ///        target == this module             -> MANAGEMENT only (self-guard, see below)
-    ///        self + addClaim                    -> CLAIM_SIGNER or CLAIM_ADDER (read on the account)
-    ///        self + removeClaim                 -> CLAIM_SIGNER (read on the account)
-    ///        self, anything else                -> MANAGEMENT only
-    ///        external target                    -> ACTION
-    ///      Claim purposes are read from this module's per-account registry (the same storage that
-    ///      holds the keys), so the check works the same for any identity, including cross-identity
-    ///      claim issuers.
+    /// @dev Purpose required for one target. MANAGEMENT already short-circuited in
+    ///      {_scopeAllows}, so this only decides the sub-MANAGEMENT cases:
+    ///        target == this module              -> MANAGEMENT only
+    ///        target == account (including zero) -> MANAGEMENT only
+    ///        target == factory                  -> MANAGEMENT only
+    ///        any other external target          -> ACTION
+    ///      Claim operations are not supported through a user operation. Claim key holders must
+    ///      call the identity directly through its fallback handler.
     function _targetAllowed(address account, bytes32 keyHash, address target) private view returns (bool) {
         if (target == address(0)) target = account; // OZ aliases target 0 to self.
 
