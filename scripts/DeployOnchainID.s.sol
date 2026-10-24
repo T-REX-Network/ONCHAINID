@@ -125,6 +125,8 @@ contract DeployOnchainID is Script {
         // 5. ReputationRegistry. Needs the factory address so its lazy default-tier
         //    fallback can gate on factory membership. Writes are restricted via the AM.
         ReputationRegistry reputationRegistry = new ReputationRegistry(address(am), address(idFactory));
+        // Before any identity exists. Zero would leave the trusted-issuer path open.
+        reputationRegistry.setClaimAddThreshold(1);
         console.log("ReputationRegistry:", address(reputationRegistry));
 
         // 6. Validator module singleton — one module, ERC-7913 signer shape, EOA/1271/7913

@@ -29,15 +29,15 @@ import {
 /// @title RecoveryModule
 /// @notice Social recovery for ONCHAINID identities. Wraps OZ's
 ///         {ERC7579SocialRecoveryExecutor} (vendored via soldeer from
-///         OpenZeppelin/openzeppelin-accounts, commit 4ceb836d). All logic lives
-///         upstream, we add nothing.
+///         OpenZeppelin/openzeppelin-accounts, commit 4ceb836d). The guardian,
+///         delay, and execution rules live upstream.
 ///
-/// @dev    Why a wrapper file when there is no body.
+/// @dev    Why a wrapper.
 ///         The upstream contract is marked `abstract`, so we can't deploy it
-///         directly. Inheriting it once gives us a concrete contract we can
-///         instantiate with `new RecoveryModule()`, a stable name to reference
-///         from scripts and tests, and a place to override later if we ever need
-///         to (we don't today).
+///         directly. Inheriting it gives us a concrete contract we can instantiate
+///         with `new RecoveryModule()` and a stable name for scripts and tests.
+///         The override below is the ONCHAINID rule: a recovery can execute only
+///         in the installation that scheduled it.
 ///
 /// @dev    Why OZ instead of writing our own.
 ///         The recovery flow holds authority that can replace MANAGEMENT keys, so
@@ -88,4 +88,74 @@ import {
 ///         guardian bundle is bound to one identity and one module deployment.
 ///         The module is a shared singleton: each account keeps its own guardian
 ///         set, threshold and schedule in module storage keyed by account.
-contract RecoveryModule is ERC7579SocialRecoveryExecutor { }
+contract RecoveryModule is ERC7579SocialRecoveryExecutor {
+
+    error RecoveryCleanupNotInProgress(address account);
+
+    /// @notice Guardian cleanup could not finish during account uninstall. The old
+    ///         operation generation was still retired. The account can call
+    ///         `onUninstall` directly with more gas to finish cleanup before reinstall.
+    event RecoveryCleanupIncomplete(address indexed account);
+
+    uint256 private constant _CLEANUP_GAS_RESERVE = 50_000;
+    uint256 private constant _MIN_GAS_FOR_CLEANUP = 100_000;
+
+    /// @dev One generation per account. Install and uninstall both advance it, and
+    ///      the operation id commits to the value. A schedule from an earlier
+    ///      installation then no longer addresses a known operation. The first
+    ///      install moves the counter from 0 to 1. Accounts do not share it.
+    ///      This lives on the module, so shipping it means a new module address.
+    ///      The previous deployment keeps its own storage.
+    mapping(address account => uint256 generation) private _generation;
+    mapping(address account => bool inProgress) private _cleanupInProgress;
+
+    /// @dev Record this installation, then advance the account's generation.
+    ///      `msg.sender` is the account. A revert from the upstream install
+    ///      rolls the increment back with it.
+    function onInstall(bytes calldata data) public override {
+        super.onInstall(data);
+        ++_generation[msg.sender];
+    }
+
+    /// @dev Retire the generation before the potentially unbounded guardian cleanup.
+    ///      The account implementation deliberately ignores a reverting module
+    ///      callback. Running the cleanup in a bounded delegatecall lets this outer
+    ///      call return successfully even if cleanup runs out of gas, so the retired
+    ///      generation is not rolled back. Delegatecall preserves the account as
+    ///      `msg.sender` for the upstream cleanup logic.
+    function onUninstall(bytes calldata) public override {
+        address account = msg.sender;
+        ++_generation[account];
+
+        if (gasleft() < _MIN_GAS_FOR_CLEANUP) {
+            emit RecoveryCleanupIncomplete(account);
+            return;
+        }
+
+        _cleanupInProgress[account] = true;
+        (bool success,) = address(this).delegatecall{ gas: gasleft() - _CLEANUP_GAS_RESERVE }(
+            abi.encodeCall(this.cleanupAfterUninstall, (bytes("")))
+        );
+        _cleanupInProgress[account] = false;
+        if (!success) emit RecoveryCleanupIncomplete(account);
+    }
+
+    /// @dev Called only by `onUninstall` through delegatecall. A direct call must
+    ///      not clear guardians without first moving the operation generation.
+    function cleanupAfterUninstall(bytes calldata data) external {
+        require(_cleanupInProgress[msg.sender], RecoveryCleanupNotInProgress(msg.sender));
+        super.onUninstall(data);
+    }
+
+    /// @dev The upstream id, plus this account's current generation. Schedule,
+    ///      execute, cancel, and `state` all call this, so they agree.
+    function hashOperation(address account, bytes32 salt, bytes32 mode, bytes memory executionCalldata)
+        public
+        view
+        override
+        returns (bytes32)
+    {
+        return keccak256(abi.encode(account, salt, mode, executionCalldata, _generation[account]));
+    }
+
+}

@@ -250,12 +250,17 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // thing standing between an open deploy and a hijacked contract identity. Refuse
         // the config instead of trusting every operator to remember that.
         require(!_singleBinding || _roleId != type(uint64).max, Errors.SingleBindingTypeCannotBePublic(_identityType));
+        // Once the flag is true it stays true, even if no identity of the type exists yet.
+        // The admin can still change the role and the self-deploy flag.
+        TypePolicy storage oldPolicy = _storage().typePolicies[_identityType];
+        require(!oldPolicy.singleBinding || _singleBinding, Errors.SingleBindingPolicyLocked(_identityType));
         _storage().typePolicies[_identityType] = TypePolicy(_roleId, _selfDeployable, _singleBinding, true);
         emit IdentityTypePolicySet(_identityType, _roleId, _selfDeployable, _singleBinding, msg.sender);
     }
 
     /// @inheritdoc IIdentityFactory
     function removeIdentityTypePolicy(uint256 _identityType) external restricted {
+        require(!_storage().typePolicies[_identityType].singleBinding, Errors.SingleBindingPolicyLocked(_identityType));
         delete _storage().typePolicies[_identityType];
         emit IdentityTypePolicyRemoved(_identityType, msg.sender);
     }
@@ -295,7 +300,19 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // addresses here and envelopes in linkAccount, the same wallet would hash to
         // two different keys and sticky binding would not catch the collision.
         bytes memory account = InteroperableAddress.formatEvmV1(block.chainid, msg.sender);
-        return _doCreateIdentity(account, _identityType, _salt, _keys);
+
+        // A signing wallet is bound to this identity, so its keys have to be that
+        // wallet's and it has to come out as the only human manager. A single-binding
+        // type is a contract and holds no key, so those checks stay skipped.
+        bool signingType = !policy.singleBinding;
+        if (signingType) {
+            _requireWalletKeyTypes(_keys);
+            _requireKeysForAccount(_keys, msg.sender);
+        }
+
+        address identity = _doCreateIdentity(account, _identityType, _salt, _keys);
+        if (signingType) _requireSoleManagementKey(identity, msg.sender);
+        return identity;
     }
 
     /// @inheritdoc IIdentityFactory
@@ -321,13 +338,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // keyHash, so trusting that field would let a caller pass the account's hash while
         // pointing signerData at its own address.
         bool singleBinding = _storage().typePolicies[_identityType].singleBinding;
-        if (!singleBinding) {
-            bytes32 accountKey = hashAddress(_account);
-            for (uint256 i = 0; i < _keys.length; i++) {
-                bytes32 derivedKey = keccak256(_keys[i].signerData);
-                require(derivedKey == accountKey, Errors.KeyNotForAccount(derivedKey));
-            }
-        }
+        if (!singleBinding) _requireKeysForAccount(_keys, _account);
 
         address identity = _doCreateIdentity(account, _identityType, _salt, _keys);
 
@@ -630,6 +641,25 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         return address(uint160(uint256(_walletKey(account))));
     }
 
+    /// @dev Every caller-supplied key must be `account`'s own key. The registry stores
+    ///      `keccak256(signerData)` and never reads the caller-supplied `keyHash`.
+    function _requireKeysForAccount(Structs.KeyParam[] memory keys, address account) private pure {
+        bytes32 accountKey = hashAddress(account);
+        for (uint256 i = 0; i < keys.length; i++) {
+            bytes32 derivedKey = keccak256(keys[i].signerData);
+            require(derivedKey == accountKey, Errors.KeyNotForAccount(derivedKey));
+        }
+    }
+
+    /// @dev MODULE is reserved for the key a module install registers. Checked before
+    ///      {_requireKeysForAccount} on self-deploy, so a wallet key wearing MODULE
+    ///      still reports {Errors.CallerKeyCannotBeModule} rather than {Errors.KeyNotForAccount}.
+    function _requireWalletKeyTypes(Structs.KeyParam[] memory keys) private pure {
+        for (uint256 i = 0; i < keys.length; i++) {
+            require(keys[i].keyType != KeyTypes.MODULE, Errors.CallerKeyCannotBeModule(keccak256(keys[i].signerData)));
+        }
+    }
+
     /// @dev `_account` must be the only wallet holding MANAGEMENT on the new identity.
     ///      MODULE keys never enter the MANAGEMENT index, so the count below only sees
     ///      wallet keys. Callers cannot abuse that exception because the deploy rejects
@@ -667,13 +697,8 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         require(bytes(_salt).length != 0, Errors.EmptyString());
         require(_keys.length > 0, Errors.EmptyListOfKeys());
 
-        // Caller keys are wallet keys. The MODULE type is reserved for the keys the module
-        // install registers: MODULE keys stay out of the MANAGEMENT index and cannot sign,
-        // so a wallet key labeled MODULE would hold management authority through the
-        // approval queue while every count and guard misses it.
-        for (uint256 i = 0; i < _keys.length; i++) {
-            require(_keys[i].keyType != KeyTypes.MODULE, Errors.CallerKeyCannotBeModule(keccak256(_keys[i].signerData)));
-        }
+        // Caller keys are wallet keys. See {_requireWalletKeyTypes}.
+        _requireWalletKeyTypes(_keys);
 
         // Modules come from the type's registered configuration, never from the caller. A
         // type with no modules registered cannot deploy, because Identity.initialize needs

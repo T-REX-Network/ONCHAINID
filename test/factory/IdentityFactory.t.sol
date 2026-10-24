@@ -2323,11 +2323,9 @@ contract IdentityFactoryTest is OnchainIDSetup {
         );
     }
 
-    /// @notice A front-runner who replays a pending self-deploy verbatim lands on a
-    ///         different address, because the auto-linked account is part of the salt.
-    ///         Without that the attacker would take the victim's address, carrying the
-    ///         victim's MANAGEMENT key but with the attacker's own wallet auto-linked,
-    ///         and the binding is sticky.
+    /// @notice A front-runner who replays a pending self-deploy is not the wallet those
+    ///         keys belong to, so the deploy is rejected. The victim's own transaction
+    ///         still creates the identity and binds that wallet.
     function test_createIdentity_frontRunnerCannotTakeVictimAddress() public {
         address victim = makeAddr("frontRunVictim");
         address attacker = makeAddr("frontRunAttacker");
@@ -2336,22 +2334,16 @@ contract IdentityFactoryTest is OnchainIDSetup {
         Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(victim);
 
         vm.prank(attacker);
-        address attackerIdentity = onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "frontRun", keys);
+        vm.expectRevert(abi.encodeWithSelector(Errors.KeyNotForAccount.selector, keccak256(abi.encodePacked(victim))));
+        onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "frontRun", keys);
 
-        // The victim's own transaction still goes through.
         vm.prank(victim);
         address victimIdentity = onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "frontRun", keys);
 
-        assertTrue(attackerIdentity != victimIdentity, "replay must not land on the victim's address");
         assertEq(
             onchainidSetup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, victim)),
             victimIdentity,
             "victim keeps its own identity"
-        );
-        assertEq(
-            onchainidSetup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, attacker)),
-            attackerIdentity,
-            "attacker's wallet stays on its own identity"
         );
     }
 
