@@ -116,6 +116,23 @@ contract ReputationRegistryTest is OnchainIDSetup {
         vm.stopPrank();
     }
 
+    /// @notice Zero accepts every score, including an issuer with none. The setter
+    ///         rejects it, and a rejected write leaves the previous value in place.
+    function test_setClaimAddThreshold_rejectsZero() public {
+        vm.prank(reputationManager);
+        vm.expectRevert(Errors.ZeroClaimAddThreshold.selector);
+        registry.setClaimAddThreshold(0);
+        assertEq(registry.claimAddThreshold(), 0);
+
+        vm.prank(reputationManager);
+        registry.setClaimAddThreshold(1);
+
+        vm.prank(reputationManager);
+        vm.expectRevert(Errors.ZeroClaimAddThreshold.selector);
+        registry.setClaimAddThreshold(0);
+        assertEq(registry.claimAddThreshold(), 1);
+    }
+
     // ============ setReputation ============
 
     function test_setReputation_revertWhenCallerLacksRole() public {

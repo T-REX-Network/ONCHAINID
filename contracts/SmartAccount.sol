@@ -34,7 +34,8 @@ import { CallType, ERC7579Utils, ExecType, Mode } from "@openzeppelin/contracts/
 import {
     Execution,
     MODULE_TYPE_EXECUTOR,
-    MODULE_TYPE_FALLBACK
+    MODULE_TYPE_FALLBACK,
+    MODULE_TYPE_VALIDATOR
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { Calldata } from "@openzeppelin/contracts/utils/Calldata.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
@@ -54,6 +55,27 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
 
     /// @dev Emitted right after ERC-7579 `ModuleUninstalled`, which omits the uninstall data.
     event ModuleUninstallData(uint256 moduleTypeId, address module, bytes deInitData, address caller);
+
+    /// @dev Selector count per fallback module. One module can own several selectors
+    ///      and one key, and the base account does not expose its fallback map, so
+    ///      the count is how a selector drop knows the key is still needed.
+    ///      Namespaced so a beacon upgrade does not move the account's other slots.
+    ///      An identity upgraded from before this count exists starts at zero.
+    /// @custom:storage-location erc7201:onchainid.SmartAccount.FallbackInstall
+    struct FallbackInstallStorage {
+        mapping(address module => uint256 count) count;
+    }
+
+    // keccak256(abi.encode(uint256(keccak256("onchainid.SmartAccount.FallbackInstall")) - 1)) & ~bytes32(uint256(0xff))
+    bytes32 private constant _FALLBACK_INSTALL_SLOT =
+        0x35f932d2f69093851d1b571b18c949f919c362c59206ae5971bab7ac9a6ae100;
+
+    function _fallbackInstallStorage() private pure returns (FallbackInstallStorage storage $) {
+        bytes32 slot = _FALLBACK_INSTALL_SLOT;
+        assembly ("memory-safe") {
+            $.slot := slot
+        }
+    }
 
     /// @notice Install a module. Gated on MANAGEMENT.
     /// @dev The OZ default gate (`onlyEntryPointOrSelf`) is replaced with the stricter
@@ -97,37 +119,59 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
 
     /// @dev Runs the base install, then logs the install data the ERC-7579 `ModuleInstalled` event omits.
     function _installModule(uint256 moduleTypeId, address module, bytes memory initData) internal virtual override {
+        // Count before the base install. A rejected selector reverts this increment with it.
+        if (moduleTypeId == MODULE_TYPE_FALLBACK) {
+            ++_fallbackInstallStorage().count[module];
+        }
         super._installModule(moduleTypeId, module, initData);
         emit ModuleInstallData(moduleTypeId, module, initData, msg.sender);
     }
 
-    /// @dev Strips every ERC-734 purpose the module holds, then runs the base uninstall.
-    ///      Purposes are read from, and removed on, the enshrined registry module (self-calls).
-    ///      Fallback uninstalls don't strip: fallback handlers register per selector, so one
-    ///      module can hold several fallback installs (plus an executor one) all backed by a
-    ///      single MODULE key. Dropping one selector must not revoke the key that still
-    ///      authorizes the others; retiring a fallback-only module's key is an explicit
-    ///      {removeKey}.
+    /// @dev Takes the module's ERC-734 purposes off before `onUninstall`, then puts
+    ///      them back only if this was one fallback selector and the module is still
+    ///      installed another way. `onUninstall` is authorized by the key registry,
+    ///      not by the install list, so the key must not be live during the callback.
+    ///      Dropping the executor removes the shared key even while fallback selectors
+    ///      remain. A count of zero means the identity was upgraded before this counter
+    ///      existed: a fallback-only module then loses its key, and an executor that is
+    ///      still installed is enough to put the key back.
     function _uninstallModule(uint256 moduleTypeId, address module, bytes memory deInitData) internal virtual override {
-        // Take away the module's ERC-734 purposes first, then run the base uninstall (which calls
-        // the module's onUninstall). Order matters: a module that still holds MANAGEMENT could use
-        // its onUninstall callback to grant itself keys. Stripping first closes that window.
-        if (moduleTypeId != MODULE_TYPE_FALLBACK) {
-            bytes32 moduleKey = hashAddress(module);
-            ERC734Validator registry = ERC734Validator(registryModule());
+        FallbackInstallStorage storage installs = _fallbackInstallStorage();
+        // A pre-upgrade install has no count. Skipping the decrement avoids wrapping it.
+        if (moduleTypeId == MODULE_TYPE_FALLBACK && installs.count[module] != 0) {
+            --installs.count[module];
+        }
 
-            // Drop each purpose the module holds. Snapshot first, since the set shrinks as we remove.
-            // At most the 6 ERC-734 purposes, so the loop is cheap. Skip if the module had no key.
-            (bytes memory signerData,) = registry.getKeyData(address(this), moduleKey);
-            if (signerData.length != 0) {
-                uint256[] memory purposes = registry.getKeyPurposes(address(this), moduleKey);
-                for (uint256 i = 0; i < purposes.length; i++) {
-                    _removeKeyPurpose(moduleKey, purposes[i], msg.sender);
-                }
+        // Snapshot first. Removing a purpose shrinks the set, and a module that is
+        // still installed has to get the same key and purposes back afterwards.
+        bytes32 moduleKey = hashAddress(module);
+        ERC734Validator registry = ERC734Validator(registryModule());
+        (bytes memory signerData, bytes memory clientData) = registry.getKeyData(address(this), moduleKey);
+        uint256 keyType;
+        uint256[] memory purposes;
+        if (signerData.length != 0) {
+            (, keyType,) = registry.getKey(address(this), moduleKey);
+            purposes = registry.getKeyPurposes(address(this), moduleKey);
+            for (uint256 i = 0; i < purposes.length; ++i) {
+                _removeKeyPurpose(moduleKey, purposes[i], msg.sender);
             }
         }
 
+        // The base call invokes onUninstall and ignores a revert from the module.
+        // The key is already off the account for that call. If the uninstall itself
+        // reverts, the removal above reverts with it.
         super._uninstallModule(moduleTypeId, module, deInitData);
+
+        bool keepForOtherInstall = moduleTypeId == MODULE_TYPE_FALLBACK
+            && (installs.count[module] != 0
+                || isModuleInstalled(MODULE_TYPE_EXECUTOR, module, Calldata.emptyBytes())
+                || isModuleInstalled(MODULE_TYPE_VALIDATOR, module, Calldata.emptyBytes()));
+        if (keepForOtherInstall) {
+            for (uint256 i = 0; i < purposes.length; ++i) {
+                _addKeyWithData(moduleKey, purposes[i], keyType, signerData, clientData, msg.sender);
+            }
+        }
+
         emit ModuleUninstallData(moduleTypeId, module, deInitData, msg.sender);
     }
 

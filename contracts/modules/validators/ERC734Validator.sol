@@ -725,6 +725,10 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         IReputationRegistry registry = reputationRegistry;
         uint128 score = registry.reputationOf(issuer);
         uint128 threshold = registry.claimAddThreshold();
+        // A fresh registry stores 0, and 0 accepts every score. Fail closed until a
+        // positive threshold is set. Already-deployed registries can still be written
+        // back to 0 by their old setter, so this check has to live here too.
+        require(threshold != 0, Errors.ZeroClaimAddThreshold());
         require(score >= threshold, Errors.ReputationBelowClaimAddThreshold(issuer, score, threshold));
     }
 

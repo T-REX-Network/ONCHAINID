@@ -161,7 +161,8 @@ interface IIdentityFactory {
     ///         as the new identity's first wallet. Gated per type by `selfDeployable`:
     ///         contract-shaped types like ASSET / SMART_CONTRACT opt out because the
     ///         `msg.sender = first wallet` binding does not apply to them. Unregistered
-    ///         types revert.
+    ///         types revert. For a signing type, every key's `signerData` must be the
+    ///         caller's own and the caller must be the only human management key.
     ///         The modules registered for the type are installed. Callers do not pick them.
     function createIdentity(uint256 _identityType, string memory _salt, Structs.KeyParam[] memory _keys)
         external
@@ -190,16 +191,18 @@ interface IIdentityFactory {
     ///         whether {createIdentity} (self-deploy) is allowed, and whether the type is
     ///         single-binding. Pass `_singleBinding = true` for types bound to one contract
     ///         (ASSET, SMART_CONTRACT, ...): they keep the account set at deploy and can
-    ///         never link or revoke another. Setting a policy registers the type;
-    ///         registration is tracked separately from the role, so the AM's `ADMIN_ROLE`
-    ///         (id 0) is usable like any other role. Type 0 reverts: in the type
-    ///         record a 0 means "not deployed by this factory". `restricted` via
-    ///         the AM.
+    ///         never link or revoke another. A true single-binding flag cannot be set
+    ///         back to false, even when no identity of that type exists yet. The role and
+    ///         the self-deploy flag can still change while the flag stays true. Setting a
+    ///         policy registers the type; registration is tracked separately from the role,
+    ///         so the AM's `ADMIN_ROLE` (id 0) is usable like any other role. Type 0
+    ///         reverts: in the type record a 0 means "not deployed by this factory".
+    ///         `restricted` via the AM.
     function setIdentityTypePolicy(uint256 _identityType, uint64 _roleId, bool _selfDeployable, bool _singleBinding)
         external;
 
-    /// @notice Unregister an identity type (both deploy paths will revert). `restricted`
-    ///         via the AM.
+    /// @notice Unregister an identity type (both deploy paths will revert). A type whose
+    ///         single-binding flag is true cannot be removed. `restricted` via the AM.
     function removeIdentityTypePolicy(uint256 _identityType) external;
 
     /// @notice Read the per-type policy. `registered == false` means the type is

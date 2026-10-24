@@ -452,6 +452,32 @@ contract SmartAccountTest is OnchainIDSetup {
         aliceIdentity.addKey(newKey, KeyPurposes.MANAGEMENT, KeyTypes.ECDSA);
     }
 
+    /// @notice The queue module is one key shared by the executor and its fallback selectors.
+    ///         Removing the executor takes that key off, even while a selector is still installed.
+    ///         A later selector drop has nothing left to put back.
+    function test_uninstallModule_executorFirst_stripsSharedKeyWhileFallbackRemains() public {
+        address kam = address(onchainidSetup.keyApprovalModule);
+        bytes32 moduleKey = keccak256(abi.encodePacked(kam));
+
+        vm.prank(alice);
+        aliceIdentity.uninstallModule(MODULE_TYPE_EXECUTOR, kam, "");
+
+        assertTrue(
+            aliceIdentity.isModuleInstalled(MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.execute.selector)),
+            "the execute selector is still installed"
+        );
+        assertFalse(
+            IERC734(address(aliceIdentity)).keyHasPurpose(moduleKey, KeyPurposes.MANAGEMENT),
+            "removing the executor drops the shared key"
+        );
+
+        vm.prank(alice);
+        aliceIdentity.uninstallModule(MODULE_TYPE_FALLBACK, kam, abi.encodePacked(IKeyExecutor.execute.selector));
+
+        (,, bytes32 storedKey) = IERC734(address(aliceIdentity)).getKey(moduleKey);
+        assertEq(storedKey, bytes32(0), "a later selector drop does not put the key back");
+    }
+
     /// Fallback handlers register per selector, so KAM holds four installs backed by one
     /// MODULE key. Dropping a single read-only selector must not strip that key: the
     /// executor install and the other handlers still rely on it.
