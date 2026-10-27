@@ -295,7 +295,13 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // addresses here and envelopes in linkAccount, the same wallet would hash to
         // two different keys and sticky binding would not catch the collision.
         bytes memory account = InteroperableAddress.formatEvmV1(block.chainid, msg.sender);
-        return _doCreateIdentity(account, _identityType, _salt, _keys);
+
+        // Same rule as createIdentityFor: the wallet being bound has to manage the identity
+        // alone. The binding is sticky, so a self-deploy with someone else's MANAGEMENT key
+        // would leave this wallet stuck on an identity it does not control.
+        address identity = _doCreateIdentity(account, _identityType, _salt, _keys);
+        if (!policy.singleBinding) _requireSoleManagementKey(identity, msg.sender);
+        return identity;
     }
 
     /// @inheritdoc IIdentityFactory
