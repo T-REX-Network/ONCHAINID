@@ -80,6 +80,13 @@ contract DeployOnchainID is Script {
     ///      sticky; self-deploy remains open for these types.
     uint64 internal constant ROLE_ISSUER = 4;
 
+    /// @dev Factory CLAIM_ISSUER identities start at this score, and the trusted-issuer
+    ///      claim path needs at least the threshold. Equal, so a fresh issuer passes and
+    ///      lowering one below the threshold blocks it. The threshold must not be 0.
+    uint128 internal constant CLAIM_ISSUER_DEFAULT_REPUTATION = 50;
+    uint128 internal constant CLAIM_ADD_THRESHOLD = 50;
+
+
     function run() external {
         uint256 deployerKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
         vm.startBroadcast(deployerKey);
@@ -125,6 +132,8 @@ contract DeployOnchainID is Script {
         // 5. ReputationRegistry. Needs the factory address so its lazy default-tier
         //    fallback can gate on factory membership. Writes are restricted via the AM.
         ReputationRegistry reputationRegistry = new ReputationRegistry(address(am), address(idFactory));
+        reputationRegistry.setDefault(IdentityTypes.CLAIM_ISSUER, CLAIM_ISSUER_DEFAULT_REPUTATION);
+        reputationRegistry.setClaimAddThreshold(CLAIM_ADD_THRESHOLD);
         console.log("ReputationRegistry:", address(reputationRegistry));
 
         // 6. Validator module singleton — one module, ERC-7913 signer shape, EOA/1271/7913

@@ -97,6 +97,12 @@ contract ReputationRegistryTest is OnchainIDSetup {
         registry.setClaimAddThreshold(HIGH_SCORE);
     }
 
+    function test_setClaimAddThreshold_revertOnZero() public {
+        vm.prank(reputationManager);
+        vm.expectRevert(Errors.ZeroClaimAddThreshold.selector);
+        registry.setClaimAddThreshold(0);
+    }
+
     function test_setClaimAddThreshold_managerCanSet() public {
         vm.prank(reputationManager);
         vm.expectEmit(false, false, false, true, address(registry));
