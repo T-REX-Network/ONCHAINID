@@ -110,15 +110,32 @@ contract ClaimToTest is OnchainIDSetup {
         onchainidSetup.accessManager.setTargetFunctionRole(address(registry), selectors, 1001);
         onchainidSetup.accessManager.grantRole(1001, reputationManager, 0);
         vm.stopPrank();
+        uint128 score = registry.reputationOf(address(claimIssuer));
+        uint128 threshold = score + 1;
         vm.prank(reputationManager);
-        registry.setClaimAddThreshold(1);
+        registry.setClaimAddThreshold(threshold);
 
         (bytes memory signature, Structs.ClaimData memory data) = _buildIssuerClaim(address(bobIdentity));
 
         vm.prank(claimIssuerOwner);
         vm.expectRevert(
-            abi.encodeWithSelector(Errors.ReputationBelowClaimAddThreshold.selector, address(claimIssuer), 0, 1)
+            abi.encodeWithSelector(
+                Errors.ReputationBelowClaimAddThreshold.selector, address(claimIssuer), score, threshold
+            )
         );
+        IClaimIssuer(address(claimIssuer)).addClaimTo(TOPIC, 1, signature, data, "uri", IIdentity(address(bobIdentity)));
+    }
+
+    /// @notice A registry that still reports a zero threshold (fresh, never configured) must
+    ///         not open the keyless path: zero would let every score through.
+    function test_addClaimTo_reverts_whenThresholdIsZero() public {
+        ReputationRegistry registry = onchainidSetup.reputationRegistry;
+        vm.mockCall(address(registry), abi.encodeCall(ReputationRegistry.claimAddThreshold, ()), abi.encode(uint128(0)));
+
+        (bytes memory signature, Structs.ClaimData memory data) = _buildIssuerClaim(address(bobIdentity));
+
+        vm.prank(claimIssuerOwner);
+        vm.expectRevert(Errors.ZeroClaimAddThreshold.selector);
         IClaimIssuer(address(claimIssuer)).addClaimTo(TOPIC, 1, signature, data, "uri", IIdentity(address(bobIdentity)));
     }
 
