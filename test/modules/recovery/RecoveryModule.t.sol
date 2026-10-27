@@ -2,6 +2,7 @@
 pragma solidity ^0.8.27;
 
 import { OnchainIDSetup } from "../../helpers/OnchainIDSetup.sol";
+import { ERC7579DelayedExecutor } from "@openzeppelin/accounts/modules/executors/ERC7579DelayedExecutor.sol";
 import { IERC7579Execution } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IERC734 } from "contracts/interface/IERC734.sol";
@@ -23,6 +24,8 @@ import { RecoveryModule } from "contracts/modules/executors/RecoveryModule.sol";
 ///           * weighted multisig: a single high-weight guardian can meet a weighted threshold
 ///           * account-side control: a MANAGEMENT key can cancel a recovery and change the
 ///             guardian setup; ACTION keys and direct dispatches at the module cannot
+///           * uninstall: a recovery scheduled before an uninstall can run neither while the
+///             module is out nor after a reinstall; other accounts' schedules are untouched
 ///
 ///         setUp() installs the module on alice with 3 guardians, threshold 2,
 ///         delay 1 day, expiration 30 days, all weights 1.
@@ -39,6 +42,9 @@ contract RecoveryModuleTest is OnchainIDSetup {
 
     address internal newOwner;
     uint256 internal newOwnerPk;
+
+    // The setUp install payload, reused by the reinstall tests.
+    bytes internal setUpInstallData;
 
     // Per OZ ERC7579DelayedExecutor.onInstall encoding:
     //   executorArgs = abi.encodePacked(uint32 delay, uint32 expiration)
@@ -76,8 +82,7 @@ contract RecoveryModuleTest is OnchainIDSetup {
         weights[2] = 1;
         bytes memory msigArgs = abi.encode(guardians, THRESHOLD, weights);
 
-        bytes memory installData =
-            abi.encodePacked(uint16(execArgs.length), execArgs, uint16(msigArgs.length), msigArgs);
+        setUpInstallData = abi.encodePacked(uint16(execArgs.length), execArgs, uint16(msigArgs.length), msigArgs);
 
         // Install as an executor, then register the module address as a MODULE-typed
         // MANAGEMENT key so SmartAccount accepts its self-targeted dispatches.
@@ -87,7 +92,7 @@ contract RecoveryModuleTest is OnchainIDSetup {
             2,
             /* MODULE_TYPE_EXECUTOR */
             address(recovery),
-            installData
+            setUpInstallData
         );
         aliceIdentity.addKeyWithData(
             keccak256(abi.encodePacked(address(recovery))),
@@ -609,6 +614,114 @@ contract RecoveryModuleTest is OnchainIDSetup {
     /// @dev Wraps a call to the recovery module in an inner `execute`. Queue this at the
     ///      identity with `to = identity` and the account calls `execute` on itself, and that
     ///      self-call is allowed to target its own module.
+    // ---- uninstall and reinstall ----
+
+    /// @notice A recovery scheduled under one installation is dead once the module is
+    ///         uninstalled. While the module is out the account refuses its dispatch; after a
+    ///         reinstall the operation id belongs to the previous generation and is unknown.
+    ///         Guardians can still schedule a fresh recovery on the new installation.
+    function test_scheduledRecoveryDoesNotSurviveUninstall() public {
+        bytes32 salt = bytes32(uint256(41));
+        bytes32 mode = bytes32(0);
+        bytes memory recoveryData = _addNewOwnerCalldata();
+        recovery.startRecovery(
+            address(aliceIdentity),
+            salt,
+            mode,
+            recoveryData,
+            _guardianBundle(_scheduleDigest(address(aliceIdentity), salt, mode, recoveryData))
+        );
+
+        vm.prank(alice);
+        aliceIdentity.uninstallModule(2, address(recovery), "");
+
+        // Past the delay, but the module is not installed, so the account rejects the call.
+        vm.warp(block.timestamp + DELAY + 1);
+        vm.expectRevert();
+        recovery.executeRecovery(address(aliceIdentity), salt, mode, recoveryData);
+
+        _reinstall(aliceIdentity, alice);
+
+        // The old id is from the previous generation: unknown, so it can never execute.
+        assertEq(
+            uint8(recovery.state(address(aliceIdentity), salt, mode, recoveryData)),
+            uint8(ERC7579DelayedExecutor.OperationState.Unknown)
+        );
+        vm.expectRevert();
+        recovery.executeRecovery(address(aliceIdentity), salt, mode, recoveryData);
+        assertFalse(
+            IERC734(address(aliceIdentity)).keyHasPurpose(keccak256(abi.encodePacked(newOwner)), KeyPurposes.MANAGEMENT)
+        );
+
+        // A fresh schedule on the new installation goes through as usual.
+        bytes32 freshSalt = bytes32(uint256(42));
+        recovery.startRecovery(
+            address(aliceIdentity),
+            freshSalt,
+            mode,
+            recoveryData,
+            _guardianBundle(_scheduleDigest(address(aliceIdentity), freshSalt, mode, recoveryData))
+        );
+        vm.warp(block.timestamp + DELAY);
+        recovery.executeRecovery(address(aliceIdentity), freshSalt, mode, recoveryData);
+        assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(keccak256(abi.encodePacked(newOwner)), KeyPurposes.MANAGEMENT)
+        );
+    }
+
+    /// @notice The generation is per account. Alice uninstalling and reinstalling leaves a
+    ///         recovery scheduled on bob's identity exactly where it was.
+    function test_uninstallOnOneAccountLeavesOtherSchedulesAlone() public {
+        _reinstall(bobIdentity, bob);
+
+        bytes32 salt = bytes32(uint256(43));
+        bytes32 mode = bytes32(0);
+        bytes memory recoveryData = _addNewOwnerCalldataFor(address(bobIdentity));
+        recovery.startRecovery(
+            address(bobIdentity),
+            salt,
+            mode,
+            recoveryData,
+            _guardianBundle(_scheduleDigest(address(bobIdentity), salt, mode, recoveryData))
+        );
+
+        vm.prank(alice);
+        aliceIdentity.uninstallModule(2, address(recovery), "");
+        vm.warp(block.timestamp + DELAY + 1);
+        _reinstall(aliceIdentity, alice);
+
+        recovery.executeRecovery(address(bobIdentity), salt, mode, recoveryData);
+        assertTrue(
+            IERC734(address(bobIdentity)).keyHasPurpose(keccak256(abi.encodePacked(newOwner)), KeyPurposes.MANAGEMENT)
+        );
+    }
+
+    /// @dev Installs the module on `identity` with the setUp guardian config and registers its
+    ///      MODULE key, the same two steps setUp runs for alice.
+    function _reinstall(Identity identity, address manager) internal {
+        vm.startPrank(manager);
+        identity.installModule(2, address(recovery), setUpInstallData);
+        identity.addKeyWithData(
+            keccak256(abi.encodePacked(address(recovery))),
+            KeyPurposes.MANAGEMENT,
+            KeyTypes.MODULE,
+            abi.encodePacked(address(recovery)),
+            ""
+        );
+        vm.stopPrank();
+    }
+
+    /// @dev g1 + g2 signatures over `digest`, which meets the setUp threshold of 2.
+    function _guardianBundle(bytes32 digest) internal view returns (bytes memory) {
+        bytes[] memory signers = new bytes[](2);
+        bytes[] memory sigs = new bytes[](2);
+        signers[0] = abi.encodePacked(g1);
+        signers[1] = abi.encodePacked(g2);
+        sigs[0] = _sign(g1Pk, digest);
+        sigs[1] = _sign(g2Pk, digest);
+        return abi.encode(signers, sigs);
+    }
+
     function _recoveryModuleCall(bytes memory moduleCall) internal view returns (bytes memory) {
         return abi.encodeCall(
             IERC7579Execution.execute, (bytes32(0), abi.encodePacked(address(recovery), uint256(0), moduleCall))
