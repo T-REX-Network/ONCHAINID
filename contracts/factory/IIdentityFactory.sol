@@ -161,7 +161,8 @@ interface IIdentityFactory {
     ///         as the new identity's first wallet. Gated per type by `selfDeployable`:
     ///         contract-shaped types like ASSET / SMART_CONTRACT opt out because the
     ///         `msg.sender = first wallet` binding does not apply to them. Unregistered
-    ///         types revert.
+    ///         types revert. For a signing type the caller must end up as the only wallet
+    ///         holding MANAGEMENT, the same rule {createIdentityFor} applies to `_account`.
     ///         The modules registered for the type are installed. Callers do not pick them.
     function createIdentity(uint256 _identityType, string memory _salt, Structs.KeyParam[] memory _keys)
         external

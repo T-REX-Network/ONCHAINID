@@ -2323,11 +2323,10 @@ contract IdentityFactoryTest is OnchainIDSetup {
         );
     }
 
-    /// @notice A front-runner who replays a pending self-deploy verbatim lands on a
-    ///         different address, because the auto-linked account is part of the salt.
-    ///         Without that the attacker would take the victim's address, carrying the
-    ///         victim's MANAGEMENT key but with the attacker's own wallet auto-linked,
-    ///         and the binding is sticky.
+    /// @notice A front-runner who replays a pending self-deploy is not the wallet those
+    ///         keys belong to, so the replay is rejected: the attacker would not be the
+    ///         sole manager of the identity its wallet gets bound to. The victim's own
+    ///         transaction still goes through and binds the victim's wallet.
     function test_createIdentity_frontRunnerCannotTakeVictimAddress() public {
         address victim = makeAddr("frontRunVictim");
         address attacker = makeAddr("frontRunAttacker");
@@ -2336,13 +2335,12 @@ contract IdentityFactoryTest is OnchainIDSetup {
         Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(victim);
 
         vm.prank(attacker);
-        address attackerIdentity = onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "frontRun", keys);
+        vm.expectRevert(abi.encodeWithSelector(Errors.AccountNotSoleManagementKey.selector, attacker));
+        onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "frontRun", keys);
 
-        // The victim's own transaction still goes through.
         vm.prank(victim);
         address victimIdentity = onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "frontRun", keys);
 
-        assertTrue(attackerIdentity != victimIdentity, "replay must not land on the victim's address");
         assertEq(
             onchainidSetup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, victim)),
             victimIdentity,
@@ -2350,9 +2348,48 @@ contract IdentityFactoryTest is OnchainIDSetup {
         );
         assertEq(
             onchainidSetup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, attacker)),
-            attackerIdentity,
-            "attacker's wallet stays on its own identity"
+            address(0),
+            "attacker's wallet stays unbound"
         );
+    }
+
+    /// @notice The self-deployer cannot hand MANAGEMENT to another wallet at deploy. Its own
+    ///         wallet is auto-linked and the binding is sticky, so an identity managed by
+    ///         someone else would leave that wallet stuck.
+    function test_createIdentity_revertsWhenCallerIsNotSoleManager() public {
+        address wallet = makeAddr("selfDeployWallet");
+        address other = makeAddr("otherManager");
+
+        // Only the other wallet holds MANAGEMENT.
+        vm.prank(wallet);
+        vm.expectRevert(abi.encodeWithSelector(Errors.AccountNotSoleManagementKey.selector, wallet));
+        onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "foreignManager", _makeSingleMgmtKeys(other));
+
+        // Both hold MANAGEMENT: still not sole.
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](2);
+        keys[0] = _makeECDSAKey(wallet, KeyPurposes.MANAGEMENT);
+        keys[1] = _makeECDSAKey(other, KeyPurposes.MANAGEMENT);
+        vm.prank(wallet);
+        vm.expectRevert(abi.encodeWithSelector(Errors.AccountNotSoleManagementKey.selector, wallet));
+        onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "coManager", keys);
+    }
+
+    /// @notice Non-MANAGEMENT keys for other signers are still fine at self-deploy: the
+    ///         caller stays the only manager and can remove them at any time.
+    function test_createIdentity_allowsForeignNonManagementKeys() public {
+        address wallet = makeAddr("selfDeployWallet");
+        address device = makeAddr("secondDevice");
+
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](2);
+        keys[0] = _makeECDSAKey(wallet, KeyPurposes.MANAGEMENT);
+        keys[1] = _makeECDSAKey(device, KeyPurposes.ACTION);
+        vm.prank(wallet);
+        address identityAddr = onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "withDevice", keys);
+
+        IERC734 registry = IERC734(identityAddr);
+        assertTrue(registry.keyHasPurpose(keccak256(abi.encodePacked(wallet)), KeyPurposes.MANAGEMENT));
+        assertTrue(registry.keyHasPurpose(keccak256(abi.encodePacked(device)), KeyPurposes.ACTION));
+        assertFalse(registry.keyHasPurpose(keccak256(abi.encodePacked(device)), KeyPurposes.MANAGEMENT));
     }
 
     // ============ IdentityInitialized event ============
