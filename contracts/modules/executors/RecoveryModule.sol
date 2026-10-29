@@ -29,7 +29,7 @@ import {
 /// @title RecoveryModule
 /// @notice Social recovery for ONCHAINID identities. Wraps OZ's
 ///         {ERC7579SocialRecoveryExecutor} (vendored via soldeer from
-///         OpenZeppelin/openzeppelin-accounts, commit e4c2a32a). All logic lives
+///         OpenZeppelin/openzeppelin-accounts, commit 4ceb836d). All logic lives
 ///         upstream, we add nothing.
 ///
 /// @dev    Why a wrapper file when there is no body.
@@ -43,9 +43,8 @@ import {
 ///         The recovery flow holds authority that can replace MANAGEMENT keys, so
 ///         writing our own means owning the audit. OZ already built the M-of-N +
 ///         delay + cancel design we want and pointed us at this file. We pin to
-///         a commit so an upstream change can't surprise us. The upstream repo
-///         is private and not audited yet; bump the pin once OZ tags an audited
-///         release.
+///         a commit so an upstream change can't surprise us. The pinned commit is
+///         the post-fix state of OZ's audit of this module.
 ///
 /// @dev    How an account uses it.
 ///         A MANAGEMENT key holder installs this as an ERC-7579 executor module
@@ -84,5 +83,9 @@ import {
 /// @dev    Why this works with our Identity.
 ///         OZ's module scopes signatures to the account's EIP-712 domain by
 ///         calling `IERC5267(account).eip712Domain()`. {Identity} inherits OZ's
-///         {EIP712}, which exposes that interface. Nothing extra to wire.
+///         {EIP712}, which exposes that interface. Nothing extra to wire. Since
+///         4ceb836d the typed data also commits to the module address, so a
+///         guardian bundle is bound to one identity and one module deployment.
+///         The module is a shared singleton: each account keeps its own guardian
+///         set, threshold and schedule in module storage keyed by account.
 contract RecoveryModule is ERC7579SocialRecoveryExecutor { }

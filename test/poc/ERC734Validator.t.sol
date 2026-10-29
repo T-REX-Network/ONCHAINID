@@ -84,7 +84,7 @@ contract ERC734ValidatorTest is OnchainIDSetup {
     /// @dev Register `who` in the validator with an authorization purpose (via account self-call).
     function _validatorAddKey(address who, uint256 purpose) internal {
         vm.prank(address(aliceIdentity));
-        validator.addKey(abi.encodePacked(who), "", purpose, KeyTypes.ECDSA);
+        validator.addKey(abi.encodePacked(who), "", purpose, KeyTypes.ECDSA, address(aliceIdentity));
     }
 
     /// @dev Register `who` with a claim purpose in the same validator that validates the userOp.
@@ -92,7 +92,7 @@ contract ERC734ValidatorTest is OnchainIDSetup {
     ///      in `_targetAllowed` resolves against this validator's own registry.
     function _accountAddKey(address who, uint256 purpose) internal {
         vm.prank(address(aliceIdentity));
-        validator.addKey(abi.encodePacked(who), "", purpose, KeyTypes.ECDSA);
+        validator.addKey(abi.encodePacked(who), "", purpose, KeyTypes.ECDSA, address(aliceIdentity));
     }
 
     function _validate(PackedUserOperation memory userOp, bytes32 userOpHash) internal returns (uint256) {
@@ -108,14 +108,14 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         vm.startPrank(address(aliceIdentity));
 
         address who = makeAddr("x");
-        validator.addKey(abi.encodePacked(who), "", KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA);
+        validator.addKey(abi.encodePacked(who), "", KeyPurposes.CLAIM_SIGNER, KeyTypes.ECDSA, address(aliceIdentity));
         assertTrue(
             validator.keyHasPurpose(address(aliceIdentity), keccak256(abi.encodePacked(who)), KeyPurposes.CLAIM_SIGNER),
             "CLAIM_SIGNER accepted"
         );
 
         vm.expectRevert(abi.encodeWithSelector(ERC734Validator.InvalidPurpose.selector, uint256(7)));
-        validator.addKey(abi.encodePacked(makeAddr("y")), "", 7, KeyTypes.ECDSA);
+        validator.addKey(abi.encodePacked(makeAddr("y")), "", 7, KeyTypes.ECDSA, address(aliceIdentity));
         vm.stopPrank();
     }
 
@@ -154,7 +154,9 @@ contract ERC734ValidatorTest is OnchainIDSetup {
     function test_isValidSignature_moduleKeyRejected() public {
         (address modSigner, uint256 modSignerPk) = makeAddrAndKey("module-signer");
         vm.prank(address(aliceIdentity));
-        validator.addKey(abi.encodePacked(modSigner), "", KeyPurposes.MANAGEMENT, KeyTypes.MODULE);
+        validator.addKey(
+            abi.encodePacked(modSigner), "", KeyPurposes.MANAGEMENT, KeyTypes.MODULE, address(aliceIdentity)
+        );
 
         bytes32 digest = keccak256("module-key-should-not-sign");
         assertEq(
@@ -188,7 +190,7 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         address eoaVerifier = makeAddr("codeless-verifier");
         bytes memory signerData = abi.encodePacked(eoaVerifier, "some-key");
         vm.prank(address(aliceIdentity));
-        validator.addKey(signerData, "", KeyPurposes.ACTION, KeyTypes.ECDSA);
+        validator.addKey(signerData, "", KeyPurposes.ACTION, KeyTypes.ECDSA, address(aliceIdentity));
 
         (PackedUserOperation memory userOp, bytes32 userOpHash) = _userOpTo(address(0xBEEF), "");
         userOp.signature = abi.encode(signerData, bytes("irrelevant"));
@@ -207,7 +209,7 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         bytes memory tooShort = new bytes(19);
         vm.prank(address(aliceIdentity));
         vm.expectRevert(ERC734Validator.InvalidSignerLength.selector);
-        validator.addKey(tooShort, "", KeyPurposes.ACTION, KeyTypes.ECDSA);
+        validator.addKey(tooShort, "", KeyPurposes.ACTION, KeyTypes.ECDSA, address(aliceIdentity));
     }
 
     /// @notice Removing a purpose the key does not hold reverts instead of silently succeeding.
@@ -219,7 +221,7 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         // The key only has ACTION; removing PROPOSER must revert.
         vm.prank(address(aliceIdentity));
         vm.expectRevert(abi.encodeWithSelector(Errors.KeyDoesNotHavePurpose.selector, keyHash, KeyPurposes.PROPOSER));
-        validator.removeKey(keyHash, KeyPurposes.PROPOSER);
+        validator.removeKey(keyHash, KeyPurposes.PROPOSER, address(aliceIdentity));
     }
 
     /// @notice A signer that holds both ACTION and CLAIM_SIGNER in the validator's registry:
@@ -332,7 +334,8 @@ contract ERC734ValidatorTest is OnchainIDSetup {
 
         (address attacker,) = makeAddrAndKey("attacker");
         bytes memory addMgmt = abi.encodeCall(
-            ERC734Validator.addKey, (abi.encodePacked(attacker), "", KeyPurposes.MANAGEMENT, KeyTypes.ECDSA)
+            ERC734Validator.addKey,
+            (abi.encodePacked(attacker), "", KeyPurposes.MANAGEMENT, KeyTypes.ECDSA, address(aliceIdentity))
         );
 
         (PackedUserOperation memory userOp, bytes32 userOpHash) = _userOpTo(address(validator), addMgmt);
@@ -459,7 +462,7 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         bytes32 keyHash = keccak256(signerData);
 
         vm.prank(address(aliceIdentity));
-        validator.addKey(signerData, clientData, KeyPurposes.ACTION, KeyTypes.WEBAUTHN);
+        validator.addKey(signerData, clientData, KeyPurposes.ACTION, KeyTypes.WEBAUTHN, address(aliceIdentity));
 
         (bytes memory gotSigner, bytes memory gotClient) = validator.getKeyData(address(aliceIdentity), keyHash);
         assertEq(gotSigner, signerData, "signerData preserved");

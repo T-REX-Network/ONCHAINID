@@ -72,7 +72,7 @@ contract ProxyTest is OnchainIDSetup {
     }
 
     function test_revertBecauseBeaconIsZeroAddress() public {
-        vm.expectRevert(abi.encode(ERC1967Utils.ERC1967InvalidBeacon.selector, address(0)));
+        vm.expectRevert(abi.encodeWithSelector(ERC1967Utils.ERC1967InvalidBeacon.selector, address(0)));
         new BeaconProxy(address(0), _initData(IdentityTypes.INDIVIDUAL));
     }
 
@@ -99,7 +99,7 @@ contract ProxyTest is OnchainIDSetup {
     }
 
     function test_preventCreatingBeaconWithZeroImplementation() public {
-        vm.expectRevert(abi.encode(UpgradeableBeacon.BeaconInvalidImplementation.selector, address(0)));
+        vm.expectRevert(abi.encodeWithSelector(UpgradeableBeacon.BeaconInvalidImplementation.selector, address(0)));
         new UpgradeableBeacon(address(0), address(this));
     }
 

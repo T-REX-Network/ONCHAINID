@@ -162,7 +162,7 @@ contract Identity is Initializable, SmartAccount, ERC165 {
 
             if (_modules[i].purpose != 0) {
                 ERC734Validator(registryModule())
-                    .addKey(abi.encodePacked(_modules[i].module), "", _modules[i].purpose, KeyTypes.MODULE);
+                    .addKey(abi.encodePacked(_modules[i].module), "", _modules[i].purpose, KeyTypes.MODULE, msg.sender);
             }
         }
 
@@ -170,7 +170,7 @@ contract Identity is Initializable, SmartAccount, ERC165 {
         // commits to the keys actually registered.
         for (uint256 i = 0; i < _keys.length; i++) {
             Structs.KeyParam calldata key = _keys[i];
-            _addKeyWithData(key.keyHash, key.purpose, key.keyType, key.signerData, key.clientData);
+            _addKeyWithData(key.keyHash, key.purpose, key.keyType, key.signerData, key.clientData, msg.sender);
         }
 
         emit IdentityInitialized(_identityType);

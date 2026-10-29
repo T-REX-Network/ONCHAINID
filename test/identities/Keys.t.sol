@@ -154,7 +154,7 @@ contract KeysTest is OnchainIDSetup {
     }
 
     function test_RevertRemoveKey_WhenKeyDoesNotExist() public {
-        vm.expectRevert(abi.encodeWithSelector(Errors.KeyNotRegistered.selector, bobKeyHash));
+        vm.expectRevert(abi.encodeWithSelector(ERC734Validator.KeyNotRegistered.selector, bobKeyHash));
         vm.prank(alice);
         aliceIdentity.removeKey(bobKeyHash, KeyPurposes.ACTION);
     }
@@ -237,6 +237,10 @@ contract KeysTest is OnchainIDSetup {
         bytes memory signerData = abi.encodePacked(bob);
 
         vm.prank(alice);
+        vm.expectEmit(address(onchainidSetup.signatureValidator));
+        emit ERC734Validator.KeyAdded(
+            address(aliceIdentity), keyHash, KeyPurposes.ACTION, KeyTypes.ECDSA, signerData, "", alice
+        );
         aliceIdentity.addKeyWithData(keyHash, KeyPurposes.ACTION, KeyTypes.ECDSA, signerData, "");
 
         (, uint256 keyType, bytes32 storedKey) = IERC734(address(aliceIdentity)).getKey(keyHash);

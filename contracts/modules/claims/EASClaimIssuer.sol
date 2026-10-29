@@ -106,11 +106,11 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
     event AdapterInitialized(address indexed eas, address indexed factory);
 
     /// @dev Schema binding changed. `schema == 0` means the topic was unbound.
-    event SchemaForTopicSet(uint256 indexed topic, bytes32 indexed schema);
+    event SchemaForTopicSet(uint256 indexed topic, bytes32 indexed schema, address caller);
 
     /// @dev Attester allowlist changed for one topic. Monitor `allowed == true` events:
     ///      they widen the trust surface.
-    event AttesterSet(uint256 indexed topic, address indexed attester, bool allowed);
+    event AttesterSet(uint256 indexed topic, address indexed attester, bool allowed, address caller);
 
     /**
      * @param authority_ AccessManager instance backing `restricted` setters.
@@ -129,7 +129,7 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
     ///         (kill switch for a compromised schema, no redeploy needed).
     function setSchemaForTopic(uint256 topic, bytes32 schema) external restricted {
         _schemaOf[topic] = schema;
-        emit SchemaForTopicSet(topic, schema);
+        emit SchemaForTopicSet(topic, schema, msg.sender);
     }
 
     /// @notice Add or remove an attester from the accepted set for one topic. Adding
@@ -140,7 +140,7 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
     function setAttester(uint256 topic, address attester, bool allowed) external restricted {
         require(attester != address(0), Errors.ZeroAddress());
         _isAttesterAllowed[topic][attester] = allowed;
-        emit AttesterSet(topic, attester, allowed);
+        emit AttesterSet(topic, attester, allowed, msg.sender);
     }
 
     /// @notice EAS core contract this adapter reads from.

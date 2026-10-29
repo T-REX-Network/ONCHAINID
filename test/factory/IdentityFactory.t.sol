@@ -157,6 +157,8 @@ contract IdentityFactoryTest is OnchainIDSetup {
         Identity freshImpl = new Identity(address(onchainidSetup.signatureValidator), address(freshFactory));
 
         vm.prank(deployer);
+        vm.expectEmit(address(freshFactory));
+        emit IIdentityFactory.BeaconInitialized(address(freshImpl), deployer);
         freshFactory.initializeBeacon(address(freshImpl));
 
         assertGt(committed.code.length, 0, "beacon landed exactly at the committed address");
@@ -167,6 +169,8 @@ contract IdentityFactoryTest is OnchainIDSetup {
     function test_upgradeBeacon_byAuthorizedCaller() public {
         Identity newImpl = new Identity(address(onchainidSetup.signatureValidator), address(onchainidSetup.idFactory));
         vm.prank(deployer);
+        vm.expectEmit(address(onchainidSetup.idFactory));
+        emit IIdentityFactory.BeaconUpgraded(address(newImpl), "3.0.0", deployer);
         onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.0.0");
         assertEq(
             UpgradeableBeacon(onchainidSetup.idFactory.beacon()).implementation(),
@@ -402,6 +406,39 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertTrue(identityAddr != address(0));
     }
 
+    function test_createIdentityFor_emitsIdentityDeployedWithCallerAsDeployer() public {
+        uint64 role = _restrictTypeToFreshRole(IdentityTypes.CLAIM_ISSUER);
+
+        vm.prank(deployer);
+        onchainidSetup.accessManager.grantRole(role, alice, 0);
+
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(david);
+        bytes memory davidAccount = InteroperableAddress.formatEvmV1(block.chainid, david);
+
+        vm.expectEmit(false, true, true, true, address(onchainidSetup.idFactory));
+        emit IIdentityFactory.IdentityDeployed(address(0), davidAccount, IdentityTypes.CLAIM_ISSUER, alice);
+        vm.prank(alice);
+        onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.CLAIM_ISSUER, "deployedFor", keys);
+    }
+
+    function test_createIdentityFor_emitsIdentityDeployedWithContractDeployer() public {
+        uint64 role = _restrictTypeToFreshRole(IdentityTypes.CLAIM_ISSUER);
+        MockERC1271Wallet issuerContract = new MockERC1271Wallet(alice);
+
+        vm.prank(deployer);
+        onchainidSetup.accessManager.grantRole(role, address(issuerContract), 0);
+
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(david);
+        bytes memory davidAccount = InteroperableAddress.formatEvmV1(block.chainid, david);
+
+        vm.expectEmit(false, true, true, true, address(onchainidSetup.idFactory));
+        emit IIdentityFactory.IdentityDeployed(
+            address(0), davidAccount, IdentityTypes.CLAIM_ISSUER, address(issuerContract)
+        );
+        vm.prank(address(issuerContract), bob);
+        onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.CLAIM_ISSUER, "deployedByContract", keys);
+    }
+
     /// @notice Types registered with PUBLIC_ROLE are deployable by anyone.
     function test_createIdentityFor_publicRoleTypeIsOpen() public {
         // The test helper registers INDIVIDUAL with PUBLIC_ROLE at setUp.
@@ -440,7 +477,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
     function test_setIdentityTypePolicy_emitsEventAndUpdatesView() public {
         vm.prank(deployer);
         vm.expectEmit(true, true, false, true, address(onchainidSetup.idFactory));
-        emit IIdentityFactory.IdentityTypePolicySet(IdentityTypes.CLAIM_ISSUER, 123, false, true);
+        emit IIdentityFactory.IdentityTypePolicySet(IdentityTypes.CLAIM_ISSUER, 123, false, true, deployer);
         onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 123, false, true);
         (uint64 roleId, bool selfDeployable, bool singleBinding, bool registered) =
             onchainidSetup.idFactory.getIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER);
@@ -475,7 +512,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
     function test_removeIdentityTypePolicy_unregistersType() public {
         vm.prank(deployer);
         vm.expectEmit(true, false, false, true, address(onchainidSetup.idFactory));
-        emit IIdentityFactory.IdentityTypePolicyRemoved(IdentityTypes.INDIVIDUAL);
+        emit IIdentityFactory.IdentityTypePolicyRemoved(IdentityTypes.INDIVIDUAL, deployer);
         onchainidSetup.idFactory.removeIdentityTypePolicy(IdentityTypes.INDIVIDUAL);
 
         (,,, bool registered) = onchainidSetup.idFactory.getIdentityTypePolicy(IdentityTypes.INDIVIDUAL);
@@ -528,6 +565,10 @@ contract IdentityFactoryTest is OnchainIDSetup {
         onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.CLAIM_ISSUER, 999, true, false);
 
         address selfDeployer = makeAddr("selfIssuerOptedIn");
+        bytes memory selfAccount = InteroperableAddress.formatEvmV1(block.chainid, selfDeployer);
+
+        vm.expectEmit(false, true, true, true, address(onchainidSetup.idFactory));
+        emit IIdentityFactory.IdentityDeployed(address(0), selfAccount, IdentityTypes.CLAIM_ISSUER, selfDeployer);
         vm.prank(selfDeployer);
         address identityAddr = onchainidSetup.idFactory
             .createIdentity(IdentityTypes.CLAIM_ISSUER, "selfIssuerOk", _makeSingleMgmtKeys(selfDeployer));
@@ -1017,6 +1058,99 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertTrue(onchainidSetup.idFactory.isFactoryIdentity(identityAddr));
     }
 
+    // ============ identity type record ============
+
+    function test_createIdentity_recordsTypeAndEmitsEvent() public {
+        // The identity address isn't known before the call, so only the event data
+        // (the type) is checked, not the indexed address.
+        vm.expectEmit(false, false, false, true);
+        emit IIdentityFactory.IdentityTypeRecorded(address(0), IdentityTypes.INDIVIDUAL);
+
+        vm.prank(david);
+        address identityAddr = onchainidSetup.idFactory
+            .createIdentity(IdentityTypes.INDIVIDUAL, "typeRecordSelfSalt", _makeSingleMgmtKeys(david));
+
+        assertEq(onchainidSetup.idFactory.identityTypeOf(identityAddr), IdentityTypes.INDIVIDUAL);
+    }
+
+    function test_createIdentityFor_recordsType() public {
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(david);
+        vm.prank(deployer);
+        address identityAddr =
+            onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "typeRecordForSalt", keys);
+        assertEq(onchainidSetup.idFactory.identityTypeOf(identityAddr), IdentityTypes.INDIVIDUAL);
+    }
+
+    function test_createIdentityFor_recordsTypeForSingleBindingType() public {
+        address token = makeAddr("typeRecordToken");
+        vm.prank(deployer);
+        address identityAddr = onchainidSetup.idFactory
+            .createIdentityFor(token, IdentityTypes.ASSET, "typeRecordAssetSalt", _makeSingleMgmtKeys(token));
+        assertEq(onchainidSetup.idFactory.identityTypeOf(identityAddr), IdentityTypes.ASSET);
+    }
+
+    function test_identityTypeOf_zeroForNonFactoryContract() public {
+        assertEq(onchainidSetup.idFactory.identityTypeOf(alice), 0);
+        assertFalse(onchainidSetup.idFactory.isFactoryIdentity(alice));
+    }
+
+    function test_getIdentityWithType_returnsPairForLinkedWallet() public {
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(david);
+        vm.prank(deployer);
+        address identityAddr =
+            onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, "typePairSalt", keys);
+
+        bytes memory davidAcc = InteroperableAddress.formatEvmV1(block.chainid, david);
+        (address identity, uint256 identityType) = onchainidSetup.idFactory.getIdentityWithType(davidAcc);
+        assertEq(identity, identityAddr);
+        assertEq(identityType, IdentityTypes.INDIVIDUAL);
+    }
+
+    function test_getIdentityWithType_zeroForUnlinkedWallet() public view {
+        bytes memory davidAcc = InteroperableAddress.formatEvmV1(block.chainid, david);
+        (address identity, uint256 identityType) = onchainidSetup.idFactory.getIdentityWithType(davidAcc);
+        assertEq(identity, address(0));
+        assertEq(identityType, 0);
+    }
+
+    function test_getIdentityWithType_zeroForRevokedWallet() public {
+        bytes memory davidAcc = InteroperableAddress.formatEvmV1(block.chainid, david);
+        uint256 expiry = block.timestamp + 1 hours;
+        uint256 nonce = onchainidSetup.idFactory.nonceForAccount(davidAcc);
+        bytes memory sig = _signLink(davidPk, davidAcc, address(aliceIdentity), nonce, expiry);
+        _execLink(aliceIdentity, alice, davidAcc, sig, nonce, expiry);
+        _execRevoke(aliceIdentity, alice, davidAcc);
+
+        (address identity, uint256 identityType) = onchainidSetup.idFactory.getIdentityWithType(davidAcc);
+        assertEq(identity, address(0));
+        assertEq(identityType, 0);
+    }
+
+    function test_setIdentityTypePolicy_revertForTypeZero() public {
+        vm.prank(deployer);
+        vm.expectRevert(Errors.ZeroIdentityType.selector);
+        onchainidSetup.idFactory.setIdentityTypePolicy(0, type(uint64).max, true, false);
+    }
+
+    /// @dev Both creation routes must leave a nonzero record: a zero record would make
+    ///      the identity indistinguishable from a contract the factory never deployed.
+    function testFuzz_createIdentity_alwaysRecordsNonzeroType(bytes32 saltSeed, bool selfDeploy) public {
+        Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(david);
+        string memory salt = vm.toString(saltSeed);
+
+        address identityAddr;
+        if (selfDeploy) {
+            vm.prank(david);
+            identityAddr = onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, salt, keys);
+        } else {
+            vm.prank(deployer);
+            identityAddr = onchainidSetup.idFactory.createIdentityFor(david, IdentityTypes.INDIVIDUAL, salt, keys);
+        }
+
+        assertGt(onchainidSetup.idFactory.identityTypeOf(identityAddr), 0);
+        assertTrue(onchainidSetup.idFactory.isFactoryIdentity(identityAddr));
+    }
+
     // ============ linkAccount — EIP-712 EOA path ============
 
     function test_linkAccount_eoaSignerLinksThroughIdentity() public {
@@ -1290,6 +1424,128 @@ contract IdentityFactoryTest is OnchainIDSetup {
         );
     }
 
+    // ============ factory identity self-resolution ============
+
+    /// @notice A factory identity is its own identity: identities are smart accounts and
+    ///         act on the ecosystem directly, so resolving one must return itself, not
+    ///         address(0). The resolution entry is seeded at deploy, so the getter stays
+    ///         a single registry lookup.
+    function test_getIdentity_factoryIdentityResolvesToItself() public view {
+        bytes memory env = InteroperableAddress.formatEvmV1(block.chainid, address(aliceIdentity));
+        assertEq(onchainidSetup.idFactory.getIdentity(env), address(aliceIdentity));
+    }
+
+    /// @notice Self-resolution also covers single-binding identities (ASSET), whose bound
+    ///         contract is the token, not the identity itself.
+    function test_getIdentity_assetIdentityResolvesToItself() public view {
+        address assetIdentity = onchainidSetup.idFactory
+            .getIdentity(InteroperableAddress.formatEvmV1(block.chainid, Constants.TOKEN_ADDRESS));
+        bytes memory env = InteroperableAddress.formatEvmV1(block.chainid, assetIdentity);
+        assertEq(onchainidSetup.idFactory.getIdentity(env), assetIdentity);
+    }
+
+    /// @notice Every resolution view agrees on an identity's own address: the status and
+    ///         including-revoked views answer `(identity, Active)` like {getIdentity}, so
+    ///         attribution readers that go through them (T-REX does) find the identity.
+    ///         It is still not an account binding: the identity never shows up in its own
+    ///         account enumeration and the linked-account count only reflects real wallets.
+    function test_getIdentity_selfResolutionIsNotALinkedAccount() public view {
+        bytes memory env = InteroperableAddress.formatEvmV1(block.chainid, address(aliceIdentity));
+
+        assertEq(
+            uint256(onchainidSetup.idFactory.getAccountStatus(env)),
+            uint256(IIdentityFactory.AccountStatus.Active),
+            "identity's own address is Active"
+        );
+        (address bound, IIdentityFactory.AccountStatus status) =
+            onchainidSetup.idFactory.getIdentityIncludingRevoked(env);
+        assertEq(bound, address(aliceIdentity), "self-resolves on the including-revoked view too");
+        assertEq(uint256(status), uint256(IIdentityFactory.AccountStatus.Active));
+
+        bytes32 selfKey = keccak256(env);
+        bytes[] memory accounts = onchainidSetup.idFactory
+            .getAccounts(address(aliceIdentity), 0, onchainidSetup.idFactory.getAccountsCount(address(aliceIdentity)));
+        for (uint256 i = 0; i < accounts.length; i++) {
+            assertTrue(keccak256(accounts[i]) != selfKey, "identity must not appear in its own account list");
+        }
+    }
+
+    /// @notice Deploying an identity emits no AccountLinked for the identity itself:
+    ///         only the auto-linked wallet produces a link event.
+    function test_createIdentity_emitsNoAccountLinkedForIdentityItself() public {
+        address selfDeployer = makeAddr("noSelfLinkEvent");
+        vm.recordLogs();
+        vm.prank(selfDeployer);
+        address identity = onchainidSetup.idFactory
+            .createIdentity(IdentityTypes.INDIVIDUAL, "noSelfLinkEvent", _makeSingleMgmtKeys(selfDeployer));
+
+        bytes memory selfEnv = InteroperableAddress.formatEvmV1(block.chainid, identity);
+        bytes32 linkedSig = keccak256("AccountLinked(bytes,address,address)");
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        uint256 linkEvents = 0;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] != linkedSig) {
+                continue;
+            }
+            linkEvents++;
+            (bytes memory account,) = abi.decode(logs[i].data, (bytes, address));
+            assertTrue(keccak256(account) != keccak256(selfEnv), "no AccountLinked for the identity itself");
+        }
+        assertEq(linkEvents, 1, "exactly one link event: the auto-linked wallet");
+        assertEq(onchainidSetup.idFactory.getIdentity(selfEnv), identity);
+    }
+
+    /// @notice The self-resolution entry cannot be revoked: it is not in the identity's
+    ///         account set, so {_revokeAccount}'s set removal fails. An identity can
+    ///         never break its own resolution.
+    function test_revokeAccount_cannotRevokeSelfResolutionEntry() public {
+        bytes memory env = InteroperableAddress.formatEvmV1(block.chainid, address(aliceIdentity));
+
+        vm.expectRevert(abi.encodeWithSelector(Errors.WalletNotLinkedToIdentity.selector, env));
+        vm.prank(address(aliceIdentity));
+        onchainidSetup.idFactory.revokeAccount(env);
+
+        assertEq(onchainidSetup.idFactory.getIdentity(env), address(aliceIdentity), "resolution intact");
+    }
+
+    function test_getIdentityWithType_factoryIdentityResolvesToItselfWithType() public view {
+        bytes memory env = InteroperableAddress.formatEvmV1(block.chainid, address(claimIssuer));
+        (address identity, uint256 identityType) = onchainidSetup.idFactory.getIdentityWithType(env);
+        assertEq(identity, address(claimIssuer));
+        assertEq(identityType, IdentityTypes.CLAIM_ISSUER);
+    }
+
+    /// @notice An envelope naming the identity's address on another chain says nothing
+    ///         about this chain's contract, so it does not self-resolve.
+    function test_getIdentity_foreignChainEnvelopeOfIdentityReturnsZero() public view {
+        bytes memory foreignEnv = InteroperableAddress.formatEvmV1(block.chainid + 1, address(aliceIdentity));
+        assertEq(onchainidSetup.idFactory.getIdentity(foreignEnv), address(0));
+    }
+
+    /// @notice A factory identity can never become an account of another identity: the
+    ///         binding would create a second, conflicting resolution for its address.
+    ///         Here via the deploy auto-link of {createIdentityFor}.
+    function test_createIdentityFor_factoryIdentityAsAccountReverts() public {
+        vm.prank(deployer);
+        vm.expectRevert(abi.encodeWithSelector(Errors.CannotLinkFactoryIdentity.selector, address(aliceIdentity)));
+        onchainidSetup.idFactory
+            .createIdentityFor(
+                address(aliceIdentity),
+                IdentityTypes.INDIVIDUAL,
+                "identityAsAccount",
+                _makeSingleMgmtKeys(address(aliceIdentity))
+            );
+    }
+
+    /// @notice Same rule on the self-deploy path: an identity executing {createIdentity}
+    ///         would auto-link itself as the new identity's wallet, so it is rejected.
+    function test_createIdentity_calledByFactoryIdentityReverts() public {
+        vm.prank(address(aliceIdentity));
+        vm.expectRevert(abi.encodeWithSelector(Errors.CannotLinkFactoryIdentity.selector, address(aliceIdentity)));
+        onchainidSetup.idFactory
+            .createIdentity(IdentityTypes.INDIVIDUAL, "identitySelfDeploy", _makeSingleMgmtKeys(address(aliceIdentity)));
+    }
+
     // ============ ERC-7930 — non-EVM interoperable address ============
 
     /// @dev A non-EVM ERC-7930 envelope. `chainType` is a non-EIP-155 tag (we use
@@ -1545,7 +1801,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
         vm.prank(deployer);
         vm.expectEmit(true, false, false, true);
-        emit IIdentityFactory.TrustedVerifierSet(verifier, true);
+        emit IIdentityFactory.TrustedVerifierSet(verifier, true, deployer);
         onchainidSetup.idFactory.setTrustedVerifier(verifier, true);
         assertTrue(onchainidSetup.idFactory.isTrustedVerifier(verifier));
 
@@ -1615,6 +1871,10 @@ contract IdentityFactoryTest is OnchainIDSetup {
         uint256 expiry = block.timestamp + 1 hours;
 
         bytes memory payload = _crossChainPayload(solanaEnv, address(aliceIdentity), expiry);
+        vm.expectEmit(address(onchainidSetup.idFactory));
+        emit IIdentityFactory.PendingCrossChainLinkProposed(
+            solanaEnv, address(aliceIdentity), expiry, address(gateway), bytes32(uint256(1))
+        );
         gateway.deliver(address(onchainidSetup.idFactory), bytes32(uint256(1)), solanaEnv, payload);
 
         // Proposal staged but link not yet active.
@@ -1624,6 +1884,8 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertEq(onchainidSetup.idFactory.getIdentity(solanaEnv), address(0), "not active before confirm");
 
         // Identity confirms — wallet is now actively linked.
+        vm.expectEmit(address(onchainidSetup.idFactory));
+        emit IIdentityFactory.CrossChainLinkConfirmed(solanaEnv, address(aliceIdentity));
         vm.prank(address(aliceIdentity));
         onchainidSetup.idFactory.settlePendingCrossChainLink(solanaEnv, true);
 

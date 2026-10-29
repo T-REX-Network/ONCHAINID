@@ -89,7 +89,8 @@ contract PrivilegedReentryGuardTest is OnchainIDSetup {
         assertTrue(validator.keyHasPurpose(address(aliceIdentity), _davidKey(), KeyPurposes.ACTION), "david is ACTION");
 
         bytes memory addMgmt = abi.encodeCall(
-            ERC734Validator.addKey, (abi.encodePacked(david), "", KeyPurposes.MANAGEMENT, KeyTypes.ECDSA)
+            ERC734Validator.addKey,
+            (abi.encodePacked(david), "", KeyPurposes.MANAGEMENT, KeyTypes.ECDSA, address(aliceIdentity))
         );
         bytes memory innerKamCall = abi.encodeCall(KeyApprovalModule.execute, (address(validator), 0, addMgmt));
         bytes memory callData = _singleExecute(address(kam), innerKamCall);
@@ -109,7 +110,8 @@ contract PrivilegedReentryGuardTest is OnchainIDSetup {
     ///         MANAGEMENT; the `_execute` guard now rejects the call before KAM ever runs.
     function test_actionKey_cannotEscalate_viaKeyApprovalModule_forgedTail() public {
         bytes memory addMgmt = abi.encodeCall(
-            ERC734Validator.addKey, (abi.encodePacked(david), "", KeyPurposes.MANAGEMENT, KeyTypes.ECDSA)
+            ERC734Validator.addKey,
+            (abi.encodePacked(david), "", KeyPurposes.MANAGEMENT, KeyTypes.ECDSA, address(aliceIdentity))
         );
         // Pad so that, once ABI-encoded as KAM.execute's last `bytes` arg, david's 20 bytes land as
         // the final 20 bytes of the calldata KAM sees, forging `_msgSender()` to david.
@@ -137,7 +139,8 @@ contract PrivilegedReentryGuardTest is OnchainIDSetup {
         assertTrue(validator.keyHasPurpose(address(aliceIdentity), _davidKey(), KeyPurposes.ACTION), "david is ACTION");
 
         bytes memory addMgmt = abi.encodeCall(
-            ERC734Validator.addKey, (abi.encodePacked(david), "", KeyPurposes.MANAGEMENT, KeyTypes.ECDSA)
+            ERC734Validator.addKey,
+            (abi.encodePacked(david), "", KeyPurposes.MANAGEMENT, KeyTypes.ECDSA, address(aliceIdentity))
         );
 
         // david calls the identity's legacy execute (served by KAM via fallback), targeting the
@@ -157,7 +160,8 @@ contract PrivilegedReentryGuardTest is OnchainIDSetup {
     ///         privileged-module re-entry and is rejected.
     function test_actionKey_cannotTargetFallbackHandlerModule() public {
         bytes memory addMgmt = abi.encodeCall(
-            ERC734Validator.addKey, (abi.encodePacked(david), "", KeyPurposes.MANAGEMENT, KeyTypes.ECDSA)
+            ERC734Validator.addKey,
+            (abi.encodePacked(david), "", KeyPurposes.MANAGEMENT, KeyTypes.ECDSA, address(aliceIdentity))
         );
         bytes memory callData = _singleExecute(address(validator), addMgmt);
 
@@ -170,7 +174,8 @@ contract PrivilegedReentryGuardTest is OnchainIDSetup {
     function test_batch_withPrivilegedTarget_rejected() public {
         PocCounter counter = new PocCounter();
         bytes memory addMgmt = abi.encodeCall(
-            ERC734Validator.addKey, (abi.encodePacked(david), "", KeyPurposes.MANAGEMENT, KeyTypes.ECDSA)
+            ERC734Validator.addKey,
+            (abi.encodePacked(david), "", KeyPurposes.MANAGEMENT, KeyTypes.ECDSA, address(aliceIdentity))
         );
 
         Execution[] memory batch = new Execution[](2);
@@ -226,8 +231,10 @@ contract PrivilegedReentryGuardTest is OnchainIDSetup {
     ///         self-call `execute` requires MANAGEMENT on every route, so nothing is escalated.
     ///         The full nested flow is covered in test/modules/recovery/RecoveryModule.t.sol.
     function test_selfCall_canTargetOwnModules() public {
-        bytes memory addKeyData =
-            abi.encodeCall(ERC734Validator.addKey, (abi.encodePacked(bob), "", KeyPurposes.ACTION, KeyTypes.ECDSA));
+        bytes memory addKeyData = abi.encodeCall(
+            ERC734Validator.addKey,
+            (abi.encodePacked(bob), "", KeyPurposes.ACTION, KeyTypes.ECDSA, address(aliceIdentity))
+        );
 
         // Registry module target: the call goes through and lands on the validator, which sees
         // the account as caller, the same shape as KeyManager's own self-call forwarding.

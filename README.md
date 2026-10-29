@@ -79,11 +79,11 @@ Each identity type must be registered by an admin before it can be used, and acc
 
 ## Recovery module integration notes
 
-`RecoveryModule` adds social recovery to an identity. It is a thin wrapper around OpenZeppelin's `ERC7579SocialRecoveryExecutor`, pulled in from the private `openzeppelin-accounts` repository via soldeer. All recovery logic lives upstream; the wrapper only turns the upstream `abstract` contract into a deployable one.
+`RecoveryModule` adds social recovery to an identity. It is a thin wrapper around OpenZeppelin's `ERC7579SocialRecoveryExecutor`, pulled in from the `openzeppelin-accounts` repository via soldeer, pinned to the commit that closes OpenZeppelin's September 2026 audit of that module. All recovery logic lives upstream; the wrapper only turns the upstream `abstract` contract into a deployable one.
 
 - **Guardians recover the identity, not a password.** A set of guardians can, together, restore access by meeting a threshold. Recovery is weighted and quorum-based.
 - **Recovery is delayed and can be cancelled.** A scheduled recovery only executes after a delay window, and it can be cancelled either by the account itself or by a guardian quorum before it runs.
-- **Signatures are scoped to one identity.** Each recovery request is signed against that identity's EIP-712 domain, so signatures cannot be replayed against a different identity that uses the same module.
+- **Signatures are scoped to one identity and one module.** Each recovery request is signed against that identity's EIP-712 domain and commits to the module address, so signatures cannot be replayed against a different identity or a different module deployment.
 
 > Because it depends on the private `openzeppelin-accounts` repository, building this repo requires read access to that repository (see below).
 
