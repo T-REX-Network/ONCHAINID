@@ -3,7 +3,7 @@
   "version": "3.0.0",
   "description": "ONCHAINID smart contracts: digital identities for the T-REX ecosystem. ERC-734/ERC-735 identities built on a modular ERC-7579 smart account with ERC-4337 support.",
   "license": "GPL-3.0-or-later",
-  "author": "Digital Asset Operational Services ISAC Ltd. (https://www.trex.network)",
+  "author": "Digital Asset Operational Services ISAC Ltd. (https://www.t-rex.network)",
   "type": "module",
   "files": [
     "contracts",

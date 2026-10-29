@@ -12,9 +12,9 @@
 
 Digital identities for the T-REX ecosystem. ONCHAINID implements the ERC-734 (key holder) and ERC-735 (claim holder) standards, rebuilt on top of a modular ERC-7579 account with ERC-4337 support.
 
-ONCHAINID v3 was designed and built by [T-REX Network](https://www.trex.network) in collaboration with [OpenZeppelin](https://www.openzeppelin.com).
+ONCHAINID v3 was designed and built by [T-REX Network](https://www.t-rex.network) in collaboration with [OpenZeppelin](https://www.openzeppelin.com).
 
-Learn more about ONCHAINID and the T-REX Network on the official website: [https://www.trex.network](https://www.trex.network).
+Learn more about ONCHAINID and the T-REX Network on the official website: [https://www.t-rex.network](https://www.t-rex.network).
 
 ## What is an ONCHAINID identity?
 
@@ -170,7 +170,7 @@ v3 originated as a fork of the ONCHAINID reference implementation by the [onchai
 <!-- TODO: link the OpenZeppelin audit report for ONCHAINID v3 when published -->
 ONCHAINID v3 is being audited by OpenZeppelin. The audit report will be linked here once published.
 
-Please report security vulnerabilities responsibly to security@trex.network rather than opening a public issue.
+Please report security vulnerabilities responsibly to security@t-rex.network rather than opening a public issue.
 
 ## License
 
