@@ -125,14 +125,19 @@ contract RecoveryModule is ERC7579SocialRecoveryExecutor {
 
     /// @dev OZ's `state` is not virtual, so an operation from a previous installation
     ///      still reads as `Ready` there. Only this path decides whether it runs. The
-    ///      account can still cancel it to tidy up.
+    ///      account can still cancel it to tidy up. An id that was never scheduled has
+    ///      no generation (a schedule needs an install, and install bumps the counter
+    ///      first), so it falls through to OZ's own state check.
     function _execute(address account, bytes32 salt, bytes32 mode, bytes memory executionCalldata)
         internal
         override
         returns (bytes[] memory)
     {
         bytes32 id = hashOperation(account, salt, mode, executionCalldata);
-        require(_scheduledIn[id] == _generation[account], Errors.RecoveryScheduledUnderPreviousInstall(id));
+        uint256 scheduledIn = _scheduledIn[id];
+        bool neverScheduled = scheduledIn == 0;
+        bool scheduledOnCurrentInstall = scheduledIn == _generation[account];
+        require(neverScheduled || scheduledOnCurrentInstall, Errors.RecoveryScheduledUnderPreviousInstall(id));
         return super._execute(account, salt, mode, executionCalldata);
     }
 

@@ -3,6 +3,7 @@ pragma solidity ^0.8.27;
 
 import { OnchainIDSetup } from "../../helpers/OnchainIDSetup.sol";
 import { ERC7579DelayedExecutor } from "@openzeppelin/accounts/modules/executors/ERC7579DelayedExecutor.sol";
+import { ERC7579Utils } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
 import { IERC7579Execution } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IERC734 } from "contracts/interface/IERC734.sol";
@@ -638,7 +639,9 @@ contract RecoveryModuleTest is OnchainIDSetup {
 
         // Past the delay, but the module is not installed, so the account rejects the call.
         vm.warp(block.timestamp + DELAY + 1);
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(ERC7579Utils.ERC7579UninstalledModule.selector, uint256(2), address(recovery))
+        );
         recovery.executeRecovery(address(aliceIdentity), salt, mode, recoveryData);
 
         _reinstall(aliceIdentity, alice);
@@ -751,6 +754,26 @@ contract RecoveryModuleTest is OnchainIDSetup {
         assertFalse(
             IERC734(address(aliceIdentity)).keyHasPurpose(keccak256(abi.encodePacked(newOwner)), KeyPurposes.MANAGEMENT)
         );
+    }
+
+    /// @notice An id that was never scheduled carries no generation, so the generation check
+    ///         stays out of the way and OZ reports it as unknown, the same as before this module
+    ///         existed.
+    function test_RevertWhen_ExecutingARecoveryThatWasNeverScheduled() public {
+        bytes32 salt = bytes32(uint256(46));
+        bytes32 mode = bytes32(0);
+        bytes memory recoveryData = _addNewOwnerCalldata();
+        bytes32 id = recovery.hashOperation(address(aliceIdentity), salt, mode, recoveryData);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ERC7579DelayedExecutor.ERC7579ExecutorUnexpectedOperationState.selector,
+                id,
+                ERC7579DelayedExecutor.OperationState.Unknown,
+                bytes32(uint256(1) << uint8(ERC7579DelayedExecutor.OperationState.Ready))
+            )
+        );
+        recovery.executeRecovery(address(aliceIdentity), salt, mode, recoveryData);
     }
 
     /// @notice The generation is per account. Alice uninstalling and reinstalling leaves a
