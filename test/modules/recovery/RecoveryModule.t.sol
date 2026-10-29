@@ -616,10 +616,11 @@ contract RecoveryModuleTest is OnchainIDSetup {
     ///      self-call is allowed to target its own module.
     // ---- uninstall and reinstall ----
 
-    /// @notice A recovery scheduled under one installation is dead once the module is
+    /// @notice A recovery scheduled on one installation cannot run after the module is
     ///         uninstalled. While the module is out the account refuses its dispatch; after a
-    ///         reinstall the operation id belongs to the previous generation and is unknown.
-    ///         Guardians can still schedule a fresh recovery on the new installation.
+    ///         reinstall the schedule belongs to a previous generation and execute reverts.
+    ///         The account can still cancel it, and guardians can schedule a fresh recovery
+    ///         on the new installation.
     function test_scheduledRecoveryDoesNotSurviveUninstall() public {
         bytes32 salt = bytes32(uint256(41));
         bytes32 mode = bytes32(0);
@@ -642,15 +643,27 @@ contract RecoveryModuleTest is OnchainIDSetup {
 
         _reinstall(aliceIdentity, alice);
 
-        // The old id is from the previous generation: unknown, so it can never execute.
+        // OZ's state view still says Ready: it cannot see the generation. Execute refuses.
+        bytes32 id = recovery.hashOperation(address(aliceIdentity), salt, mode, recoveryData);
         assertEq(
             uint8(recovery.state(address(aliceIdentity), salt, mode, recoveryData)),
-            uint8(ERC7579DelayedExecutor.OperationState.Unknown)
+            uint8(ERC7579DelayedExecutor.OperationState.Ready)
         );
-        vm.expectRevert();
+        vm.expectRevert(abi.encodeWithSelector(Errors.RecoveryScheduledUnderPreviousInstall.selector, id));
         recovery.executeRecovery(address(aliceIdentity), salt, mode, recoveryData);
         assertFalse(
             IERC734(address(aliceIdentity)).keyHasPurpose(keccak256(abi.encodePacked(newOwner)), KeyPurposes.MANAGEMENT)
+        );
+
+        // The account can still clear the stale schedule.
+        bytes memory cancelCall = abi.encodeWithSignature(
+            "cancelRecovery(address,bytes32,bytes32,bytes)", address(aliceIdentity), salt, mode, recoveryData
+        );
+        vm.prank(alice);
+        IKeyExecutor(address(aliceIdentity)).execute(address(aliceIdentity), 0, _recoveryModuleCall(cancelCall));
+        assertEq(
+            uint8(recovery.state(address(aliceIdentity), salt, mode, recoveryData)),
+            uint8(ERC7579DelayedExecutor.OperationState.Canceled)
         );
 
         // A fresh schedule on the new installation goes through as usual.
@@ -665,6 +678,77 @@ contract RecoveryModuleTest is OnchainIDSetup {
         vm.warp(block.timestamp + DELAY);
         recovery.executeRecovery(address(aliceIdentity), freshSalt, mode, recoveryData);
         assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(keccak256(abi.encodePacked(newOwner)), KeyPurposes.MANAGEMENT)
+        );
+    }
+
+    /// @notice Guardian approvals only sign salt, mode and payload, so they stay valid for as
+    ///         long as the module is deployed. The operation id must therefore stay taken
+    ///         across a reinstall, or the approval that scheduled the recovery the owner
+    ///         uninstalled to stop could simply be submitted again.
+    function test_RevertWhen_ApprovalOfStoppedRecoveryIsResubmittedAfterReinstall() public {
+        bytes32 salt = bytes32(uint256(44));
+        bytes32 mode = bytes32(0);
+        bytes memory recoveryData = _addNewOwnerCalldata();
+        bytes memory approval = _guardianBundle(_scheduleDigest(address(aliceIdentity), salt, mode, recoveryData));
+        recovery.startRecovery(address(aliceIdentity), salt, mode, recoveryData, approval);
+
+        vm.prank(alice);
+        aliceIdentity.uninstallModule(2, address(recovery), "");
+        _reinstall(aliceIdentity, alice);
+
+        bytes32 id = recovery.hashOperation(address(aliceIdentity), salt, mode, recoveryData);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ERC7579DelayedExecutor.ERC7579ExecutorUnexpectedOperationState.selector,
+                id,
+                ERC7579DelayedExecutor.OperationState.Scheduled,
+                bytes32(uint256(1) << uint8(ERC7579DelayedExecutor.OperationState.Unknown))
+            )
+        );
+        recovery.startRecovery(address(aliceIdentity), salt, mode, recoveryData, approval);
+
+        vm.warp(block.timestamp + DELAY + 1);
+        vm.expectRevert(abi.encodeWithSelector(Errors.RecoveryScheduledUnderPreviousInstall.selector, id));
+        recovery.executeRecovery(address(aliceIdentity), salt, mode, recoveryData);
+        assertFalse(
+            IERC734(address(aliceIdentity)).keyHasPurpose(keccak256(abi.encodePacked(newOwner)), KeyPurposes.MANAGEMENT)
+        );
+    }
+
+    /// @notice Same approval, after the recovery already ran. The owner then removes the
+    ///         recovered key and reinstalls the module. Resubmitting the old approval must
+    ///         not put that key back.
+    function test_RevertWhen_ApprovalOfExecutedRecoveryIsResubmittedAfterReinstall() public {
+        bytes32 salt = bytes32(uint256(45));
+        bytes32 mode = bytes32(0);
+        bytes memory recoveryData = _addNewOwnerCalldata();
+        bytes memory approval = _guardianBundle(_scheduleDigest(address(aliceIdentity), salt, mode, recoveryData));
+        recovery.startRecovery(address(aliceIdentity), salt, mode, recoveryData, approval);
+        vm.warp(block.timestamp + DELAY);
+        recovery.executeRecovery(address(aliceIdentity), salt, mode, recoveryData);
+
+        vm.startPrank(alice);
+        aliceIdentity.removeKey(keccak256(abi.encodePacked(newOwner)), KeyPurposes.MANAGEMENT);
+        aliceIdentity.uninstallModule(2, address(recovery), "");
+        vm.stopPrank();
+        _reinstall(aliceIdentity, alice);
+
+        bytes32 id = recovery.hashOperation(address(aliceIdentity), salt, mode, recoveryData);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ERC7579DelayedExecutor.ERC7579ExecutorUnexpectedOperationState.selector,
+                id,
+                ERC7579DelayedExecutor.OperationState.Executed,
+                bytes32(uint256(1) << uint8(ERC7579DelayedExecutor.OperationState.Unknown))
+            )
+        );
+        recovery.startRecovery(address(aliceIdentity), salt, mode, recoveryData, approval);
+
+        vm.warp(block.timestamp + DELAY + 1);
+        vm.expectRevert(abi.encodeWithSelector(Errors.RecoveryScheduledUnderPreviousInstall.selector, id));
+        recovery.executeRecovery(address(aliceIdentity), salt, mode, recoveryData);
+        assertFalse(
             IERC734(address(aliceIdentity)).keyHasPurpose(keccak256(abi.encodePacked(newOwner)), KeyPurposes.MANAGEMENT)
         );
     }

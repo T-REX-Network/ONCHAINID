@@ -324,6 +324,12 @@ library Errors {
     /// @notice ETH push from `KeyApprovalModule` back to the identity failed.
     error ReturnToAccountFailed();
 
+    /* ----- RecoveryModule ----- */
+
+    /// @notice The recovery was scheduled under a previous installation of the module on this
+    ///         account. It can be canceled by the account but never executed.
+    error RecoveryScheduledUnderPreviousInstall(bytes32 operationId);
+
     /* ----- EASClaimIssuer ----- */
 
     /// @notice Reverts when a caller invokes an `IClaimIssuer` or `IIdentity` method that has

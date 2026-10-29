@@ -22,6 +22,7 @@
 
 pragma solidity ^0.8.28;
 
+import { Errors } from "../../libraries/Errors.sol";
 import {
     ERC7579SocialRecoveryExecutor
 } from "@openzeppelin/accounts/modules/executors/ERC7579SocialRecoveryExecutor.sol";
@@ -31,8 +32,8 @@ import {
 ///         {ERC7579SocialRecoveryExecutor} (vendored via soldeer from
 ///         OpenZeppelin/openzeppelin-accounts, commit 4ceb836d). Guardians, delay
 ///         and execution all live upstream. The one thing added here is an
-///         install generation in the operation id, so a recovery scheduled under
-///         a previous installation cannot execute after a reinstall.
+///         install generation recorded on every schedule, so a recovery scheduled
+///         under a previous installation cannot execute after a reinstall.
 ///
 /// @dev    Why a wrapper.
 ///         The upstream contract is marked `abstract`, so we can't deploy it
@@ -91,27 +92,48 @@ import {
 ///         set, threshold and schedule in module storage keyed by account.
 contract RecoveryModule is ERC7579SocialRecoveryExecutor {
 
-    /// @dev Per-account install counter, mixed into every operation id. OZ keeps
-    ///      scheduled operations across uninstall on purpose, so without this a
-    ///      recovery scheduled under a previous installation could still execute
-    ///      after the module is reinstalled. While the module is uninstalled the
-    ///      account refuses its dispatches, so advancing on install is enough.
+    /// @dev Per-account install counter. OZ keeps scheduled operations across
+    ///      uninstall on purpose, so without this a recovery scheduled under a
+    ///      previous installation could still execute after the module is
+    ///      reinstalled. While the module is uninstalled the account refuses its
+    ///      dispatches, so advancing on install is enough.
     mapping(address account => uint256 generation) private _generation;
+
+    /// @dev The generation each operation was scheduled under. Operation ids stay
+    ///      OZ's: a guardian approval only commits to salt, mode and payload, so
+    ///      changing the id per installation would let every past approval be
+    ///      scheduled again after a reinstall. Keeping the id stable keeps each
+    ///      approval single-use, and the generation check below does the rest.
+    mapping(bytes32 operationId => uint256 generation) private _scheduledIn;
 
     function onInstall(bytes calldata data) public override {
         super.onInstall(data);
         ++_generation[msg.sender];
     }
 
-    /// @dev Schedule, execute, cancel and `state` all resolve ids through here, so
-    ///      an operation is only reachable from the installation that scheduled it.
-    function hashOperation(address account, bytes32 salt, bytes32 mode, bytes memory executionCalldata)
-        public
-        view
+    function _scheduleAt(
+        address account,
+        bytes32 salt,
+        bytes32 mode,
+        bytes calldata executionCalldata,
+        uint48 timepoint,
+        uint32 delay
+    ) internal override returns (bytes32 id) {
+        id = super._scheduleAt(account, salt, mode, executionCalldata, timepoint, delay);
+        _scheduledIn[id] = _generation[account];
+    }
+
+    /// @dev OZ's `state` is not virtual, so an operation from a previous installation
+    ///      still reads as `Ready` there. Only this path decides whether it runs. The
+    ///      account can still cancel it to tidy up.
+    function _execute(address account, bytes32 salt, bytes32 mode, bytes memory executionCalldata)
+        internal
         override
-        returns (bytes32)
+        returns (bytes[] memory)
     {
-        return keccak256(abi.encode(account, salt, mode, executionCalldata, _generation[account]));
+        bytes32 id = hashOperation(account, salt, mode, executionCalldata);
+        require(_scheduledIn[id] == _generation[account], Errors.RecoveryScheduledUnderPreviousInstall(id));
+        return super._execute(account, salt, mode, executionCalldata);
     }
 
 }
