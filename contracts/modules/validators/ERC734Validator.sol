@@ -479,8 +479,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     ///        target == account (including zero) -> MANAGEMENT only
     ///        target == factory                  -> MANAGEMENT only
     ///        any other external target          -> ACTION
-    ///      Claim operations are not supported through a user operation. Claim key holders must
-    ///      call the identity directly through its fallback handler.
+    ///      Claims on this identity's own registry cannot be added or removed through a user op:
+    ///      the account would call itself, so addClaim sees the account as the caller. Claim key
+    ///      holders call the identity directly through its fallback handler.
     function _targetAllowed(address account, bytes32 keyHash, address target) private view returns (bool) {
         if (target == address(0)) target = account; // OZ aliases target 0 to self.
 
