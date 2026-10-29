@@ -22,6 +22,7 @@
 
 pragma solidity ^0.8.28;
 
+import { Errors } from "../../libraries/Errors.sol";
 import {
     ERC7579SocialRecoveryExecutor
 } from "@openzeppelin/accounts/modules/executors/ERC7579SocialRecoveryExecutor.sol";
@@ -29,15 +30,16 @@ import {
 /// @title RecoveryModule
 /// @notice Social recovery for ONCHAINID identities. Wraps OZ's
 ///         {ERC7579SocialRecoveryExecutor} (vendored via soldeer from
-///         OpenZeppelin/openzeppelin-accounts, commit 4ceb836d). All logic lives
-///         upstream, we add nothing.
+///         OpenZeppelin/openzeppelin-accounts, commit 4ceb836d). Guardians, delay
+///         and execution all live upstream. The one thing added here is an
+///         install generation recorded on every schedule, so a recovery scheduled
+///         under a previous installation cannot execute after a reinstall.
 ///
-/// @dev    Why a wrapper file when there is no body.
+/// @dev    Why a wrapper.
 ///         The upstream contract is marked `abstract`, so we can't deploy it
 ///         directly. Inheriting it once gives us a concrete contract we can
-///         instantiate with `new RecoveryModule()`, a stable name to reference
-///         from scripts and tests, and a place to override later if we ever need
-///         to (we don't today).
+///         instantiate with `new RecoveryModule()` and a stable name to reference
+///         from scripts and tests.
 ///
 /// @dev    Why OZ instead of writing our own.
 ///         The recovery flow holds authority that can replace MANAGEMENT keys, so
@@ -88,4 +90,55 @@ import {
 ///         guardian bundle is bound to one identity and one module deployment.
 ///         The module is a shared singleton: each account keeps its own guardian
 ///         set, threshold and schedule in module storage keyed by account.
-contract RecoveryModule is ERC7579SocialRecoveryExecutor { }
+contract RecoveryModule is ERC7579SocialRecoveryExecutor {
+
+    /// @dev Per-account install counter. OZ keeps scheduled operations across
+    ///      uninstall on purpose, so without this a recovery scheduled under a
+    ///      previous installation could still execute after the module is
+    ///      reinstalled. While the module is uninstalled the account refuses its
+    ///      dispatches, so advancing on install is enough.
+    mapping(address account => uint256 generation) private _generation;
+
+    /// @dev The generation each operation was scheduled under. Operation ids stay
+    ///      OZ's: a guardian approval only commits to salt, mode and payload, so
+    ///      changing the id per installation would let every past approval be
+    ///      scheduled again after a reinstall. Keeping the id stable keeps each
+    ///      approval single-use, and the generation check below does the rest.
+    mapping(bytes32 operationId => uint256 generation) private _scheduledIn;
+
+    function onInstall(bytes calldata data) public override {
+        super.onInstall(data);
+        ++_generation[msg.sender];
+    }
+
+    function _scheduleAt(
+        address account,
+        bytes32 salt,
+        bytes32 mode,
+        bytes calldata executionCalldata,
+        uint48 timepoint,
+        uint32 delay
+    ) internal override returns (bytes32 id) {
+        id = super._scheduleAt(account, salt, mode, executionCalldata, timepoint, delay);
+        _scheduledIn[id] = _generation[account];
+    }
+
+    /// @dev OZ's `state` is not virtual, so an operation from a previous installation
+    ///      still reads as `Ready` there. Only this path decides whether it runs. The
+    ///      account can still cancel it to tidy up. An id that was never scheduled has
+    ///      no generation (a schedule needs an install, and install bumps the counter
+    ///      first), so it falls through to OZ's own state check.
+    function _execute(address account, bytes32 salt, bytes32 mode, bytes memory executionCalldata)
+        internal
+        override
+        returns (bytes[] memory)
+    {
+        bytes32 id = hashOperation(account, salt, mode, executionCalldata);
+        uint256 scheduledIn = _scheduledIn[id];
+        bool neverScheduled = scheduledIn == 0;
+        bool scheduledOnCurrentInstall = scheduledIn == _generation[account];
+        require(neverScheduled || scheduledOnCurrentInstall, Errors.RecoveryScheduledUnderPreviousInstall(id));
+        return super._execute(account, salt, mode, executionCalldata);
+    }
+
+}
