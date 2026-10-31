@@ -83,8 +83,9 @@ contract ReputationRegistry is IReputationRegistry, AccessManaged {
     }
 
     /// @param initialAuthority AccessManager that backs every `restricted` write.
-    /// @param identityFactory The IdentityFactory whose `isFactoryIdentity` view gates
-    ///                        the default-tier fallback. Reverts the deploy on zero.
+    /// @param identityFactory The IdentityFactory whose `identityTypeOf` record picks the
+    ///                        default-tier fallback; no type reads as a zero score.
+    ///                        Reverts the deploy on zero.
     constructor(address initialAuthority, address identityFactory) AccessManaged(initialAuthority) {
         require(initialAuthority != address(0), Errors.ZeroAddress());
         require(identityFactory != address(0), Errors.ZeroAddress());

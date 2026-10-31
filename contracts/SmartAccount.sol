@@ -46,7 +46,8 @@ import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 ///         {_authorizeCall} applies to executor callers only.
 abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 {
 
-    /// @dev Emitted for every call dispatched through the ERC-7579 execute path, before it runs. `caller`
+    /// @dev Emitted for every call dispatched through the ERC-7579 execute path, before it runs.
+    ///      `caller` is the address that called the account to dispatch it.
     event CallDispatched(address target, uint256 value, bytes data, address caller);
 
     /// @dev Emitted right after ERC-7579 `ModuleInstalled`, which omits the install data.
