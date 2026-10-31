@@ -83,6 +83,41 @@ contract SmartAccountTest is OnchainIDSetup {
         assertEq(counter.count(), 1, "auto-approved external call should run");
     }
 
+    /// @notice A zero target runs against the account, so the event names the account.
+    function test_execute_zeroTarget_logsTheAccountAsTarget() public {
+        bytes memory addKeyCall = _addActionKeyCall(makeAddr("zeroTargetKey"));
+        bytes memory executionCalldata = abi.encodePacked(address(0), uint256(0), addKeyCall);
+
+        vm.expectEmit(address(aliceIdentity));
+        emit SmartAccount.CallDispatched(address(aliceIdentity), 0, addKeyCall, ENTRY_POINT);
+        vm.prank(ENTRY_POINT);
+        IERC7579Execution(address(aliceIdentity)).execute(bytes32(0), executionCalldata);
+    }
+
+    /// @notice Same for each call of a batch.
+    function test_execute_zeroTargetInBatch_logsTheAccountAsTarget() public {
+        bytes memory addKeyCall = _addActionKeyCall(makeAddr("zeroTargetKey"));
+        Execution[] memory batch = new Execution[](1);
+        batch[0] = Execution({ target: address(0), value: 0, callData: addKeyCall });
+        bytes32 batchMode = bytes32(bytes1(0x01)); // CALLTYPE_BATCH, EXECTYPE_DEFAULT
+
+        vm.expectEmit(address(aliceIdentity));
+        emit SmartAccount.CallDispatched(address(aliceIdentity), 0, addKeyCall, ENTRY_POINT);
+        vm.prank(ENTRY_POINT);
+        IERC7579Execution(address(aliceIdentity)).execute(batchMode, abi.encode(batch));
+    }
+
+    function _addActionKeyCall(address grantee) internal pure returns (bytes memory) {
+        return abi.encodeWithSignature(
+            "addKeyWithData(bytes32,uint256,uint256,bytes,bytes)",
+            keccak256(abi.encodePacked(grantee)),
+            KeyPurposes.ACTION,
+            KeyTypes.ECDSA,
+            abi.encodePacked(grantee),
+            ""
+        );
+    }
+
     /// @notice A CLAIM_SIGNER key must not be able to call self-targeted `addKey` through
     ///         execute(): a self-call never auto-approves below MANAGEMENT, and explicit
     ///         approval of a self-call requires MANAGEMENT too.

@@ -47,7 +47,8 @@ import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 {
 
     /// @dev Emitted for every call dispatched through the ERC-7579 execute path, before it runs.
-    ///      `caller` is the address that called the account to dispatch it.
+    ///      `caller` is the address that called the account to dispatch it. A zero target is
+    ///      logged as the account itself, which is where the call runs.
     event CallDispatched(address target, uint256 value, bytes data, address caller);
 
     /// @dev Emitted right after ERC-7579 `ModuleInstalled`, which omits the install data.
@@ -156,6 +157,8 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
             // reject it here so a call can never skip the guard below and reach super unauthorized.
             require(executionCalldata.length >= 52, Errors.UnsupportedExecutionMode(Mode.unwrap(mode)));
             address target = address(bytes20(executionCalldata[:20]));
+            // OZ runs a zero target against the account; resolve it so the check and the event agree.
+            if (target == address(0)) target = address(this);
             _authorizeCall(target, executionCalldata[52:], callerKeyHash, callerIsExecutor);
             emit CallDispatched(target, uint256(bytes32(executionCalldata[20:52])), executionCalldata[52:], msg.sender);
         } else if (callType == ERC7579Utils.CALLTYPE_BATCH) {
@@ -164,8 +167,10 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
             // validator (which decodes the same way) and this check always agree.
             Execution[] memory batch = abi.decode(executionCalldata, (Execution[]));
             for (uint256 i = 0; i < batch.length; i++) {
-                _authorizeCall(batch[i].target, batch[i].callData, callerKeyHash, callerIsExecutor);
-                emit CallDispatched(batch[i].target, batch[i].value, batch[i].callData, msg.sender);
+                address target = batch[i].target;
+                if (target == address(0)) target = address(this);
+                _authorizeCall(target, batch[i].callData, callerKeyHash, callerIsExecutor);
+                emit CallDispatched(target, batch[i].value, batch[i].callData, msg.sender);
             }
         } else {
             revert Errors.UnsupportedExecutionMode(Mode.unwrap(mode));
@@ -176,14 +181,11 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
 
     /// @dev Authorizes one call: no dispatched call may target one of the account's own modules
     ///      (unless the account itself is the caller), and an executor caller needs a key
-    ///      purpose for the target.
+    ///      purpose for the target. {_execute} has already resolved a zero target to the account.
     function _authorizeCall(address target, bytes memory inner, bytes32 callerKeyHash, bool callerIsExecutor)
         private
         view
     {
-        // OZ rewrites target 0 to the account before dispatch; do the same so the checks agree.
-        if (target == address(0)) target = address(this);
-
         // A dispatched call must never land on one of the account's own modules: an installed
         // executor, or the fallback handler for this call's selector. Module functions are reached
         // through the account's fallback dispatch, which appends the real caller (ERC-2771 style);
