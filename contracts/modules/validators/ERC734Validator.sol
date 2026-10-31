@@ -137,7 +137,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     );
     event KeyRemoved(address indexed account, bytes32 indexed keyHash, uint256 indexed purpose, address caller);
 
-    /// @dev Emitted when a user operation for `account` validates against key `keyHash`.
+    /// @dev Emitted when `account` validates one of its user operations against key `keyHash`.
+    ///      Only the account's own validation call emits it, so a direct call to this module
+    ///      with a signature taken from elsewhere cannot forge a record.
     event KeyUsed(address indexed account, bytes32 indexed keyHash, bytes32 userOpHash);
 
     /// @dev EIP-712 typehash for `Claim`. The nested `ClaimData` type is appended per the EIP-712
@@ -448,7 +450,11 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
             return ERC4337Utils.SIG_VALIDATION_FAILED;
         }
 
-        emit KeyUsed(userOp.sender, keyHash, userOpHash);
+        // Anyone can call validateUserOp with any hash a key once signed (a 1271 permit, a claim,
+        // an unsent user op). Only the account validating its own user op is a real use.
+        if (msg.sender == userOp.sender) {
+            emit KeyUsed(userOp.sender, keyHash, userOpHash);
+        }
         return validationData;
     }
 

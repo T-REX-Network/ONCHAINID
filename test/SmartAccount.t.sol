@@ -981,6 +981,21 @@ contract SmartAccountTest is OnchainIDSetup {
         assertEq(result, ERC4337Utils.SIG_VALIDATION_SUCCESS, "ACTION + external target must succeed");
     }
 
+    /// @notice A direct call to the validator with a genuine signature still validates, but it
+    ///         is not the account using its key, so it must not log KeyUsed.
+    function test_validateUserOp_directCallerOtherThanTheAccount_emitsNoKeyUsed() public {
+        Counter counter = new Counter();
+        (PackedUserOperation memory userOp, bytes32 userOpHash) =
+            _buildAndSignUserOp(address(counter), abi.encodeCall(Counter.increment, ()));
+
+        vm.recordLogs();
+        vm.prank(makeAddr("stranger"));
+        uint256 result = onchainidSetup.signatureValidator.validateUserOp(userOp, userOpHash);
+
+        assertEq(result, ERC4337Utils.SIG_VALIDATION_SUCCESS);
+        assertEq(vm.getRecordedLogs().length, 0, "a direct call must not emit KeyUsed");
+    }
+
     /// @notice The per-target rule fires: an ACTION-only key cannot self-target
     ///         a privileged selector like addKey. The signature is cryptographically
     ///         valid, but step 2 of _validateUserOp rejects it.
