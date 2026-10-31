@@ -52,6 +52,8 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
     event CallDispatched(address target, uint256 value, bytes data, address caller);
 
     /// @dev Emitted right after ERC-7579 `ModuleInstalled`, which omits the install data.
+    ///      `caller` here and on ModuleUninstallData follows the same paths as on
+    ///      {ERC734Validator-KeyAdded}.
     event ModuleInstallData(uint256 moduleTypeId, address module, bytes initData, address caller);
 
     /// @dev Emitted right after ERC-7579 `ModuleUninstalled`, which omits the uninstall data.

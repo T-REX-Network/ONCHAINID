@@ -126,6 +126,12 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     /// @dev The grantee is this module itself. See the guard in {_addKey}.
     error ModuleCannotBeKey();
 
+    /// @dev `caller` on KeyAdded and KeyRemoved is whoever called the account, so it depends on
+    ///      the path. A MANAGEMENT key calling the account directly: that key. A user op or an
+    ///      approved KeyApprovalModule execution: the account itself, because it calls itself;
+    ///      the signing key is in KeyUsed or the module's Executed event of the same transaction.
+    ///      At factory deploy: the one-off CREATE3 helper that creates the proxy; the deployer is
+    ///      in the factory's IdentityDeployed event of the same transaction.
     event KeyAdded(
         address indexed account,
         bytes32 indexed keyHash,
