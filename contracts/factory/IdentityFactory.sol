@@ -727,8 +727,15 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // getIdentityIncludingRevoked, so that view must agree with getIdentity here. This
         // is not a real account binding: it skips the `accounts` set, so it can never be
         // revoked or enumerated, and it emits no AccountLinked.
-        WalletEntry storage selfEntry =
-            _storage().wallets[keccak256(InteroperableAddress.formatEvmV1(block.chainid, identity))];
+        bytes memory selfAccount = InteroperableAddress.formatEvmV1(block.chainid, identity);
+        WalletEntry storage selfEntry = _storage().wallets[keccak256(selfAccount)];
+        // CREATE3 makes the address known before deploy, so createIdentityFor may already have
+        // linked it as a wallet of another identity. Revoke that link first, so the address
+        // leaves that identity's account set and indexers see it go. A link that was already
+        // revoked is overwritten below: the address now resolves to itself.
+        if (selfEntry.status == AccountStatus.Active) {
+            _revokeAccount(selfAccount, selfEntry.identity, msg.sender);
+        }
         selfEntry.identity = identity;
         selfEntry.status = AccountStatus.Active;
 
