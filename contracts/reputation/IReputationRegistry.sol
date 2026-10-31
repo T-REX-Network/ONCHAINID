@@ -44,6 +44,10 @@ pragma solidity ^0.8.27;
 ///         type 5 cannot inherit the CLAIM_ISSUER default. The explicit-entry
 ///         path bypasses the factory check because the manager may want to
 ///         score externally-deployed identities by hand.
+///
+///         Admin events record `msg.sender` as the caller. When the AccessManager runs the
+///         call (a role with an execution delay, or a call sent through its `execute`), that
+///         is the AccessManager; the operator is in its `OperationScheduled` event or the tx.
 interface IReputationRegistry {
 
     /// @dev Per-identity entry. Packs into a single 32-byte slot. `setAt == 0`
