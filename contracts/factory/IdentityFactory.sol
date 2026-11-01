@@ -815,7 +815,9 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     ///      set alone does not show it: it empties when that account deploys as an identity
     ///      (see {_doCreateIdentity}), so the link entry points check the type, not the count.
     function _isSingleBinding(address identity) private view returns (bool) {
-        return _storage().typePolicies[_storage().identityTypes[identity]].singleBinding;
+        uint256 identityType = _storage().identityTypes[identity];
+        TypePolicy storage policy = _storage().typePolicies[identityType];
+        return policy.singleBinding;
     }
 
     function _accountsRange(address identity, uint256 start, uint256 end) private view returns (bytes[] memory out) {
