@@ -371,6 +371,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // Only identities this factory deployed can pull wallets in. Otherwise random
         // contracts could register themselves and feed bogus claims to T-REX modules.
         require(_storage().identityTypes[msg.sender] != 0, Errors.NotFactoryIdentity(msg.sender));
+        require(!_isSingleBinding(msg.sender), Errors.CannotLinkToAssetIdentity(msg.sender));
 
         bytes32 digest = _hashTypedDataV4(
             keccak256(abi.encode(_LINK_ACCOUNT_TYPEHASH, keccak256(account), msg.sender, nonce, expiry))
@@ -396,10 +397,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // fresh account because the bound contract can't sign a LinkAccount digest,
         // so allowing revoke would orphan the factory's discovery entry permanently.
         // The type is read from our own record, never from the caller.
-        require(
-            !_storage().typePolicies[_storage().identityTypes[msg.sender]].singleBinding,
-            Errors.CannotRevokeFromNonSigningIdentity(msg.sender)
-        );
+        require(!_isSingleBinding(msg.sender), Errors.CannotRevokeFromNonSigningIdentity(msg.sender));
 
         bytes32 key = _walletKey(account);
         require(_storage().wallets[key].identity == msg.sender, Errors.WalletNotLinkedToIdentity(account));
@@ -471,6 +469,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         }
 
         require(block.timestamp <= pending.expiry, Errors.PendingCrossChainLinkExpired(pending.expiry));
+        require(!_isSingleBinding(msg.sender), Errors.CannotLinkToAssetIdentity(msg.sender));
         _linkAccount(account, msg.sender, msg.sender);
         emit CrossChainLinkConfirmed(account, msg.sender);
     }
@@ -768,8 +767,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // 1:1 contract↔identity mapping. The type is read from our own record
         // (written before the auto-link runs), never from the identity.
         require(
-            !_storage().typePolicies[_storage().identityTypes[identity]].singleBinding
-                || _storage().accounts[identity].length() == 0,
+            !_isSingleBinding(identity) || _storage().accounts[identity].length() == 0,
             Errors.CannotLinkToAssetIdentity(identity)
         );
 
@@ -811,6 +809,13 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         entry.status = AccountStatus.Revoked;
 
         emit AccountRevoked(account, identity, caller);
+    }
+
+    /// @dev Whether `identity`'s type binds it to the one account it got at deploy. The account
+    ///      set alone does not show it: it empties when that account deploys as an identity
+    ///      (see {_doCreateIdentity}), so the link entry points check the type, not the count.
+    function _isSingleBinding(address identity) private view returns (bool) {
+        return _storage().typePolicies[_storage().identityTypes[identity]].singleBinding;
     }
 
     function _accountsRange(address identity, uint256 start, uint256 end) private view returns (bytes[] memory out) {
