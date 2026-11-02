@@ -26,6 +26,7 @@ import { SmartAccount } from "./SmartAccount.sol";
 import { IERC734 } from "./interface/IERC734.sol";
 import { IERC735 } from "./interface/IERC735.sol";
 import { IIdentity } from "./interface/IIdentity.sol";
+import { IXMLRepresentableState } from "./interface/IRepresentableState.sol";
 import { Errors } from "./libraries/Errors.sol";
 import { KeyTypes } from "./libraries/KeyTypes.sol";
 import { ERC734Validator } from "./modules/validators/ERC734Validator.sol";
@@ -217,10 +218,12 @@ contract Identity is Initializable, SmartAccount, ERC165 {
     ///      moved to {IKeyExecutor}, so the legacy monolithic id is intentionally not claimed.
     function supportsInterface(bytes4 interfaceId) public view override returns (bool) {
         bool hasClaims = _fallbackHandler(IERC735.getClaim.selector) != address(0);
+        bool hasRepresentableState = _fallbackHandler(IXMLRepresentableState.stateXmlTemplate.selector) != address(0);
 
         if (interfaceId == type(IERC734).interfaceId) return true;
         if (interfaceId == type(IERC735).interfaceId) return hasClaims;
         if (interfaceId == type(IIdentity).interfaceId) return hasClaims;
+        if (interfaceId == type(IXMLRepresentableState).interfaceId) return hasRepresentableState;
         return super.supportsInterface(interfaceId);
     }
 
