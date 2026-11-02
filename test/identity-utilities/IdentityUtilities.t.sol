@@ -3,6 +3,7 @@ pragma solidity ^0.8.27;
 
 import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { IdentityHelper } from "../helpers/IdentityHelper.sol";
+import { AccessManager } from "@openzeppelin/contracts/access/manager/AccessManager.sol";
 import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IdentityUtilities } from "contracts/IdentityUtilities.sol";
@@ -28,8 +29,11 @@ contract IdentityUtilitiesTest is Test {
         (admin, adminPk) = makeAddrAndKey("utilAdmin");
         user = makeAddr("utilUser");
 
+        // `admin` is the AccessManager's ADMIN_ROLE holder, which every `restricted` function
+        // falls back to when no role is set for it.
+        AccessManager accessManager = new AccessManager(admin);
         IdentityUtilities impl = new IdentityUtilities();
-        IdentityUtilitiesProxy proxy = new IdentityUtilitiesProxy(address(impl), admin);
+        IdentityUtilitiesProxy proxy = new IdentityUtilitiesProxy(address(impl), address(accessManager));
         utilities = IdentityUtilities(address(proxy));
     }
 
@@ -56,6 +60,36 @@ contract IdentityUtilitiesTest is Test {
     ) internal {
         vm.prank(admin);
         utilities.addTopic(topicId, name, _encodeNames(fieldNames), _encodeTypes(fieldTypes));
+    }
+
+    // =========================================================================
+    //  Topic id list
+    // =========================================================================
+
+    function test_getTopicIds_ListsAddedTopicsAndForgetsRemovedOnes() public {
+        _addDefaultTopic(1, "ISIN", _singleStringArray("isin"), _singleStringArray("string"));
+        _addDefaultTopic(2, "LEI", _singleStringArray("lei"), _singleStringArray("string"));
+        assertEq(utilities.getTopicIdsCount(), 2);
+
+        vm.prank(admin);
+        utilities.removeTopic(1);
+
+        uint256[] memory ids = utilities.getTopicIds();
+        assertEq(ids.length, 1);
+        assertEq(ids[0], 2);
+    }
+
+    function test_getTopicIds_PaginatesOverTheRegisteredIds() public {
+        _addDefaultTopic(1, "ISIN", _singleStringArray("isin"), _singleStringArray("string"));
+        _addDefaultTopic(2, "LEI", _singleStringArray("lei"), _singleStringArray("string"));
+        _addDefaultTopic(3, "NAV", _singleStringArray("nav"), _singleStringArray("uint256"));
+
+        uint256[] memory firstPage = utilities.getTopicIds(0, 2);
+        uint256[] memory secondPage = utilities.getTopicIds(2, 10);
+
+        assertEq(firstPage.length, 2);
+        assertEq(secondPage.length, 1);
+        assertEq(secondPage[0], 3);
     }
 
     // =========================================================================
@@ -1045,11 +1079,12 @@ contract IdentityUtilitiesTest is Test {
     // =========================================================================
 
     function test_upgrade_viaERC1967Proxy_revertNonAdmin() public {
-        address deployer = makeAddr("erc1967deployer");
+        AccessManager accessManager = new AccessManager(makeAddr("erc1967deployer"));
         address nonAdmin = makeAddr("erc1967nonAdmin");
 
         IdentityUtilities impl = new IdentityUtilities();
-        ERC1967Proxy proxy = new ERC1967Proxy(address(impl), abi.encodeCall(IdentityUtilities.initialize, (deployer)));
+        ERC1967Proxy proxy =
+            new ERC1967Proxy(address(impl), abi.encodeCall(IdentityUtilities.initialize, (address(accessManager))));
         IdentityUtilities proxyUtil = IdentityUtilities(address(proxy));
 
         IdentityUtilities newImpl = new IdentityUtilities();
@@ -1063,16 +1098,16 @@ contract IdentityUtilitiesTest is Test {
     //  Proxy deployment
     // =========================================================================
 
-    /// @dev The constructor takes the admin, not raw data, so the proxy is always
+    /// @dev The constructor takes the AccessManager, not raw data, so the proxy is always
     ///      initialized on deploy and nobody else can claim it afterwards.
     function test_proxy_deploysInitialized() public {
-        address proxyAdmin = makeAddr("proxyAdmin");
+        address authority = makeAddr("proxyAuthority");
         address attacker = makeAddr("proxyAttacker");
 
         IdentityUtilities impl = new IdentityUtilities();
-        IdentityUtilities proxyUtil = IdentityUtilities(address(new IdentityUtilitiesProxy(address(impl), proxyAdmin)));
+        IdentityUtilities proxyUtil = IdentityUtilities(address(new IdentityUtilitiesProxy(address(impl), authority)));
 
-        assertTrue(proxyUtil.hasRole(proxyUtil.DEFAULT_ADMIN_ROLE(), proxyAdmin));
+        assertEq(proxyUtil.authority(), authority);
 
         vm.prank(attacker);
         vm.expectRevert();
