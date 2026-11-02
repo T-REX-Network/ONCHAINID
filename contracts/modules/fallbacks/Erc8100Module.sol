@@ -117,12 +117,12 @@ contract Erc8100Module is IERC7579Module, IXMLRepresentableState {
             "<Identity xmlns='urn:onchainid:identity:1.0' xmlns:evmstate='urn:evm:state:1.0'",
             " evmstate:chain-id='' evmstate:contract-address='' evmstate:block-number=''>",
             "<Type evmstate:call='getIdentityType()(uint256)'/>",
-            "<ClaimTopics evmstate:call='claimTopics()(uint256[])' evmstate:item-element='Topic'>",
+            "<ClaimTopics evmstate:call='stateClaimTopics()(uint256[])' evmstate:item-element='Topic'>",
             "<Topic evmstate:item-field='0'/></ClaimTopics>",
-            "<Keys evmstate:call='keys()(tuple(bytes32,uint256,string)[])' evmstate:item-element='Key'>",
+            "<Keys evmstate:call='stateKeys()(tuple(bytes32,uint256,string)[])' evmstate:item-element='Key'>",
             "<Key><Hash evmstate:item-field='0' evmstate:format='hex'/><Type evmstate:item-field='1'/>",
             "<Purposes evmstate:item-field='2'/></Key></Keys>",
-            "<Claims evmstate:call='claims()",
+            "<Claims evmstate:call='stateClaims()",
             "(tuple(bytes32,uint256,uint256,address,uint256,uint256,bytes32,bytes,string,uint256)[])'",
             " evmstate:item-element='Claim'>",
             "<Claim><Id evmstate:item-field='0' evmstate:format='hex'/><Topic evmstate:item-field='1'/>",
@@ -139,19 +139,19 @@ contract Erc8100Module is IERC7579Module, IXMLRepresentableState {
     // ---------------------------------------------------------------------------------------------
 
     /// @notice The claim topics this module reports: every topic with a registered schema.
-    function claimTopics() public view returns (uint256[] memory) {
+    function stateClaimTopics() public view returns (uint256[] memory) {
         return identityUtilities.getTopicIds();
     }
 
     /// @notice Every key of the calling identity with its purposes. Use the `(start, end)`
     ///         overload for identities with many keys.
-    function keys() external view returns (Key[] memory) {
-        return keys(0, type(uint64).max);
+    function stateKeys() external view returns (Key[] memory) {
+        return stateKeys(0, type(uint64).max);
     }
 
     /// @notice Keys of the calling identity in the index range `[start, end)`. `end` past the
     ///         count returns the available tail.
-    function keys(uint256 start, uint256 end) public view returns (Key[] memory rows) {
+    function stateKeys(uint256 start, uint256 end) public view returns (Key[] memory rows) {
         address identity = msg.sender;
         bytes32[] memory keyHashes = _registry(identity).getKeys(identity, start, end);
         rows = new Key[](keyHashes.length);
@@ -160,17 +160,22 @@ contract Erc8100Module is IERC7579Module, IXMLRepresentableState {
         }
     }
 
-    /// @notice Every claim of the calling identity under a reported topic. Use the `(start, end)`
-    ///         overload for identities with many claims.
-    function claims() external view returns (Claim[] memory) {
-        return claims(0, type(uint64).max);
+    /// @notice Every claim of the calling identity under a reported topic. Use the
+    ///         `(topic, start, end)` overload for identities with many claims.
+    function stateClaims() external view returns (Claim[] memory rows) {
+        address identity = msg.sender;
+        bytes32[] memory claimIds = _allClaimIds(identity);
+        rows = new Claim[](claimIds.length);
+        for (uint256 i = 0; i < claimIds.length; i++) {
+            rows[i] = _claim(identity, claimIds[i]);
+        }
     }
 
-    /// @notice Claims of the calling identity in the index range `[start, end)` of the list
-    ///         ordered by topic then by claim. `end` past the count returns the available tail.
-    function claims(uint256 start, uint256 end) public view returns (Claim[] memory rows) {
+    /// @notice Claims of the calling identity under `topic`, in the index range `[start, end)`.
+    ///         `end` past the count returns the available tail.
+    function stateClaims(uint256 topic, uint256 start, uint256 end) external view returns (Claim[] memory rows) {
         address identity = msg.sender;
-        bytes32[] memory claimIds = _page(_allClaimIds(identity), start, end);
+        bytes32[] memory claimIds = _registry(identity).getClaimIdsByTopic(identity, topic, start, end);
         rows = new Claim[](claimIds.length);
         for (uint256 i = 0; i < claimIds.length; i++) {
             rows[i] = _claim(identity, claimIds[i]);
@@ -200,22 +205,23 @@ contract Erc8100Module is IERC7579Module, IXMLRepresentableState {
     // ---------------------------------------------------------------------------------------------
 
     /// @dev The claim ids under every reported topic, read through the identity's own fallback.
+    ///      Each topic's list is fetched once and kept, so the total is known before copying.
     function _allClaimIds(address identity) private view returns (bytes32[] memory claimIds) {
-        uint256[] memory topics = claimTopics();
-        claimIds = new bytes32[](_countClaims(identity, topics));
-        uint256 filled = 0;
+        uint256[] memory topics = stateClaimTopics();
+        bytes32[][] memory idsByTopic = new bytes32[][](topics.length);
+        uint256 claimCount = 0;
         for (uint256 i = 0; i < topics.length; i++) {
-            bytes32[] memory idsForTopic = IERC735(identity).getClaimIdsByTopic(topics[i]);
-            for (uint256 j = 0; j < idsForTopic.length; j++) {
-                claimIds[filled] = idsForTopic[j];
+            idsByTopic[i] = IERC735(identity).getClaimIdsByTopic(topics[i]);
+            claimCount += idsByTopic[i].length;
+        }
+
+        claimIds = new bytes32[](claimCount);
+        uint256 filled = 0;
+        for (uint256 i = 0; i < idsByTopic.length; i++) {
+            for (uint256 j = 0; j < idsByTopic[i].length; j++) {
+                claimIds[filled] = idsByTopic[i][j];
                 filled++;
             }
-        }
-    }
-
-    function _countClaims(address identity, uint256[] memory topics) private view returns (uint256 total) {
-        for (uint256 i = 0; i < topics.length; i++) {
-            total += IERC735(identity).getClaimIdsByTopic(topics[i]).length;
         }
     }
 
@@ -257,20 +263,6 @@ contract Erc8100Module is IERC7579Module, IXMLRepresentableState {
             return _STATUS_INVALID;
         } catch {
             return _STATUS_UNKNOWN;
-        }
-    }
-
-    /// @dev The slice `[start, end)` of `ids`, clamped to the list: `end` past the length returns
-    ///      the tail, `start` past the length returns nothing.
-    function _page(bytes32[] memory ids, uint256 start, uint256 end) private pure returns (bytes32[] memory page) {
-        bool endPastTheList = end > ids.length;
-        if (endPastTheList) end = ids.length;
-        bool startPastTheEnd = start > end;
-        if (startPastTheEnd) start = end;
-
-        page = new bytes32[](end - start);
-        for (uint256 i = 0; i < page.length; i++) {
-            page[i] = ids[start + i];
         }
     }
 

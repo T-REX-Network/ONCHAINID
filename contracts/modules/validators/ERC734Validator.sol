@@ -802,13 +802,14 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         return _store().registries[msg.sender].claimsByTopic[_topic].values();
     }
 
-    /// @notice Paginated variant of {getClaimIdsByTopic} for identities with many claims per topic.
-    function getClaimIdsByTopicPaginated(uint256 _topic, uint256 start, uint256 end)
-        external
+    /// @notice Paginated claim ids of `account` under `topic`, in the index range `[start, end)`.
+    ///         `end` past the set size returns the available tail.
+    function getClaimIdsByTopic(address account, uint256 topic, uint256 start, uint256 end)
+        public
         view
         returns (bytes32[] memory)
     {
-        return _store().registries[msg.sender].claimsByTopic[_topic].values(start, end);
+        return _store().registries[account].claimsByTopic[topic].values(start, end);
     }
 
     /// @notice Mark a claim digest revoked. Issuer-side revocation entry point.

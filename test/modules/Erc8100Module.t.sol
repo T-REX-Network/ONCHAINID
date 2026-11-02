@@ -76,38 +76,38 @@ contract Erc8100ModuleTest is OnchainIDSetup {
 
         assertTrue(_contains(template, "xmlns:evmstate='urn:evm:state:1.0'"));
         assertTrue(_contains(template, "evmstate:call='getIdentityType()(uint256)'"));
-        assertTrue(_contains(template, "evmstate:call='claimTopics()(uint256[])'"));
-        assertTrue(_contains(template, "evmstate:call='keys()(tuple(bytes32,uint256,string)[])'"));
-        assertTrue(_contains(template, "evmstate:call='claims()"));
+        assertTrue(_contains(template, "evmstate:call='stateClaimTopics()(uint256[])'"));
+        assertTrue(_contains(template, "evmstate:call='stateKeys()(tuple(bytes32,uint256,string)[])'"));
+        assertTrue(_contains(template, "evmstate:call='stateClaims()"));
     }
 
     // ---- topics ----
 
-    function test_claimTopics_MirrorsTheRegisteredSchemas() public {
-        uint256[] memory topics = aliceState.claimTopics();
+    function test_stateClaimTopics_MirrorsTheRegisteredSchemas() public {
+        uint256[] memory topics = aliceState.stateClaimTopics();
         assertEq(topics.length, 1);
         assertEq(topics[0], Constants.CLAIM_TOPIC_666);
 
         _registerSchema(Constants.CLAIM_TOPIC_42, "ISIN", "isin", "string");
-        assertEq(aliceState.claimTopics().length, 2);
+        assertEq(aliceState.stateClaimTopics().length, 2);
 
         vm.prank(deployer);
         utilities.removeTopic(Constants.CLAIM_TOPIC_666);
-        topics = aliceState.claimTopics();
+        topics = aliceState.stateClaimTopics();
         assertEq(topics.length, 1);
         assertEq(topics[0], Constants.CLAIM_TOPIC_42);
     }
 
     // ---- keys ----
 
-    function test_keys_ListsEachKeyOnceWithItsPurposes() public {
+    function test_stateKeys_ListsEachKeyOnceWithItsPurposes() public {
         vm.prank(alice);
         aliceIdentity.addKeyWithData(
             ClaimSignerHelper.addressToKey(carol), KeyPurposes.ACTION, KeyTypes.ECDSA, abi.encodePacked(carol), ""
         );
         address queueModule = address(onchainidSetup.keyApprovalModule);
 
-        Erc8100Module.Key[] memory rows = aliceState.keys();
+        Erc8100Module.Key[] memory rows = aliceState.stateKeys();
 
         // alice, carol, david and the execution queue module's own MANAGEMENT key.
         assertEq(rows.length, 4);
@@ -120,10 +120,10 @@ contract Erc8100ModuleTest is OnchainIDSetup {
         assertEq(_keyTypeOf(rows, ClaimSignerHelper.addressToKey(alice)), KeyTypes.ECDSA);
     }
 
-    function test_keys_PaginatesOverTheKeyList() public view {
-        Erc8100Module.Key[] memory all = aliceState.keys();
-        Erc8100Module.Key[] memory firstTwo = aliceState.keys(0, 2);
-        Erc8100Module.Key[] memory tail = aliceState.keys(2, 100);
+    function test_stateKeys_PaginatesOverTheKeyList() public view {
+        Erc8100Module.Key[] memory all = aliceState.stateKeys();
+        Erc8100Module.Key[] memory firstTwo = aliceState.stateKeys(0, 2);
+        Erc8100Module.Key[] memory tail = aliceState.stateKeys(2, 100);
 
         assertEq(all.length, 4);
         assertEq(firstTwo.length, 2);
@@ -134,8 +134,8 @@ contract Erc8100ModuleTest is OnchainIDSetup {
 
     // ---- claims ----
 
-    function test_claims_ReturnsClaim666AsValidWithItsRawPayload() public view {
-        Erc8100Module.Claim[] memory rows = aliceState.claims();
+    function test_stateClaims_ReturnsClaim666AsValidWithItsRawPayload() public view {
+        Erc8100Module.Claim[] memory rows = aliceState.stateClaims();
 
         assertEq(rows.length, 1);
         assertEq(rows[0].claimId, aliceClaim666.id);
@@ -150,24 +150,24 @@ contract Erc8100ModuleTest is OnchainIDSetup {
         assertEq(rows[0].status, 1);
     }
 
-    function test_claims_ReportsUnknownStatusWhenTheIssuerReverts() public {
+    function test_stateClaims_ReportsUnknownStatusWhenTheIssuerReverts() public {
         vm.mockCallRevert(address(claimIssuer), IIdentity.isClaimValid.selector, "down");
 
-        Erc8100Module.Claim[] memory rows = aliceState.claims();
+        Erc8100Module.Claim[] memory rows = aliceState.stateClaims();
 
         assertEq(rows.length, 1);
         assertEq(rows[0].status, 0);
     }
 
-    function test_claims_ReportsInvalidWhenTheIssuerSaysSo() public {
+    function test_stateClaims_ReportsInvalidWhenTheIssuerSaysSo() public {
         vm.mockCall(address(claimIssuer), IIdentity.isClaimValid.selector, abi.encode(false));
 
-        Erc8100Module.Claim[] memory rows = aliceState.claims();
+        Erc8100Module.Claim[] memory rows = aliceState.stateClaims();
 
         assertEq(rows[0].status, 2);
     }
 
-    function test_claims_SkipsClaimsWhoseTopicHasNoSchema() public {
+    function test_stateClaims_SkipsClaimsWhoseTopicHasNoSchema() public {
         ClaimSignerHelper.Claim memory claim42 = ClaimSignerHelper.buildClaim(
             claimIssuerOwnerPk,
             claimIssuerOwner,
@@ -181,13 +181,13 @@ contract Erc8100ModuleTest is OnchainIDSetup {
         IERC735(address(aliceIdentity))
             .addClaim(claim42.topic, claim42.scheme, claim42.issuer, claim42.signature, claim42.data, claim42.uri);
 
-        Erc8100Module.Claim[] memory rows = aliceState.claims();
+        Erc8100Module.Claim[] memory rows = aliceState.stateClaims();
 
         assertEq(rows.length, 1);
         assertEq(rows[0].topic, Constants.CLAIM_TOPIC_666);
     }
 
-    function test_claims_PaginatesAcrossTopics() public {
+    function test_stateClaims_PaginatesWithinATopic() public {
         _registerSchema(Constants.CLAIM_TOPIC_42, "ISIN", "isin", "string");
         ClaimSignerHelper.Claim memory claim42 = ClaimSignerHelper.buildClaim(
             claimIssuerOwnerPk,
@@ -202,18 +202,21 @@ contract Erc8100ModuleTest is OnchainIDSetup {
         IERC735(address(aliceIdentity))
             .addClaim(claim42.topic, claim42.scheme, claim42.issuer, claim42.signature, claim42.data, claim42.uri);
 
-        assertEq(aliceState.claims().length, 2);
-        assertEq(aliceState.claims(0, 1).length, 1);
-        assertEq(aliceState.claims(1, 10).length, 1);
-        assertEq(aliceState.claims(5, 10).length, 0);
-        assertEq(aliceState.claims(1, 10)[0].claimId, aliceState.claims()[1].claimId);
+        Erc8100Module.Claim[] memory topic666Rows = aliceState.stateClaims(Constants.CLAIM_TOPIC_666, 0, 10);
+        Erc8100Module.Claim[] memory topic42Rows = aliceState.stateClaims(Constants.CLAIM_TOPIC_42, 0, 10);
+        assertEq(topic666Rows.length, 1, "one claim under topic 666");
+        assertEq(topic666Rows[0].topic, Constants.CLAIM_TOPIC_666);
+        assertEq(topic42Rows.length, 1, "one claim under topic 42");
+        assertEq(topic42Rows[0].claimId, aliceState.stateClaims()[1].claimId, "same row as the full list");
+        assertEq(aliceState.stateClaims(Constants.CLAIM_TOPIC_42, 0, 1).length, 1, "end inside the set");
+        assertEq(aliceState.stateClaims(Constants.CLAIM_TOPIC_42, 1, 10).length, 0, "start past the set");
     }
 
-    function test_claims_ReturnsNoRowsWhenNoSchemaIsRegistered() public {
+    function test_stateClaims_ReturnsNoRowsWhenNoSchemaIsRegistered() public {
         vm.prank(deployer);
         utilities.removeTopic(Constants.CLAIM_TOPIC_666);
 
-        assertEq(aliceState.claims().length, 0);
+        assertEq(aliceState.stateClaims().length, 0);
     }
 
     // ---- helpers ----
@@ -221,11 +224,11 @@ contract Erc8100ModuleTest is OnchainIDSetup {
     function _installOnAlice() internal {
         vm.startPrank(alice);
         _installFallback(Erc8100Module.stateXmlTemplate.selector);
-        _installFallback(Erc8100Module.claimTopics.selector);
-        _installFallback(bytes4(keccak256("keys()")));
-        _installFallback(bytes4(keccak256("keys(uint256,uint256)")));
-        _installFallback(bytes4(keccak256("claims()")));
-        _installFallback(bytes4(keccak256("claims(uint256,uint256)")));
+        _installFallback(Erc8100Module.stateClaimTopics.selector);
+        _installFallback(bytes4(keccak256("stateKeys()")));
+        _installFallback(bytes4(keccak256("stateKeys(uint256,uint256)")));
+        _installFallback(bytes4(keccak256("stateClaims()")));
+        _installFallback(bytes4(keccak256("stateClaims(uint256,uint256,uint256)")));
         vm.stopPrank();
     }
 

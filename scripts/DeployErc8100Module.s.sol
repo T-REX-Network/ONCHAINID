@@ -40,11 +40,11 @@ contract DeployErc8100Module is Script {
 
         bytes4[6] memory selectors = [
             Erc8100Module.stateXmlTemplate.selector,
-            Erc8100Module.claimTopics.selector,
-            bytes4(keccak256("keys()")),
-            bytes4(keccak256("keys(uint256,uint256)")),
-            bytes4(keccak256("claims()")),
-            bytes4(keccak256("claims(uint256,uint256)"))
+            Erc8100Module.stateClaimTopics.selector,
+            bytes4(keccak256("stateKeys()")),
+            bytes4(keccak256("stateKeys(uint256,uint256)")),
+            bytes4(keccak256("stateClaims()")),
+            bytes4(keccak256("stateClaims(uint256,uint256,uint256)"))
         ];
         for (uint256 i = 0; i < selectors.length; i++) {
             Identity(identity).installModule(MODULE_TYPE_FALLBACK, module, abi.encodePacked(selectors[i]));

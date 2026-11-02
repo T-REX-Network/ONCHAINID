@@ -309,11 +309,11 @@ contract DeployOnchainID is Script {
         installs[17] = _fallback(validator, IERC734.getKeyPurposes.selector);
         installs[18] = _fallback(validator, IERC734.getKeysByPurpose.selector);
         installs[19] = _fallback(erc8100, Erc8100Module.stateXmlTemplate.selector);
-        installs[20] = _fallback(erc8100, Erc8100Module.claimTopics.selector);
-        installs[21] = _fallback(erc8100, bytes4(keccak256("keys()")));
-        installs[22] = _fallback(erc8100, bytes4(keccak256("keys(uint256,uint256)")));
-        installs[23] = _fallback(erc8100, bytes4(keccak256("claims()")));
-        installs[24] = _fallback(erc8100, bytes4(keccak256("claims(uint256,uint256)")));
+        installs[20] = _fallback(erc8100, Erc8100Module.stateClaimTopics.selector);
+        installs[21] = _fallback(erc8100, bytes4(keccak256("stateKeys()")));
+        installs[22] = _fallback(erc8100, bytes4(keccak256("stateKeys(uint256,uint256)")));
+        installs[23] = _fallback(erc8100, bytes4(keccak256("stateClaims()")));
+        installs[24] = _fallback(erc8100, bytes4(keccak256("stateClaims(uint256,uint256,uint256)")));
     }
 
     function _fallback(address module, bytes4 selector) private pure returns (Structs.ModuleInstall memory) {
