@@ -35,15 +35,15 @@ import { IERC7579Module, MODULE_TYPE_FALLBACK } from "@openzeppelin/contracts/in
 import { Strings } from "@openzeppelin/contracts/utils/Strings.sol";
 
 /**
- * @title RepresentableStateModule
+ * @title Erc8100Module
  * @notice ERC-8100 fallback module. Installed on an identity, it gives that identity a static XML
  *         template plus the zero-argument list getters the template binds, so an off-chain renderer
  *         can produce one XML document of the identity at one block with `eth_call` only.
  *
  *         Every function here is reached through the identity's ERC-7579 fallback, so `msg.sender`
- *         is the identity being represented. The module keeps no storage.
+ *         is the identity being reported. The module keeps no storage.
  *
- *         Represented claim topics are the topics with a schema in {IIdentityUtilities}. The report
+ *         Reported claim topics are the topics with a schema in {IIdentityUtilities}. The report
  *         grows when a schema is registered and shrinks when one is removed. A claim under a topic
  *         without a schema is not reported. Each claim costs two reads through the identity plus one
  *         call to its issuer, so the number of registered schemas is the size knob.
@@ -52,20 +52,20 @@ import { Strings } from "@openzeppelin/contracts/utils/Strings.sol";
  *         it into named fields; decoding on-chain would be the hardest code in this contract.
  *
  */
-contract RepresentableStateModule is IERC7579Module, IXMLRepresentableState {
+contract Erc8100Module is IERC7579Module, IXMLRepresentableState {
 
     using Strings for uint256;
 
     /// @notice One ERC-734 key. `purposes` is the comma-separated purpose list in the order the
     ///         purposes were granted, e.g. "1,3".
-    struct KeyRow {
+    struct Key {
         bytes32 keyHash;
         uint256 keyType;
         string purposes;
     }
 
     /// @notice One ERC-735 claim. `status`: 0 unknown (issuer unreachable), 1 valid, 2 invalid.
-    struct ClaimRow {
+    struct Claim {
         bytes32 claimId;
         uint256 topic;
         uint256 scheme;
@@ -117,12 +117,12 @@ contract RepresentableStateModule is IERC7579Module, IXMLRepresentableState {
             "<Identity xmlns='urn:onchainid:identity:1.0' xmlns:evmstate='urn:evm:state:1.0'",
             " evmstate:chain-id='' evmstate:contract-address='' evmstate:block-number=''>",
             "<Type evmstate:call='getIdentityType()(uint256)'/>",
-            "<RepresentedTopics evmstate:call='representedTopics()(uint256[])' evmstate:item-element='Topic'>",
-            "<Topic evmstate:item-field='0'/></RepresentedTopics>",
-            "<Keys evmstate:call='representedKeys()(tuple(bytes32,uint256,string)[])' evmstate:item-element='Key'>",
+            "<ClaimTopics evmstate:call='claimTopics()(uint256[])' evmstate:item-element='Topic'>",
+            "<Topic evmstate:item-field='0'/></ClaimTopics>",
+            "<Keys evmstate:call='keys()(tuple(bytes32,uint256,string)[])' evmstate:item-element='Key'>",
             "<Key><Hash evmstate:item-field='0' evmstate:format='hex'/><Type evmstate:item-field='1'/>",
             "<Purposes evmstate:item-field='2'/></Key></Keys>",
-            "<Claims evmstate:call='representedClaims()",
+            "<Claims evmstate:call='claims()",
             "(tuple(bytes32,uint256,uint256,address,uint256,uint256,bytes32,bytes,string,uint256)[])'",
             " evmstate:item-element='Claim'>",
             "<Claim><Id evmstate:item-field='0' evmstate:format='hex'/><Topic evmstate:item-field='1'/>",
@@ -139,27 +139,41 @@ contract RepresentableStateModule is IERC7579Module, IXMLRepresentableState {
     // ---------------------------------------------------------------------------------------------
 
     /// @notice The claim topics this module reports: every topic with a registered schema.
-    function representedTopics() public view returns (uint256[] memory) {
+    function claimTopics() public view returns (uint256[] memory) {
         return identityUtilities.getTopicIds();
     }
 
-    /// @notice Every key of the calling identity with its purposes.
-    function representedKeys() external view returns (KeyRow[] memory rows) {
+    /// @notice Every key of the calling identity with its purposes. Use the `(start, end)`
+    ///         overload for identities with many keys.
+    function keys() external view returns (Key[] memory) {
+        return keys(0, type(uint64).max);
+    }
+
+    /// @notice Keys of the calling identity in the index range `[start, end)`. `end` past the
+    ///         count returns the available tail.
+    function keys(uint256 start, uint256 end) public view returns (Key[] memory rows) {
         address identity = msg.sender;
-        bytes32[] memory keyHashes = _registry(identity).getKeys(identity);
-        rows = new KeyRow[](keyHashes.length);
+        bytes32[] memory keyHashes = _registry(identity).getKeys(identity, start, end);
+        rows = new Key[](keyHashes.length);
         for (uint256 i = 0; i < keyHashes.length; i++) {
-            rows[i] = _keyRow(identity, keyHashes[i]);
+            rows[i] = _key(identity, keyHashes[i]);
         }
     }
 
-    /// @notice Every claim of the calling identity under a represented topic.
-    function representedClaims() external view returns (ClaimRow[] memory rows) {
+    /// @notice Every claim of the calling identity under a reported topic. Use the `(start, end)`
+    ///         overload for identities with many claims.
+    function claims() external view returns (Claim[] memory) {
+        return claims(0, type(uint64).max);
+    }
+
+    /// @notice Claims of the calling identity in the index range `[start, end)` of the list
+    ///         ordered by topic then by claim. `end` past the count returns the available tail.
+    function claims(uint256 start, uint256 end) public view returns (Claim[] memory rows) {
         address identity = msg.sender;
-        bytes32[] memory claimIds = _allClaimIds(identity);
-        rows = new ClaimRow[](claimIds.length);
+        bytes32[] memory claimIds = _page(_allClaimIds(identity), start, end);
+        rows = new Claim[](claimIds.length);
         for (uint256 i = 0; i < claimIds.length; i++) {
-            rows[i] = _claimRow(identity, claimIds[i]);
+            rows[i] = _claim(identity, claimIds[i]);
         }
     }
 
@@ -167,9 +181,9 @@ contract RepresentableStateModule is IERC7579Module, IXMLRepresentableState {
     // Keys
     // ---------------------------------------------------------------------------------------------
 
-    function _keyRow(address identity, bytes32 keyHash) private view returns (KeyRow memory) {
+    function _key(address identity, bytes32 keyHash) private view returns (Key memory) {
         (uint256[] memory purposes, uint256 keyType,) = _registry(identity).getKey(identity, keyHash);
-        return KeyRow({ keyHash: keyHash, keyType: keyType, purposes: _joinPurposes(purposes) });
+        return Key({ keyHash: keyHash, keyType: keyType, purposes: _joinPurposes(purposes) });
     }
 
     /// @dev "1,3" for purposes [1, 3]: the first purpose, then ",next" for each remaining one.
@@ -185,9 +199,9 @@ contract RepresentableStateModule is IERC7579Module, IXMLRepresentableState {
     // Claims
     // ---------------------------------------------------------------------------------------------
 
-    /// @dev The claim ids under every represented topic, read through the identity's own fallback.
+    /// @dev The claim ids under every reported topic, read through the identity's own fallback.
     function _allClaimIds(address identity) private view returns (bytes32[] memory claimIds) {
-        uint256[] memory topics = representedTopics();
+        uint256[] memory topics = claimTopics();
         claimIds = new bytes32[](_countClaims(identity, topics));
         uint256 filled = 0;
         for (uint256 i = 0; i < topics.length; i++) {
@@ -205,7 +219,7 @@ contract RepresentableStateModule is IERC7579Module, IXMLRepresentableState {
         }
     }
 
-    function _claimRow(address identity, bytes32 claimId) private view returns (ClaimRow memory) {
+    function _claim(address identity, bytes32 claimId) private view returns (Claim memory) {
         (
             uint256 topic,
             uint256 scheme,
@@ -215,7 +229,7 @@ contract RepresentableStateModule is IERC7579Module, IXMLRepresentableState {
             string memory uri
         ) = IERC735(identity).getClaim(claimId);
 
-        return ClaimRow({
+        return Claim({
             claimId: claimId,
             topic: topic,
             scheme: scheme,
@@ -243,6 +257,20 @@ contract RepresentableStateModule is IERC7579Module, IXMLRepresentableState {
             return _STATUS_INVALID;
         } catch {
             return _STATUS_UNKNOWN;
+        }
+    }
+
+    /// @dev The slice `[start, end)` of `ids`, clamped to the list: `end` past the length returns
+    ///      the tail, `start` past the length returns nothing.
+    function _page(bytes32[] memory ids, uint256 start, uint256 end) private pure returns (bytes32[] memory page) {
+        bool endPastTheList = end > ids.length;
+        if (endPastTheList) end = ids.length;
+        bool startPastTheEnd = start > end;
+        if (startPastTheEnd) start = end;
+
+        page = new bytes32[](end - start);
+        for (uint256 i = 0; i < page.length; i++) {
+            page[i] = ids[start + i];
         }
     }
 

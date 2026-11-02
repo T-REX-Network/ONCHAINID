@@ -24,7 +24,7 @@ import { IKeyExecutor } from "contracts/interface/IKeyExecutor.sol";
 import { IdentityTypes } from "contracts/libraries/IdentityTypes.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyApprovalModule } from "contracts/modules/executors/KeyApprovalModule.sol";
-import { RepresentableStateModule } from "contracts/modules/fallbacks/RepresentableStateModule.sol";
+import { Erc8100Module } from "contracts/modules/fallbacks/Erc8100Module.sol";
 import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
 import { IdentityUtilitiesProxy } from "contracts/proxy/IdentityUtilitiesProxy.sol";
 import { ReputationRegistry } from "contracts/reputation/ReputationRegistry.sol";
@@ -37,7 +37,7 @@ import { Structs } from "contracts/storage/Structs.sol";
  * Deployment order (linear — each contract only needs addresses that already exist):
  *   1. KeyApprovalModule (no deps)
  *   2. AccessManager (single source of truth for every `restricted` function)
- *   3. IdentityUtilities implementation + proxy, then the RepresentableStateModule that reads it
+ *   3. IdentityUtilities implementation + proxy, then the Erc8100Module that reads it
  *   4. IdentityFactory (commits its beacon CREATE3 slot as an immutable)
  *   5. ReputationRegistry (needs AM + factory)
  *   6. ERC734Validator (needs factory + registry)
@@ -119,11 +119,10 @@ contract DeployOnchainID is Script {
         console.log("IdentityUtilities implementation:", address(utilitiesImpl));
         console.log("IdentityUtilities proxy:", address(utilitiesProxy));
 
-        // 3b. RepresentableStateModule (ERC-8100). Stateless; reports the claims under every
+        // 3b. Erc8100Module. Stateless; reports the claims under every
         //     topic with a schema in IdentityUtilities, so it only needs the proxy.
-        RepresentableStateModule representableStateModule =
-            new RepresentableStateModule(IIdentityUtilities(address(utilitiesProxy)));
-        console.log("RepresentableStateModule:", address(representableStateModule));
+        Erc8100Module erc8100Module = new Erc8100Module(IIdentityUtilities(address(utilitiesProxy)));
+        console.log("Erc8100Module:          ", address(erc8100Module));
 
         // 4. IdentityFactory. The beacon cannot exist yet (it needs the Identity
         //    implementation, which needs the validator, which needs this factory), so the
@@ -213,9 +212,8 @@ contract DeployOnchainID is Script {
         // manages its own identity: a caller cannot slip in a module of its own and act
         // through it. Changing the setup later is a parameter update through the AM, not an
         // upgrade. All types start on the same standard bundle.
-        Structs.ModuleInstall[] memory standardModules = _standardModules(
-            address(keyApprovalModule), address(signatureValidator), address(representableStateModule)
-        );
+        Structs.ModuleInstall[] memory standardModules =
+            _standardModules(address(keyApprovalModule), address(signatureValidator), address(erc8100Module));
         uint256[8] memory allTypes = [
             IdentityTypes.ASSET,
             IdentityTypes.INDIVIDUAL,
@@ -269,7 +267,7 @@ contract DeployOnchainID is Script {
         console.log("IdentityFactory:        ", address(idFactory));
         console.log("ERC734Validator:        ", address(signatureValidator));
         console.log("KeyApprovalModule:      ", address(keyApprovalModule));
-        console.log("RepresentableStateModule:", address(representableStateModule));
+        console.log("Erc8100Module:          ", address(erc8100Module));
         console.log("ERC7913WebAuthnVerifier:", address(webAuthnVerifier));
         console.log("=========================================");
     }
@@ -279,14 +277,14 @@ contract DeployOnchainID is Script {
     ///      keys), the KeyApprovalModule execute/approve queue, and the fallback surface for
     ///      the ERC-734 getters and ERC-735 claim methods, all served by the merged
     ///      validator, plus the ERC-8100 template and list getters served by the
-    ///      RepresentableStateModule. Only the queue executor carries a purpose. It needs
+    ///      Erc8100Module. Only the queue executor carries a purpose. It needs
     ///      MANAGEMENT to dispatch self targeted calls once an execution is approved.
-    function _standardModules(address keyApprovalModule, address validator, address representableState)
+    function _standardModules(address keyApprovalModule, address validator, address erc8100)
         private
         pure
         returns (Structs.ModuleInstall[] memory installs)
     {
-        installs = new Structs.ModuleInstall[](23);
+        installs = new Structs.ModuleInstall[](25);
         installs[0] =
             Structs.ModuleInstall({ moduleType: MODULE_TYPE_VALIDATOR, module: validator, initData: "", purpose: 0 });
         installs[1] = Structs.ModuleInstall({
@@ -310,10 +308,12 @@ contract DeployOnchainID is Script {
         installs[16] = _fallback(validator, IERC734.getKey.selector);
         installs[17] = _fallback(validator, IERC734.getKeyPurposes.selector);
         installs[18] = _fallback(validator, IERC734.getKeysByPurpose.selector);
-        installs[19] = _fallback(representableState, RepresentableStateModule.stateXmlTemplate.selector);
-        installs[20] = _fallback(representableState, RepresentableStateModule.representedTopics.selector);
-        installs[21] = _fallback(representableState, RepresentableStateModule.representedKeys.selector);
-        installs[22] = _fallback(representableState, RepresentableStateModule.representedClaims.selector);
+        installs[19] = _fallback(erc8100, Erc8100Module.stateXmlTemplate.selector);
+        installs[20] = _fallback(erc8100, Erc8100Module.claimTopics.selector);
+        installs[21] = _fallback(erc8100, bytes4(keccak256("keys()")));
+        installs[22] = _fallback(erc8100, bytes4(keccak256("keys(uint256,uint256)")));
+        installs[23] = _fallback(erc8100, bytes4(keccak256("claims()")));
+        installs[24] = _fallback(erc8100, bytes4(keccak256("claims(uint256,uint256)")));
     }
 
     function _fallback(address module, bytes4 selector) private pure returns (Structs.ModuleInstall memory) {

@@ -17,18 +17,18 @@ import { IXMLRepresentableState } from "contracts/interface/IRepresentableState.
 import { Errors } from "contracts/libraries/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
-import { RepresentableStateModule } from "contracts/modules/fallbacks/RepresentableStateModule.sol";
+import { Erc8100Module } from "contracts/modules/fallbacks/Erc8100Module.sol";
 import { IdentityUtilitiesProxy } from "contracts/proxy/IdentityUtilitiesProxy.sol";
 
 /// @notice The ERC-8100 module, exercised the way a renderer uses it: every call goes to the
 ///         identity address and lands on the module through the fallback.
-contract RepresentableStateModuleTest is OnchainIDSetup {
+contract Erc8100ModuleTest is OnchainIDSetup {
 
     IdentityUtilities internal utilities;
-    RepresentableStateModule internal module;
+    Erc8100Module internal module;
 
     /// The identity address typed as the module, so calls dispatch through the fallback.
-    RepresentableStateModule internal aliceState;
+    Erc8100Module internal aliceState;
 
     function setUp() public override {
         super.setUp();
@@ -40,16 +40,16 @@ contract RepresentableStateModuleTest is OnchainIDSetup {
         );
         _registerSchema(Constants.CLAIM_TOPIC_666, "Demo", "code", "bytes");
 
-        module = new RepresentableStateModule(IIdentityUtilities(address(utilities)));
+        module = new Erc8100Module(IIdentityUtilities(address(utilities)));
         _installOnAlice();
-        aliceState = RepresentableStateModule(address(aliceIdentity));
+        aliceState = Erc8100Module(address(aliceIdentity));
     }
 
     // ---- lifecycle ----
 
     function test_constructor_RevertWhen_TheRegistryIsZero() public {
         vm.expectRevert(Errors.ZeroAddress.selector);
-        new RepresentableStateModule(IIdentityUtilities(address(0)));
+        new Erc8100Module(IIdentityUtilities(address(0)));
     }
 
     function test_isModuleType_AcceptsFallbackOnly() public view {
@@ -76,38 +76,38 @@ contract RepresentableStateModuleTest is OnchainIDSetup {
 
         assertTrue(_contains(template, "xmlns:evmstate='urn:evm:state:1.0'"));
         assertTrue(_contains(template, "evmstate:call='getIdentityType()(uint256)'"));
-        assertTrue(_contains(template, "evmstate:call='representedTopics()(uint256[])'"));
-        assertTrue(_contains(template, "evmstate:call='representedKeys()(tuple(bytes32,uint256,string)[])'"));
-        assertTrue(_contains(template, "evmstate:call='representedClaims()"));
+        assertTrue(_contains(template, "evmstate:call='claimTopics()(uint256[])'"));
+        assertTrue(_contains(template, "evmstate:call='keys()(tuple(bytes32,uint256,string)[])'"));
+        assertTrue(_contains(template, "evmstate:call='claims()"));
     }
 
     // ---- topics ----
 
-    function test_representedTopics_MirrorsTheRegisteredSchemas() public {
-        uint256[] memory topics = aliceState.representedTopics();
+    function test_claimTopics_MirrorsTheRegisteredSchemas() public {
+        uint256[] memory topics = aliceState.claimTopics();
         assertEq(topics.length, 1);
         assertEq(topics[0], Constants.CLAIM_TOPIC_666);
 
         _registerSchema(Constants.CLAIM_TOPIC_42, "ISIN", "isin", "string");
-        assertEq(aliceState.representedTopics().length, 2);
+        assertEq(aliceState.claimTopics().length, 2);
 
         vm.prank(deployer);
         utilities.removeTopic(Constants.CLAIM_TOPIC_666);
-        topics = aliceState.representedTopics();
+        topics = aliceState.claimTopics();
         assertEq(topics.length, 1);
         assertEq(topics[0], Constants.CLAIM_TOPIC_42);
     }
 
     // ---- keys ----
 
-    function test_representedKeys_ListsEachKeyOnceWithItsPurposes() public {
+    function test_keys_ListsEachKeyOnceWithItsPurposes() public {
         vm.prank(alice);
         aliceIdentity.addKeyWithData(
             ClaimSignerHelper.addressToKey(carol), KeyPurposes.ACTION, KeyTypes.ECDSA, abi.encodePacked(carol), ""
         );
         address queueModule = address(onchainidSetup.keyApprovalModule);
 
-        RepresentableStateModule.KeyRow[] memory rows = aliceState.representedKeys();
+        Erc8100Module.Key[] memory rows = aliceState.keys();
 
         // alice, carol, david and the execution queue module's own MANAGEMENT key.
         assertEq(rows.length, 4);
@@ -120,10 +120,22 @@ contract RepresentableStateModuleTest is OnchainIDSetup {
         assertEq(_keyTypeOf(rows, ClaimSignerHelper.addressToKey(alice)), KeyTypes.ECDSA);
     }
 
+    function test_keys_PaginatesOverTheKeyList() public view {
+        Erc8100Module.Key[] memory all = aliceState.keys();
+        Erc8100Module.Key[] memory firstTwo = aliceState.keys(0, 2);
+        Erc8100Module.Key[] memory tail = aliceState.keys(2, 100);
+
+        assertEq(all.length, 4);
+        assertEq(firstTwo.length, 2);
+        assertEq(tail.length, 2);
+        assertEq(firstTwo[0].keyHash, all[0].keyHash);
+        assertEq(tail[0].keyHash, all[2].keyHash);
+    }
+
     // ---- claims ----
 
-    function test_representedClaims_ReturnsClaim666AsValidWithItsRawPayload() public view {
-        RepresentableStateModule.ClaimRow[] memory rows = aliceState.representedClaims();
+    function test_claims_ReturnsClaim666AsValidWithItsRawPayload() public view {
+        Erc8100Module.Claim[] memory rows = aliceState.claims();
 
         assertEq(rows.length, 1);
         assertEq(rows[0].claimId, aliceClaim666.id);
@@ -138,24 +150,24 @@ contract RepresentableStateModuleTest is OnchainIDSetup {
         assertEq(rows[0].status, 1);
     }
 
-    function test_representedClaims_ReportsUnknownStatusWhenTheIssuerReverts() public {
+    function test_claims_ReportsUnknownStatusWhenTheIssuerReverts() public {
         vm.mockCallRevert(address(claimIssuer), IIdentity.isClaimValid.selector, "down");
 
-        RepresentableStateModule.ClaimRow[] memory rows = aliceState.representedClaims();
+        Erc8100Module.Claim[] memory rows = aliceState.claims();
 
         assertEq(rows.length, 1);
         assertEq(rows[0].status, 0);
     }
 
-    function test_representedClaims_ReportsInvalidWhenTheIssuerSaysSo() public {
+    function test_claims_ReportsInvalidWhenTheIssuerSaysSo() public {
         vm.mockCall(address(claimIssuer), IIdentity.isClaimValid.selector, abi.encode(false));
 
-        RepresentableStateModule.ClaimRow[] memory rows = aliceState.representedClaims();
+        Erc8100Module.Claim[] memory rows = aliceState.claims();
 
         assertEq(rows[0].status, 2);
     }
 
-    function test_representedClaims_SkipsClaimsWhoseTopicHasNoSchema() public {
+    function test_claims_SkipsClaimsWhoseTopicHasNoSchema() public {
         ClaimSignerHelper.Claim memory claim42 = ClaimSignerHelper.buildClaim(
             claimIssuerOwnerPk,
             claimIssuerOwner,
@@ -169,27 +181,51 @@ contract RepresentableStateModuleTest is OnchainIDSetup {
         IERC735(address(aliceIdentity))
             .addClaim(claim42.topic, claim42.scheme, claim42.issuer, claim42.signature, claim42.data, claim42.uri);
 
-        RepresentableStateModule.ClaimRow[] memory rows = aliceState.representedClaims();
+        Erc8100Module.Claim[] memory rows = aliceState.claims();
 
         assertEq(rows.length, 1);
         assertEq(rows[0].topic, Constants.CLAIM_TOPIC_666);
     }
 
-    function test_representedClaims_ReturnsNoRowsWhenNoSchemaIsRegistered() public {
+    function test_claims_PaginatesAcrossTopics() public {
+        _registerSchema(Constants.CLAIM_TOPIC_42, "ISIN", "isin", "string");
+        ClaimSignerHelper.Claim memory claim42 = ClaimSignerHelper.buildClaim(
+            claimIssuerOwnerPk,
+            claimIssuerOwner,
+            address(aliceIdentity),
+            address(claimIssuer),
+            Constants.CLAIM_TOPIC_42,
+            hex"1234",
+            "https://example.com/42"
+        );
+        vm.prank(alice);
+        IERC735(address(aliceIdentity))
+            .addClaim(claim42.topic, claim42.scheme, claim42.issuer, claim42.signature, claim42.data, claim42.uri);
+
+        assertEq(aliceState.claims().length, 2);
+        assertEq(aliceState.claims(0, 1).length, 1);
+        assertEq(aliceState.claims(1, 10).length, 1);
+        assertEq(aliceState.claims(5, 10).length, 0);
+        assertEq(aliceState.claims(1, 10)[0].claimId, aliceState.claims()[1].claimId);
+    }
+
+    function test_claims_ReturnsNoRowsWhenNoSchemaIsRegistered() public {
         vm.prank(deployer);
         utilities.removeTopic(Constants.CLAIM_TOPIC_666);
 
-        assertEq(aliceState.representedClaims().length, 0);
+        assertEq(aliceState.claims().length, 0);
     }
 
     // ---- helpers ----
 
     function _installOnAlice() internal {
         vm.startPrank(alice);
-        _installFallback(RepresentableStateModule.stateXmlTemplate.selector);
-        _installFallback(RepresentableStateModule.representedTopics.selector);
-        _installFallback(RepresentableStateModule.representedKeys.selector);
-        _installFallback(RepresentableStateModule.representedClaims.selector);
+        _installFallback(Erc8100Module.stateXmlTemplate.selector);
+        _installFallback(Erc8100Module.claimTopics.selector);
+        _installFallback(bytes4(keccak256("keys()")));
+        _installFallback(bytes4(keccak256("keys(uint256,uint256)")));
+        _installFallback(bytes4(keccak256("claims()")));
+        _installFallback(bytes4(keccak256("claims(uint256,uint256)")));
         vm.stopPrank();
     }
 
@@ -208,22 +244,14 @@ contract RepresentableStateModuleTest is OnchainIDSetup {
         utilities.addTopic(topicId, name, abi.encode(names), abi.encode(types));
     }
 
-    function _purposesOf(RepresentableStateModule.KeyRow[] memory rows, bytes32 keyHash)
-        internal
-        pure
-        returns (string memory)
-    {
+    function _purposesOf(Erc8100Module.Key[] memory rows, bytes32 keyHash) internal pure returns (string memory) {
         for (uint256 i = 0; i < rows.length; i++) {
             if (rows[i].keyHash == keyHash) return rows[i].purposes;
         }
         revert("key not listed");
     }
 
-    function _keyTypeOf(RepresentableStateModule.KeyRow[] memory rows, bytes32 keyHash)
-        internal
-        pure
-        returns (uint256)
-    {
+    function _keyTypeOf(Erc8100Module.Key[] memory rows, bytes32 keyHash) internal pure returns (uint256) {
         for (uint256 i = 0; i < rows.length; i++) {
             if (rows[i].keyHash == keyHash) return rows[i].keyType;
         }
