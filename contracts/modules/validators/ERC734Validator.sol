@@ -304,6 +304,19 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         return _store().registries[account].keys[keyHash].purposes.values(start, end);
     }
 
+    /// @notice Every key hash registered on `account`, whatever its purposes, MODULE keys
+    ///         included. Returns the full set. Use the `(account, start, end)` overload for
+    ///         large sets.
+    function getKeys(address account) public view returns (bytes32[] memory) {
+        return _store().registries[account].allKeys.values(0, type(uint64).max);
+    }
+
+    /// @notice Paginated variant of {getKeys}. Returns key hashes in the index range
+    ///         `[start, end)`. `end` past the set size returns the available tail.
+    function getKeys(address account, uint256 start, uint256 end) public view returns (bytes32[] memory) {
+        return _store().registries[account].allKeys.values(start, end);
+    }
+
     /// @notice Key hashes with `purpose` on `account`. Returns the full set. Use the
     ///         `(account, purpose, start, end)` overload for large sets. For MANAGEMENT the set
     ///         holds signer keys only; MODULE keys are left out (see {_addKey}). Use
@@ -789,13 +802,14 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         return _store().registries[msg.sender].claimsByTopic[_topic].values();
     }
 
-    /// @notice Paginated variant of {getClaimIdsByTopic} for identities with many claims per topic.
-    function getClaimIdsByTopicPaginated(uint256 _topic, uint256 start, uint256 end)
-        external
+    /// @notice Paginated claim ids of `account` under `topic`, in the index range `[start, end)`.
+    ///         `end` past the set size returns the available tail.
+    function getClaimIdsByTopic(address account, uint256 topic, uint256 start, uint256 end)
+        public
         view
         returns (bytes32[] memory)
     {
-        return _store().registries[msg.sender].claimsByTopic[_topic].values(start, end);
+        return _store().registries[account].claimsByTopic[topic].values(start, end);
     }
 
     /// @notice Mark a claim digest revoked. Issuer-side revocation entry point.

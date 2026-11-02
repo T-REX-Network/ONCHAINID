@@ -26,22 +26,32 @@ import { IClaimIssuer } from "./interface/IClaimIssuer.sol";
 import { IIdentity } from "./interface/IIdentity.sol";
 import { IIdentityUtilities } from "./interface/IIdentityUtilities.sol";
 import { Structs } from "./storage/Structs.sol";
-import { AccessControlUpgradeable } from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import {
+    AccessManagedUpgradeable
+} from "@openzeppelin/contracts-upgradeable/access/manager/AccessManagedUpgradeable.sol";
 import { UUPSUpgradeable } from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
+import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 /**
  * @title IdentityUtilities
  * @notice Contract for registering and retrieving structured topic schemas using encoded string arrays.
- * @dev Inherits from AccessControl and supports UUPS upgrades. Topics define field names and types
- * using ABI-encoded `string[]` arrays.
+ * @dev Topic writes and upgrades are `restricted`: the AccessManager that governs the rest of the
+ * stack decides who may call them. Topics define field names and types using ABI-encoded
+ * `string[]` arrays.
  */
-contract IdentityUtilities is IIdentityUtilities, AccessControlUpgradeable, UUPSUpgradeable {
+contract IdentityUtilities is IIdentityUtilities, AccessManagedUpgradeable, UUPSUpgradeable {
 
-    /// @notice Role identifier for accounts allowed to manage topics
-    bytes32 public constant TOPIC_MANAGER_ROLE = keccak256("TOPIC_MANAGER_ROLE");
+    using EnumerableSet for EnumerableSet.UintSet;
 
-    /// @dev Mapping from topic ID to TopicInfo struct
-    mapping(uint256 => TopicInfo) private _topics;
+    /// @custom:storage-location erc7201:onchainid.IdentityUtilities
+    struct UtilitiesStorage {
+        mapping(uint256 topicId => TopicInfo) topics;
+        EnumerableSet.UintSet topicIds;
+    }
+
+    // keccak256(abi.encode(uint256(keccak256("onchainid.IdentityUtilities")) - 1)) & ~bytes32(uint256(0xff))
+    bytes32 private constant _UTILITIES_STORAGE_SLOT =
+        keccak256(abi.encode(uint256(keccak256(bytes("onchainid.IdentityUtilities"))) - 1)) & ~bytes32(uint256(0xff));
 
     /// @notice Disables initializers on the implementation contract
     constructor() {
@@ -49,13 +59,11 @@ contract IdentityUtilities is IIdentityUtilities, AccessControlUpgradeable, UUPS
     }
 
     /**
-     * @notice Initializes the contract and sets the admin and topic manager roles.
-     * @param admin Address to receive DEFAULT_ADMIN_ROLE and TOPIC_MANAGER_ROLE
+     * @notice Initializes the contract with the AccessManager that gates its writes.
+     * @param initialAuthority The AccessManager shared by the whole stack
      */
-    function initialize(address admin) external initializer {
-        __AccessControl_init();
-        _grantRole(DEFAULT_ADMIN_ROLE, admin);
-        _grantRole(TOPIC_MANAGER_ROLE, admin);
+    function initialize(address initialAuthority) external initializer {
+        __AccessManaged_init(initialAuthority);
     }
 
     /**
@@ -66,13 +74,14 @@ contract IdentityUtilities is IIdentityUtilities, AccessControlUpgradeable, UUPS
         string calldata name,
         bytes calldata encodedFieldNames,
         bytes calldata encodedFieldTypes
-    ) external override onlyRole(TOPIC_MANAGER_ROLE) {
+    ) external override restricted {
         require(bytes(name).length > 0, "Empty topic name");
-        require(_topics[topicId].encodedFieldNames.length == 0, "Topic already exists");
+        require(_store().topics[topicId].encodedFieldNames.length == 0, "Topic already exists");
         _validateFieldArrays(encodedFieldNames, encodedFieldTypes);
 
-        _topics[topicId] =
+        _store().topics[topicId] =
             TopicInfo({ name: name, encodedFieldNames: encodedFieldNames, encodedFieldTypes: encodedFieldTypes });
+        _store().topicIds.add(topicId);
 
         emit TopicAdded(topicId, name, encodedFieldNames, encodedFieldTypes, msg.sender);
     }
@@ -85,12 +94,12 @@ contract IdentityUtilities is IIdentityUtilities, AccessControlUpgradeable, UUPS
         string calldata name,
         bytes calldata encodedFieldNames,
         bytes calldata encodedFieldTypes
-    ) external override onlyRole(TOPIC_MANAGER_ROLE) {
-        require(_topics[topicId].encodedFieldNames.length != 0, "Topic does not exist");
+    ) external override restricted {
+        require(_store().topics[topicId].encodedFieldNames.length != 0, "Topic does not exist");
         require(bytes(name).length > 0, "Empty topic name");
         _validateFieldArrays(encodedFieldNames, encodedFieldTypes);
 
-        _topics[topicId] =
+        _store().topics[topicId] =
             TopicInfo({ name: name, encodedFieldNames: encodedFieldNames, encodedFieldTypes: encodedFieldTypes });
 
         emit TopicUpdated(topicId, name, encodedFieldNames, encodedFieldTypes, msg.sender);
@@ -99,17 +108,39 @@ contract IdentityUtilities is IIdentityUtilities, AccessControlUpgradeable, UUPS
     /**
      * @inheritdoc IIdentityUtilities
      */
-    function removeTopic(uint256 topicId) external override onlyRole(TOPIC_MANAGER_ROLE) {
-        require(_topics[topicId].encodedFieldNames.length != 0, "Topic does not exist");
-        delete _topics[topicId];
+    function removeTopic(uint256 topicId) external override restricted {
+        require(_store().topics[topicId].encodedFieldNames.length != 0, "Topic does not exist");
+        delete _store().topics[topicId];
+        _store().topicIds.remove(topicId);
         emit TopicRemoved(topicId, msg.sender);
     }
 
     /**
      * @inheritdoc IIdentityUtilities
      */
+    function getTopicIds() external view override returns (uint256[] memory) {
+        return _store().topicIds.values();
+    }
+
+    /**
+     * @inheritdoc IIdentityUtilities
+     */
+    function getTopicIds(uint256 start, uint256 end) external view override returns (uint256[] memory) {
+        return _store().topicIds.values(start, end);
+    }
+
+    /**
+     * @inheritdoc IIdentityUtilities
+     */
+    function getTopicIdsCount() external view override returns (uint256) {
+        return _store().topicIds.length();
+    }
+
+    /**
+     * @inheritdoc IIdentityUtilities
+     */
     function getTopic(uint256 topicId) external view override returns (TopicInfo memory) {
-        return _topics[topicId];
+        return _store().topics[topicId];
     }
 
     /**
@@ -121,11 +152,11 @@ contract IdentityUtilities is IIdentityUtilities, AccessControlUpgradeable, UUPS
         override
         returns (string[] memory fieldNames, string[] memory fieldTypes)
     {
-        if (_topics[topicId].encodedFieldNames.length == 0) {
+        if (_store().topics[topicId].encodedFieldNames.length == 0) {
             return (new string[](0), new string[](0));
         }
-        fieldNames = abi.decode(_topics[topicId].encodedFieldNames, (string[]));
-        fieldTypes = abi.decode(_topics[topicId].encodedFieldTypes, (string[]));
+        fieldNames = abi.decode(_store().topics[topicId].encodedFieldNames, (string[]));
+        fieldTypes = abi.decode(_store().topics[topicId].encodedFieldTypes, (string[]));
     }
 
     /**
@@ -134,10 +165,10 @@ contract IdentityUtilities is IIdentityUtilities, AccessControlUpgradeable, UUPS
      * @return string[] Array of field names
      */
     function getFieldNames(uint256 topicId) external view returns (string[] memory) {
-        if (_topics[topicId].encodedFieldNames.length == 0) {
+        if (_store().topics[topicId].encodedFieldNames.length == 0) {
             return new string[](0);
         }
-        return abi.decode(_topics[topicId].encodedFieldNames, (string[]));
+        return abi.decode(_store().topics[topicId].encodedFieldNames, (string[]));
     }
 
     /**
@@ -146,10 +177,10 @@ contract IdentityUtilities is IIdentityUtilities, AccessControlUpgradeable, UUPS
      * @return string[] Array of field types
      */
     function getFieldTypes(uint256 topicId) external view returns (string[] memory) {
-        if (_topics[topicId].encodedFieldTypes.length == 0) {
+        if (_store().topics[topicId].encodedFieldTypes.length == 0) {
             return new string[](0);
         }
-        return abi.decode(_topics[topicId].encodedFieldTypes, (string[]));
+        return abi.decode(_store().topics[topicId].encodedFieldTypes, (string[]));
     }
 
     /**
@@ -160,7 +191,7 @@ contract IdentityUtilities is IIdentityUtilities, AccessControlUpgradeable, UUPS
     function getTopicInfos(uint256[] calldata topicIds) external view returns (TopicInfo[] memory) {
         TopicInfo[] memory topics = new TopicInfo[](topicIds.length);
         for (uint256 i = 0; i < topicIds.length; i++) {
-            topics[i] = _topics[topicIds[i]];
+            topics[i] = _store().topics[topicIds[i]];
         }
         return topics;
     }
@@ -182,7 +213,7 @@ contract IdentityUtilities is IIdentityUtilities, AccessControlUpgradeable, UUPS
 
         for (uint256 i = 0; i < topicIds.length; i++) {
             uint256 topicId = topicIds[i];
-            TopicInfo memory topicInfo = _topics[topicId];
+            TopicInfo memory topicInfo = _store().topics[topicId];
             bytes32[] memory claimIds = IIdentity(identity).getClaimIdsByTopic(topicId);
             for (uint256 j = 0; j < claimIds.length; j++) {
                 result[resultIndex] = _buildClaimInfo(identity, topicId, topicInfo, claimIds[j]);
@@ -195,7 +226,7 @@ contract IdentityUtilities is IIdentityUtilities, AccessControlUpgradeable, UUPS
      * @dev Required override for UUPS upgradability authorization
      * @param newImplementation Address of the new implementation
      */
-    function _authorizeUpgrade(address newImplementation) internal override onlyRole(DEFAULT_ADMIN_ROLE) { }
+    function _authorizeUpgrade(address newImplementation) internal override restricted { }
 
     function _countTotalClaims(address identity, uint256[] calldata topicIds) internal view returns (uint256 total) {
         for (uint256 i = 0; i < topicIds.length; i++) {
@@ -263,7 +294,12 @@ contract IdentityUtilities is IIdentityUtilities, AccessControlUpgradeable, UUPS
         }
     }
 
-    /// @dev Reserved storage space to allow future layout changes
-    uint256[50] private __gap; // solhint-disable-line ordering
+    /// @dev Returns the utilities storage at its ERC-7201 slot.
+    function _store() private pure returns (UtilitiesStorage storage store) {
+        bytes32 slot = _UTILITIES_STORAGE_SLOT;
+        assembly ("memory-safe") {
+            store.slot := slot
+        }
+    }
 
 }
