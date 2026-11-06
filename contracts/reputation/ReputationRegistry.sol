@@ -113,6 +113,7 @@ contract ReputationRegistry is IReputationRegistry, AccessManaged {
 
     /// @inheritdoc IReputationRegistry
     function setClaimAddThreshold(uint128 newThreshold) external restricted {
+        require(newThreshold != 0, Errors.ZeroClaimAddThreshold());
         uint128 previousThreshold = _storage().claimAddThreshold;
         _storage().claimAddThreshold = newThreshold;
         emit ClaimAddThresholdSet(previousThreshold, newThreshold, msg.sender);
