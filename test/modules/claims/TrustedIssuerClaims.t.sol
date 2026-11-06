@@ -192,6 +192,33 @@ contract TrustedIssuerClaimsTest is OnchainIDSetup {
         IClaimIssuer(address(claimIssuer)).removeClaimFrom(FRESH_TOPIC, IIdentity(address(aliceIdentity)));
     }
 
+    /// @notice The ACTION key cannot reach removeClaimFrom by making the issuer call itself
+    ///         either: a self-call below MANAGEMENT is only queued, never run. That holds even
+    ///         when the issuer identity holds MANAGEMENT on itself.
+    function test_removeClaimFrom_NotRunWhen_AnActionKeyRoutesItThroughTheIssuerItself() public {
+        (uint256 scheme,, bytes memory signature, Structs.ClaimData memory data) =
+            _buildSignedClaim(address(aliceIdentity), address(claimIssuer), FRESH_TOPIC);
+        _addClaimToAlice(FRESH_TOPIC, scheme, signature, data, "");
+
+        vm.prank(claimIssuerOwner);
+        claimIssuer.addKeyWithData(
+            ClaimSignerHelper.addressToKey(address(claimIssuer)),
+            KeyPurposes.MANAGEMENT,
+            KeyTypes.ECDSA,
+            abi.encodePacked(address(claimIssuer)),
+            ""
+        );
+        address actionKey = _addActionKeyOnIssuer();
+        bytes memory selfCall =
+            abi.encodeCall(IClaimIssuer.removeClaimFrom, (FRESH_TOPIC, IIdentity(address(aliceIdentity))));
+        vm.prank(actionKey);
+        IKeyExecutor(address(claimIssuer)).execute(address(claimIssuer), 0, selfCall);
+
+        bytes32 claimId = ClaimSignerHelper.computeClaimId(address(claimIssuer), FRESH_TOPIC);
+        (uint256 topic,,,,,) = IIdentity(address(aliceIdentity)).getClaim(claimId);
+        assertEq(topic, FRESH_TOPIC);
+    }
+
     // ============ Negative paths ============
 
     function test_untrustedIssuer_revertsWithReputationBelowThreshold() public {
