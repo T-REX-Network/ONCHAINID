@@ -86,7 +86,6 @@ contract DeployOnchainID is Script {
     uint128 internal constant CLAIM_ISSUER_DEFAULT_REPUTATION = 50;
     uint128 internal constant CLAIM_ADD_THRESHOLD = 50;
 
-
     function run() external {
         uint256 deployerKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
         vm.startBroadcast(deployerKey);
