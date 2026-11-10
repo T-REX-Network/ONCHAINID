@@ -3,6 +3,7 @@ pragma solidity ^0.8.27;
 
 import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { IdentityHelper } from "../helpers/IdentityHelper.sol";
+import { AccessManager } from "@openzeppelin/contracts/access/manager/AccessManager.sol";
 import { ERC1967Proxy } from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IdentityUtilities } from "contracts/IdentityUtilities.sol";
@@ -13,6 +14,8 @@ import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { IdentityUtilitiesProxy } from "contracts/proxy/IdentityUtilitiesProxy.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 import { Test } from "forge-std/Test.sol";
+import { MockOutOfRangeClaimIssuer } from "test/mocks/MockOutOfRangeClaimIssuer.sol";
+import { MockSilentClaimIssuer } from "test/mocks/MockSilentClaimIssuer.sol";
 import { Test as TestContract } from "test/mocks/Test.sol";
 import { TestIdentityUtilities } from "test/mocks/TestIdentityUtilities.sol";
 
@@ -28,8 +31,11 @@ contract IdentityUtilitiesTest is Test {
         (admin, adminPk) = makeAddrAndKey("utilAdmin");
         user = makeAddr("utilUser");
 
+        // `admin` is the AccessManager's ADMIN_ROLE holder, which every `restricted` function
+        // falls back to when no role is set for it.
+        AccessManager accessManager = new AccessManager(admin);
         IdentityUtilities impl = new IdentityUtilities();
-        IdentityUtilitiesProxy proxy = new IdentityUtilitiesProxy(address(impl), admin);
+        IdentityUtilitiesProxy proxy = new IdentityUtilitiesProxy(address(impl), address(accessManager));
         utilities = IdentityUtilities(address(proxy));
     }
 
@@ -1020,6 +1026,28 @@ contract IdentityUtilitiesTest is Test {
         assertFalse(result);
     }
 
+    function test_isClaimValid_ReturnsFalseWhenTheIssuerReturnsNothing() public {
+        TestIdentityUtilities testUtil = new TestIdentityUtilities();
+        (Identity identity,) = IdentityHelper.deployIdentityWithProxy(admin);
+        MockSilentClaimIssuer silentIssuer = new MockSilentClaimIssuer();
+
+        Structs.ClaimData memory emptyData =
+            Structs.ClaimData({ issuedAt: 0, validUntil: 0, metadataHash: 0, payload: hex"" });
+        bool result = testUtil.checkIsClaimValid(address(identity), 3009, address(silentIssuer), hex"", emptyData);
+        assertFalse(result, "an issuer that returns nothing is not valid, and the read does not revert");
+    }
+
+    function test_isClaimValid_ReturnsFalseWhenTheIssuerAnswersNeitherTrueNorFalse() public {
+        TestIdentityUtilities testUtil = new TestIdentityUtilities();
+        (Identity identity,) = IdentityHelper.deployIdentityWithProxy(admin);
+        MockOutOfRangeClaimIssuer outOfRangeIssuer = new MockOutOfRangeClaimIssuer();
+
+        Structs.ClaimData memory emptyData =
+            Structs.ClaimData({ issuedAt: 0, validUntil: 0, metadataHash: 0, payload: hex"" });
+        bool result = testUtil.checkIsClaimValid(address(identity), 3010, address(outOfRangeIssuer), hex"", emptyData);
+        assertFalse(result, "an answer of 2 is not valid, and the read does not revert");
+    }
+
     // =========================================================================
     //  UUPS upgrade
     // =========================================================================
@@ -1045,11 +1073,12 @@ contract IdentityUtilitiesTest is Test {
     // =========================================================================
 
     function test_upgrade_viaERC1967Proxy_revertNonAdmin() public {
-        address deployer = makeAddr("erc1967deployer");
+        AccessManager accessManager = new AccessManager(makeAddr("erc1967deployer"));
         address nonAdmin = makeAddr("erc1967nonAdmin");
 
         IdentityUtilities impl = new IdentityUtilities();
-        ERC1967Proxy proxy = new ERC1967Proxy(address(impl), abi.encodeCall(IdentityUtilities.initialize, (deployer)));
+        ERC1967Proxy proxy =
+            new ERC1967Proxy(address(impl), abi.encodeCall(IdentityUtilities.initialize, (address(accessManager))));
         IdentityUtilities proxyUtil = IdentityUtilities(address(proxy));
 
         IdentityUtilities newImpl = new IdentityUtilities();
@@ -1063,16 +1092,16 @@ contract IdentityUtilitiesTest is Test {
     //  Proxy deployment
     // =========================================================================
 
-    /// @dev The constructor takes the admin, not raw data, so the proxy is always
+    /// @dev The constructor takes the AccessManager, not raw data, so the proxy is always
     ///      initialized on deploy and nobody else can claim it afterwards.
     function test_proxy_deploysInitialized() public {
-        address proxyAdmin = makeAddr("proxyAdmin");
+        address authority = makeAddr("proxyAuthority");
         address attacker = makeAddr("proxyAttacker");
 
         IdentityUtilities impl = new IdentityUtilities();
-        IdentityUtilities proxyUtil = IdentityUtilities(address(new IdentityUtilitiesProxy(address(impl), proxyAdmin)));
+        IdentityUtilities proxyUtil = IdentityUtilities(address(new IdentityUtilitiesProxy(address(impl), authority)));
 
-        assertTrue(proxyUtil.hasRole(proxyUtil.DEFAULT_ADMIN_ROLE(), proxyAdmin));
+        assertEq(proxyUtil.authority(), authority);
 
         vm.prank(attacker);
         vm.expectRevert();

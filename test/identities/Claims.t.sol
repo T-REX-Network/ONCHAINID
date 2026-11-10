@@ -96,6 +96,68 @@ contract ClaimsTest is OnchainIDSetup {
         IIdentity(address(aliceIdentity)).removeClaim(aliceClaim666.id);
     }
 
+    // ============ Claim topics per identity ============
+
+    function test_getClaimTopics_ListsTheTopicOfEachHeldClaim() public {
+        _addExternalIssuerClaim(new ExternalIssuer(), claimTopic);
+
+        uint256[] memory topics = onchainidSetup.signatureValidator.getClaimTopics(address(aliceIdentity));
+
+        assertEq(topics.length, 2, "alice holds claims under topic 666 and the test topic");
+        assertEq(topics[0], Constants.CLAIM_TOPIC_666, "the fixture claim's topic comes first");
+        assertEq(topics[1], claimTopic, "the new claim's topic is appended");
+    }
+
+    function test_getClaimTopics_ListsATopicOnceWhenItsClaimIsReAdded() public {
+        ClaimSignerHelper.Claim memory updated = ClaimSignerHelper.buildClaim(
+            claimIssuerOwnerPk,
+            claimIssuerOwner,
+            address(aliceIdentity),
+            address(claimIssuer),
+            Constants.CLAIM_TOPIC_666,
+            hex"1337",
+            "https://example.com/v2"
+        );
+        vm.prank(alice);
+        IIdentity(address(aliceIdentity))
+            .addClaim(updated.topic, updated.scheme, updated.issuer, updated.signature, updated.data, updated.uri);
+
+        uint256[] memory topics = onchainidSetup.signatureValidator.getClaimTopics(address(aliceIdentity));
+
+        assertEq(topics.length, 1, "re-adding the same claim id keeps one topic entry");
+        assertEq(topics[0], Constants.CLAIM_TOPIC_666);
+    }
+
+    function test_getClaimTopics_KeepsATopicWhileAnotherClaimRemainsUnderIt() public {
+        _addExternalIssuerClaim(new ExternalIssuer(), Constants.CLAIM_TOPIC_666);
+
+        vm.prank(alice);
+        IIdentity(address(aliceIdentity)).removeClaim(aliceClaim666.id);
+
+        uint256[] memory topics = onchainidSetup.signatureValidator.getClaimTopics(address(aliceIdentity));
+        assertEq(topics.length, 1, "the external issuer's claim still sits under topic 666");
+        assertEq(topics[0], Constants.CLAIM_TOPIC_666);
+    }
+
+    function test_getClaimTopics_DropsATopicWhenItsLastClaimIsRemoved() public {
+        vm.prank(alice);
+        IIdentity(address(aliceIdentity)).removeClaim(aliceClaim666.id);
+
+        uint256[] memory topics = onchainidSetup.signatureValidator.getClaimTopics(address(aliceIdentity));
+        assertEq(topics.length, 0, "alice holds no claim any more");
+    }
+
+    function _addExternalIssuerClaim(ExternalIssuer issuer, uint256 topic) internal {
+        Structs.ClaimData memory claimData = Structs.ClaimData({
+            issuedAt: block.timestamp,
+            validUntil: 0,
+            metadataHash: ClaimSignerHelper.metadataHash(1, "uri"),
+            payload: hex"0042"
+        });
+        vm.prank(alice);
+        IIdentity(address(aliceIdentity)).addClaim(topic, 1, address(issuer), "sig", claimData, "uri");
+    }
+
     uint256 internal claimTopic = uint256(keccak256(bytes("test")));
 
     function _claimData(bytes memory payload) internal view returns (Structs.ClaimData memory) {

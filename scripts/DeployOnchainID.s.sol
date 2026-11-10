@@ -33,9 +33,9 @@ import { Structs } from "contracts/storage/Structs.sol";
  * @notice Deploys the full OnchainID protocol stack.
  *
  * Deployment order (linear — each contract only needs addresses that already exist):
- *   1. IdentityUtilities implementation + proxy
- *   2. KeyApprovalModule (no deps)
- *   3. AccessManager (single source of truth for IdentityFactory permissions)
+ *   1. KeyApprovalModule (no deps)
+ *   2. AccessManager (single source of truth for every `restricted` function)
+ *   3. IdentityUtilities implementation + proxy
  *   4. IdentityFactory (commits its beacon CREATE3 slot as an immutable)
  *   5. ReputationRegistry (needs AM + factory)
  *   6. ERC734Validator (needs factory + registry)
@@ -88,21 +88,15 @@ contract DeployOnchainID is Script {
         console.log("Deployer:", deployer);
         console.log("");
 
-        // 1. IdentityUtilities implementation + proxy
-        IdentityUtilities utilitiesImpl = new IdentityUtilities();
-        IdentityUtilitiesProxy utilitiesProxy = new IdentityUtilitiesProxy(address(utilitiesImpl), deployer);
-        console.log("IdentityUtilities implementation:", address(utilitiesImpl));
-        console.log("IdentityUtilities proxy:", address(utilitiesProxy));
-
-        // 2. KeyApprovalModule (the legacy ERC-734 execute/approve queue, no deps). It is
+        // 1. KeyApprovalModule (the legacy ERC-734 execute/approve queue, no deps). It is
         //    part of the module bundle registered per identity type in step 10. The ERC-735
         //    claim surface lives in the ERC734Validator deployed below, installed as claim
         //    fallbacks.
         KeyApprovalModule keyApprovalModule = new KeyApprovalModule();
         console.log("KeyApprovalModule:", address(keyApprovalModule));
 
-        // 3. AccessManager. Single source of truth for IdentityFactory and
-        //    ReputationRegistry permissions. The deployer starts as the AccessManager admin
+        // 2. AccessManager. Single source of truth for IdentityFactory, ReputationRegistry
+        //    and IdentityUtilities permissions. The deployer starts as the AccessManager admin
         //    (`ADMIN_ROLE = 0`). Production deployments should rotate this to a multisig
         //    immediately via `am.grantRole(0, multisig, 0); am.revokeRole(0, deployer);`.
         AccessManager am = new AccessManager(deployer);
@@ -114,6 +108,14 @@ contract DeployOnchainID is Script {
         am.labelRole(ROLE_BEACON_UPGRADER, "BEACON_UPGRADER");
         am.labelRole(ROLE_PUBLIC_AUTHORITY, "PUBLIC_AUTHORITY");
         am.labelRole(ROLE_ISSUER, "ISSUER");
+
+        // 3. IdentityUtilities implementation + proxy. Its topic writes and upgrades are
+        //     `restricted`, so it needs the AccessManager first. No dedicated role: the writes
+        //     fall to ADMIN_ROLE like the ReputationRegistry's.
+        IdentityUtilities utilitiesImpl = new IdentityUtilities();
+        IdentityUtilitiesProxy utilitiesProxy = new IdentityUtilitiesProxy(address(utilitiesImpl), address(am));
+        console.log("IdentityUtilities implementation:", address(utilitiesImpl));
+        console.log("IdentityUtilities proxy:", address(utilitiesProxy));
 
         // 4. IdentityFactory. The beacon cannot exist yet (it needs the Identity
         //    implementation, which needs the validator, which needs this factory), so the
