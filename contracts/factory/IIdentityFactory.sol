@@ -314,6 +314,8 @@ interface IIdentityFactory {
     ///         AccountLinked event is ever emitted for it, it never appears in
     ///         {getAccounts}, and its resolution entry can never be revoked. It also
     ///         means an identity can never be linked as an account of another identity.
+    ///         If its address was linked to another identity before it was deployed, the
+    ///         deploy revokes that link (AccountRevoked) and the address resolves to itself.
     function getIdentity(bytes calldata account) external view returns (address);
 
     /// @notice Same as {getIdentity}, but also returns the wallet's current lifecycle

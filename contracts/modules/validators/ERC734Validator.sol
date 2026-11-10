@@ -167,6 +167,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         address indexed identity, uint256 topic, bytes signature, Structs.ClaimData data, address caller
     );
 
+    /// @notice Emitted when `removeClaimFrom` removes this issuer's claim from another identity.
+    event ClaimRemovedFrom(address indexed identity, uint256 topic, address caller);
+
     /// @notice Factory whose type record identifies trusted claim issuer identities.
     IIdentityFactory public immutable factory;
 
@@ -663,16 +666,19 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         // (Errors.OwnModuleTargetBlocked in SmartAccount), a direct call to the module with a
         // forged calldata tail only reaches the caller's own registry entry (msg.sender selects
         // the registry), and every other outbound call this module makes is a staticcall. As a
-        // last line of defense, {_addKey} rejects the module's own address as a grantee. A new
-        // state-changing outbound call added to this module must revisit this rebind.
-        if (caller == address(this)) {
+        // last line of defense, {_addKey} rejects the module's own address as a grantee. The
+        // only other state-changing outbound call, {removeClaimFrom}, calls removeClaim, not
+        // this. A new one added to this module must revisit this rebind.
+        bool calledThroughAddClaimTo = caller == address(this);
+        if (calledThroughAddClaimTo) {
             caller = _issuer;
         }
-        // Either a claim key on the target, or the caller is the declared issuer itself and
-        // passes the trusted-issuer gate. A key grant is the target's own authorization, so
-        // it is never overridden by the global gate.
+        // Either a claim key on the target, or the issuer's own addClaimTo and the issuer passes
+        // the trusted-issuer gate. A key grant is the target's own authorization, so it is never
+        // overridden by the global gate. A direct call from the issuer identity is not enough:
+        // any of its ACTION keys can make one, and the target cannot tell which key did.
         if (!_hasClaimKey(msg.sender, caller, false)) {
-            require(caller == _issuer, Errors.SenderDoesNotHaveClaimSignerKey());
+            require(calledThroughAddClaimTo, Errors.SenderDoesNotHaveClaimSignerKey());
             _requireTrustedIssuer(_issuer);
         }
         return _addClaim(msg.sender, _topic, _scheme, _issuer, _signature, _data, _uri, caller);
@@ -740,10 +746,17 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         uint256 topic = c.topic;
         require(topic != 0, Errors.ClaimNotRegistered(_claimId));
 
-        // CLAIM_ADDER cannot remove; CLAIM_SIGNER can. A trusted issuer can remove
-        // its own claims only, so it can never touch another issuer's claims.
+        // The issuer's {removeClaimFrom} reaches here with this module as the ERC-2771 caller,
+        // the same way {addClaimTo} reaches addClaim. It builds the claim id from the issuer's
+        // own address, so the stored issuer is the identity that sent it.
+        bool calledThroughRemoveClaimFrom = caller == address(this);
+        if (calledThroughRemoveClaimFrom) {
+            caller = c.issuer;
+        }
+        // CLAIM_ADDER cannot remove; CLAIM_SIGNER can. Otherwise only the issuer's own
+        // removeClaimFrom, and only while the issuer passes the trusted-issuer gate.
         if (!_hasClaimKey(account, caller, true)) {
-            require(caller == c.issuer, Errors.SenderDoesNotHaveClaimSignerKey());
+            require(calledThroughRemoveClaimFrom, Errors.SenderDoesNotHaveClaimSignerKey());
             _requireTrustedIssuer(c.issuer);
         }
 
@@ -868,10 +881,26 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
 
         // This call lands back in {addClaim} on the target, with this module as the ERC-2771
         // caller. addClaim detects that and checks the target's claim keys against `account`,
-        // passed here as the issuer. Keep this the module's only state-changing external call
-        // to an arbitrary address; the issuer rebinding in addClaim depends on it.
+        // passed here as the issuer. This and {removeClaimFrom} must stay the module's only
+        // state-changing external calls; the issuer rebinding in addClaim and removeClaim
+        // depends on it.
         _identity.addClaim(_topic, _scheme, account, _signature, _data, _uri);
         emit ClaimAddedTo(address(_identity), _topic, _signature, _data, caller);
+    }
+
+    /// @notice Remove this issuer's claim on `_topic` from the target identity via its
+    ///         `removeClaim`. Accepted when the target granted the issuer identity a
+    ///         CLAIM_SIGNER key, or when the issuer passes the trusted-issuer gate.
+    function removeClaimFrom(uint256 _topic, IIdentity _identity) external {
+        address account = msg.sender;
+        address caller = _msgSender();
+        _requireManagement(account, caller);
+
+        // The id is built from this issuer's address, so the target's removeClaim can only reach
+        // this issuer's own claim. removeClaim relies on that when it rebinds the caller.
+        bytes32 claimId = keccak256(abi.encode(account, _topic));
+        _identity.removeClaim(claimId);
+        emit ClaimRemovedFrom(address(_identity), _topic, caller);
     }
 
     /// @notice The `metadataHash` a claim's `ClaimData` must carry for `_scheme` and `_uri`:
