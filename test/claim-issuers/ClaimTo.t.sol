@@ -139,6 +139,21 @@ contract ClaimToTest is OnchainIDSetup {
         IClaimIssuer(address(claimIssuer)).addClaimTo(TOPIC, 1, signature, data, "uri", IIdentity(address(bobIdentity)));
     }
 
+    /// @notice Removal takes the same keyless path, so a zero threshold must block it too. The
+    ///         claim is added while the threshold is set, then the registry reports 0.
+    function test_removeClaimFrom_reverts_whenThresholdIsZero() public {
+        (bytes memory signature, Structs.ClaimData memory data) = _buildIssuerClaim(address(bobIdentity));
+        vm.prank(claimIssuerOwner);
+        IClaimIssuer(address(claimIssuer)).addClaimTo(TOPIC, 1, signature, data, "uri", IIdentity(address(bobIdentity)));
+
+        ReputationRegistry registry = onchainidSetup.reputationRegistry;
+        vm.mockCall(address(registry), abi.encodeCall(ReputationRegistry.claimAddThreshold, ()), abi.encode(uint128(0)));
+
+        vm.prank(claimIssuerOwner);
+        vm.expectRevert(Errors.ZeroClaimAddThreshold.selector);
+        IClaimIssuer(address(claimIssuer)).removeClaimFrom(TOPIC, IIdentity(address(bobIdentity)));
+    }
+
     /// @notice M-02 regression: the shared module singleton must never hold a key on any identity.
     ///         Before the fix the singleton was the ERC-2771 caller seen by the target, so one such
     ///         grant admitted every issuer at once. The module now rejects the grant itself.
