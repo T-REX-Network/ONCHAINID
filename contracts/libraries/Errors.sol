@@ -100,6 +100,12 @@ library Errors {
     ///         their role gate must stay restricted.
     error SingleBindingTypeCannotBePublic(uint256 identityType);
 
+    /// @notice Reverts when a true single-binding flag would be cleared or the policy
+    ///         removed. The flag stays true from the moment it is set, including before
+    ///         any identity of that type exists. The role and the self-deploy flag can
+    ///         still change.
+    error SingleBindingPolicyLocked(uint256 identityType);
+
     /// @notice Reverts when an identity is initialized with no validator and no executor
     ///         module. Without either, the account cannot verify signatures or dispatch
     ///         outbound calls.
@@ -210,6 +216,11 @@ library Errors {
     /// @notice Reverts when the resolved CLAIM_ISSUER identity's reputation score is
     ///         below the consumer's claim-add threshold.
     error ReputationBelowClaimAddThreshold(address identity, uint256 score, uint256 threshold);
+
+    /// @notice Reverts when a claim-add threshold is zero. Zero would accept every
+    ///         score, including an issuer that has none. The setter rejects it, and
+    ///         the validator rejects it on registries that still hold it.
+    error ZeroClaimAddThreshold();
 
     /* ----- ERC734Validator field caps (see {Structs}) ----- */
 

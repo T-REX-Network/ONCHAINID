@@ -86,6 +86,13 @@ contract ClaimToTest is OnchainIDSetup {
     ///         trusted-issuer gate (factory CLAIM_ISSUER type + reputation threshold). No
     ///         per-target key grant is needed for a trusted issuer.
     function test_addClaimTo_writesClaim_whenIssuerIsTrusted_noGrantOnTarget() public {
+        // A fresh registry reads 0, and 0 is not a trusted-issuer gate. One is the
+        // smallest score that passes a threshold of one.
+        vm.startPrank(deployer);
+        onchainidSetup.reputationRegistry.setClaimAddThreshold(1);
+        onchainidSetup.reputationRegistry.setReputation(address(claimIssuer), 1);
+        vm.stopPrank();
+
         (bytes memory signature, Structs.ClaimData memory data) = _buildIssuerClaim(address(bobIdentity));
 
         vm.prank(claimIssuerOwner);
