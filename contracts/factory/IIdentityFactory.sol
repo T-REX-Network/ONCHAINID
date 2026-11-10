@@ -40,6 +40,10 @@ import { Structs } from "../storage/Structs.sol";
 ///
 ///         Both setters are `restricted` (resolved by the AM).
 ///
+///         Admin events record `msg.sender` as the caller. When the AccessManager runs the
+///         call (a role with an execution delay, or a call sent through its `execute`), that
+///         is the AccessManager; the operator is in its `OperationScheduled` event or the tx.
+///
 ///         Wallets are addressed as ERC-7930 interoperable address envelopes (`bytes`).
 ///         EVM wallets are wrapped via OZ `InteroperableAddress.formatEvmV1(chainId, addr)`.
 ///         Non-EVM wallets (Solana, Bitcoin, Stellar, ...) supply the envelope for their
