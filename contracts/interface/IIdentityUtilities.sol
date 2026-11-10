@@ -117,23 +117,6 @@ interface IIdentityUtilities {
     function removeTopic(uint256 topicId) external;
 
     /**
-     * @notice Returns the ids of every registered topic, in no particular order. Use the
-     *         `(start, end)` overload for large registries.
-     */
-    function getTopicIds() external view returns (uint256[] memory);
-
-    /**
-     * @notice Paginated variant of {getTopicIds}: ids in the index range `[start, end)`.
-     *         `end` past the count returns the available tail.
-     */
-    function getTopicIds(uint256 start, uint256 end) external view returns (uint256[] memory);
-
-    /**
-     * @notice Number of registered topics
-     */
-    function getTopicIdsCount() external view returns (uint256);
-
-    /**
      * @notice Retrieves the raw TopicInfo struct associated with a given topic ID
      * @param topicId The ID of the topic to retrieve
      * @return topic The full TopicInfo struct containing the name, encoded field names, and types

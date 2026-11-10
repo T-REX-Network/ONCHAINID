@@ -3,28 +3,25 @@ pragma solidity ^0.8.27;
 
 import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
+import { MockOutOfRangeClaimIssuer } from "../mocks/MockOutOfRangeClaimIssuer.sol";
+import { MockSilentClaimIssuer } from "../mocks/MockSilentClaimIssuer.sol";
 import { Constants } from "../utils/Constants.sol";
 import {
     MODULE_TYPE_EXECUTOR,
     MODULE_TYPE_FALLBACK,
     MODULE_TYPE_VALIDATOR
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
-import { IdentityUtilities } from "contracts/IdentityUtilities.sol";
 import { IERC735 } from "contracts/interface/IERC735.sol";
 import { IIdentity } from "contracts/interface/IIdentity.sol";
-import { IIdentityUtilities } from "contracts/interface/IIdentityUtilities.sol";
 import { IXMLRepresentableState } from "contracts/interface/IRepresentableState.sol";
-import { Errors } from "contracts/libraries/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { Erc8100Module } from "contracts/modules/fallbacks/Erc8100Module.sol";
-import { IdentityUtilitiesProxy } from "contracts/proxy/IdentityUtilitiesProxy.sol";
 
 /// @notice The ERC-8100 module, exercised the way a renderer uses it: every call goes to the
 ///         identity address and lands on the module through the fallback.
 contract Erc8100ModuleTest is OnchainIDSetup {
 
-    IdentityUtilities internal utilities;
     Erc8100Module internal module;
 
     /// The identity address typed as the module, so calls dispatch through the fallback.
@@ -33,24 +30,12 @@ contract Erc8100ModuleTest is OnchainIDSetup {
     function setUp() public override {
         super.setUp();
 
-        // The harness's AccessManager governs the registry; `deployer` holds its ADMIN_ROLE.
-        IdentityUtilities implementation = new IdentityUtilities();
-        utilities = IdentityUtilities(
-            address(new IdentityUtilitiesProxy(address(implementation), address(onchainidSetup.accessManager)))
-        );
-        _registerSchema(Constants.CLAIM_TOPIC_666, "Demo", "code", "bytes");
-
-        module = new Erc8100Module(IIdentityUtilities(address(utilities)));
+        module = new Erc8100Module();
         _installOnAlice();
         aliceState = Erc8100Module(address(aliceIdentity));
     }
 
     // ---- lifecycle ----
-
-    function test_constructor_RevertWhen_TheRegistryIsZero() public {
-        vm.expectRevert(Errors.ZeroAddress.selector);
-        new Erc8100Module(IIdentityUtilities(address(0)));
-    }
 
     function test_isModuleType_AcceptsFallbackOnly() public view {
         assertTrue(module.isModuleType(MODULE_TYPE_FALLBACK));
@@ -83,18 +68,18 @@ contract Erc8100ModuleTest is OnchainIDSetup {
 
     // ---- topics ----
 
-    function test_stateClaimTopics_MirrorsTheRegisteredSchemas() public {
+    function test_stateClaimTopics_ListsTheTopicsTheIdentityHoldsClaimsFor() public {
         uint256[] memory topics = aliceState.stateClaimTopics();
-        assertEq(topics.length, 1);
+        assertEq(topics.length, 1, "alice starts with the fixture claim only");
         assertEq(topics[0], Constants.CLAIM_TOPIC_666);
 
-        _registerSchema(Constants.CLAIM_TOPIC_42, "ISIN", "isin", "string");
-        assertEq(aliceState.stateClaimTopics().length, 2);
+        _addClaim42ToAlice();
+        assertEq(aliceState.stateClaimTopics().length, 2, "a claim under a new topic adds the topic");
 
-        vm.prank(deployer);
-        utilities.removeTopic(Constants.CLAIM_TOPIC_666);
+        vm.prank(alice);
+        IERC735(address(aliceIdentity)).removeClaim(aliceClaim666.id);
         topics = aliceState.stateClaimTopics();
-        assertEq(topics.length, 1);
+        assertEq(topics.length, 1, "removing the last claim of a topic drops the topic");
         assertEq(topics[0], Constants.CLAIM_TOPIC_42);
     }
 
@@ -159,6 +144,24 @@ contract Erc8100ModuleTest is OnchainIDSetup {
         assertEq(rows[0].status, 0);
     }
 
+    function test_stateClaims_ReportsUnknownStatusWhenTheIssuerReturnsNothing() public {
+        _replaceIssuerIsClaimValidHandler(address(new MockSilentClaimIssuer()));
+
+        Erc8100Module.Claim[] memory rows = aliceState.stateClaims();
+
+        assertEq(rows.length, 1, "the snapshot still lists the claim");
+        assertEq(rows[0].status, 0, "an issuer that returns nothing is unknown");
+    }
+
+    function test_stateClaims_ReportsUnknownStatusWhenTheIssuerAnswersNeitherTrueNorFalse() public {
+        _replaceIssuerIsClaimValidHandler(address(new MockOutOfRangeClaimIssuer()));
+
+        Erc8100Module.Claim[] memory rows = aliceState.stateClaims();
+
+        assertEq(rows.length, 1, "the snapshot still lists the claim");
+        assertEq(rows[0].status, 0, "an answer of 2 is unknown, not valid");
+    }
+
     function test_stateClaims_ReportsInvalidWhenTheIssuerSaysSo() public {
         vm.mockCall(address(claimIssuer), IIdentity.isClaimValid.selector, abi.encode(false));
 
@@ -167,40 +170,18 @@ contract Erc8100ModuleTest is OnchainIDSetup {
         assertEq(rows[0].status, 2);
     }
 
-    function test_stateClaims_SkipsClaimsWhoseTopicHasNoSchema() public {
-        ClaimSignerHelper.Claim memory claim42 = ClaimSignerHelper.buildClaim(
-            claimIssuerOwnerPk,
-            claimIssuerOwner,
-            address(aliceIdentity),
-            address(claimIssuer),
-            Constants.CLAIM_TOPIC_42,
-            hex"1234",
-            "https://example.com/42"
-        );
-        vm.prank(alice);
-        IERC735(address(aliceIdentity))
-            .addClaim(claim42.topic, claim42.scheme, claim42.issuer, claim42.signature, claim42.data, claim42.uri);
+    function test_stateClaims_ReportsEveryClaimTheIdentityHolds() public {
+        _addClaim42ToAlice();
 
         Erc8100Module.Claim[] memory rows = aliceState.stateClaims();
 
-        assertEq(rows.length, 1);
+        assertEq(rows.length, 2, "both claims are reported, whatever schemas exist");
         assertEq(rows[0].topic, Constants.CLAIM_TOPIC_666);
+        assertEq(rows[1].topic, Constants.CLAIM_TOPIC_42);
     }
 
     function test_stateClaims_PaginatesWithinATopic() public {
-        _registerSchema(Constants.CLAIM_TOPIC_42, "ISIN", "isin", "string");
-        ClaimSignerHelper.Claim memory claim42 = ClaimSignerHelper.buildClaim(
-            claimIssuerOwnerPk,
-            claimIssuerOwner,
-            address(aliceIdentity),
-            address(claimIssuer),
-            Constants.CLAIM_TOPIC_42,
-            hex"1234",
-            "https://example.com/42"
-        );
-        vm.prank(alice);
-        IERC735(address(aliceIdentity))
-            .addClaim(claim42.topic, claim42.scheme, claim42.issuer, claim42.signature, claim42.data, claim42.uri);
+        _addClaim42ToAlice();
 
         Erc8100Module.Claim[] memory topic666Rows = aliceState.stateClaims(Constants.CLAIM_TOPIC_666, 0, 10);
         Erc8100Module.Claim[] memory topic42Rows = aliceState.stateClaims(Constants.CLAIM_TOPIC_42, 0, 10);
@@ -212,11 +193,11 @@ contract Erc8100ModuleTest is OnchainIDSetup {
         assertEq(aliceState.stateClaims(Constants.CLAIM_TOPIC_42, 1, 10).length, 0, "start past the set");
     }
 
-    function test_stateClaims_ReturnsNoRowsWhenNoSchemaIsRegistered() public {
-        vm.prank(deployer);
-        utilities.removeTopic(Constants.CLAIM_TOPIC_666);
+    function test_stateClaims_ReturnsNoRowsWhenTheIdentityHoldsNoClaim() public {
+        vm.prank(alice);
+        IERC735(address(aliceIdentity)).removeClaim(aliceClaim666.id);
 
-        assertEq(aliceState.stateClaims().length, 0);
+        assertEq(aliceState.stateClaims().length, 0, "alice holds no claim any more");
     }
 
     // ---- helpers ----
@@ -236,15 +217,29 @@ contract Erc8100ModuleTest is OnchainIDSetup {
         aliceIdentity.installModule(MODULE_TYPE_FALLBACK, address(module), abi.encodePacked(selector));
     }
 
-    function _registerSchema(uint256 topicId, string memory name, string memory fieldName, string memory fieldType)
-        internal
-    {
-        string[] memory names = new string[](1);
-        names[0] = fieldName;
-        string[] memory types = new string[](1);
-        types[0] = fieldType;
-        vm.prank(deployer);
-        utilities.addTopic(topicId, name, abi.encode(names), abi.encode(types));
+    function _addClaim42ToAlice() internal {
+        ClaimSignerHelper.Claim memory claim42 = ClaimSignerHelper.buildClaim(
+            claimIssuerOwnerPk,
+            claimIssuerOwner,
+            address(aliceIdentity),
+            address(claimIssuer),
+            Constants.CLAIM_TOPIC_42,
+            hex"1234",
+            "https://example.com/42"
+        );
+        vm.prank(alice);
+        IERC735(address(aliceIdentity))
+            .addClaim(claim42.topic, claim42.scheme, claim42.issuer, claim42.signature, claim42.data, claim42.uri);
+    }
+
+    /// @dev The issuer's MANAGEMENT key swaps the handler that answers `isClaimValid` on the
+    ///      issuer identity. No grant from alice is needed, which is why alice cannot opt out.
+    function _replaceIssuerIsClaimValidHandler(address handler) internal {
+        bytes memory selector = abi.encodePacked(IIdentity.isClaimValid.selector);
+        vm.startPrank(claimIssuerOwner);
+        claimIssuer.uninstallModule(MODULE_TYPE_FALLBACK, address(onchainidSetup.signatureValidator), selector);
+        claimIssuer.installModule(MODULE_TYPE_FALLBACK, handler, selector);
+        vm.stopPrank();
     }
 
     function _purposesOf(Erc8100Module.Key[] memory rows, bytes32 keyHash) internal pure returns (string memory) {

@@ -94,7 +94,8 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     ///      keys per purpose, with one exception: MODULE keys are kept out of the MANAGEMENT set
     ///      (see {_addKey}), so that set holds signer keys only. Module keys still appear under
     ///      every other purpose. `claims` / `claimsByTopic` / `revokedDigests` hold the claim
-    ///      registry (see the claims section below).
+    ///      registry (see the claims section below). `claimTopics` lists every topic with at
+    ///      least one claim; it is appended last so the fields before it keep their slots.
     struct AccountRegistry {
         mapping(bytes32 keyHash => Key) keys;
         mapping(uint256 purpose => EnumerableSet.Bytes32Set) byPurpose;
@@ -102,6 +103,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         mapping(bytes32 claimId => Structs.Claim) claims;
         mapping(uint256 topic => EnumerableSet.Bytes32Set) claimsByTopic;
         mapping(bytes32 digest => bool) revokedDigests;
+        EnumerableSet.UintSet claimTopics;
     }
 
     /// @dev One registry per account. Singleton deployment shared across all installers.
@@ -724,6 +726,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
             Structs.Claim({ topic: topic, scheme: scheme, issuer: issuer, signature: signature, data: data, uri: uri });
 
         if (s.claimsByTopic[topic].add(claimId)) {
+            s.claimTopics.add(topic);
             emit ClaimAdded(account, claimId, topic, scheme, issuer, signature, data, uri, caller);
         } else {
             emit ClaimChanged(account, claimId, topic, scheme, issuer, signature, data, uri, caller);
@@ -774,6 +777,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         }
 
         s.claimsByTopic[topic].remove(_claimId);
+        if (s.claimsByTopic[topic].length() == 0) {
+            s.claimTopics.remove(topic);
+        }
         emit ClaimRemoved(account, _claimId, topic, c.scheme, c.issuer, c.signature, c.data, c.uri, caller);
         delete s.claims[_claimId];
 
@@ -800,6 +806,11 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     /// @inheritdoc IERC735
     function getClaimIdsByTopic(uint256 _topic) external view returns (bytes32[] memory claimIds) {
         return _store().registries[msg.sender].claimsByTopic[_topic].values();
+    }
+
+    /// @notice The topics under which `account` holds at least one claim, in no particular order.
+    function getClaimTopics(address account) public view returns (uint256[] memory) {
+        return _store().registries[account].claimTopics.values();
     }
 
     /// @notice Paginated claim ids of `account` under `topic`, in the index range `[start, end)`.

@@ -30,7 +30,7 @@ import {
     AccessManagedUpgradeable
 } from "@openzeppelin/contracts-upgradeable/access/manager/AccessManagedUpgradeable.sol";
 import { UUPSUpgradeable } from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
-import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
+import { LowLevelCall } from "@openzeppelin/contracts/utils/LowLevelCall.sol";
 
 /**
  * @title IdentityUtilities
@@ -41,12 +41,9 @@ import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableS
  */
 contract IdentityUtilities is IIdentityUtilities, AccessManagedUpgradeable, UUPSUpgradeable {
 
-    using EnumerableSet for EnumerableSet.UintSet;
-
     /// @custom:storage-location erc7201:onchainid.IdentityUtilities
     struct UtilitiesStorage {
         mapping(uint256 topicId => TopicInfo) topics;
-        EnumerableSet.UintSet topicIds;
     }
 
     // keccak256(abi.encode(uint256(keccak256("onchainid.IdentityUtilities")) - 1)) & ~bytes32(uint256(0xff))
@@ -81,7 +78,6 @@ contract IdentityUtilities is IIdentityUtilities, AccessManagedUpgradeable, UUPS
 
         _store().topics[topicId] =
             TopicInfo({ name: name, encodedFieldNames: encodedFieldNames, encodedFieldTypes: encodedFieldTypes });
-        _store().topicIds.add(topicId);
 
         emit TopicAdded(topicId, name, encodedFieldNames, encodedFieldTypes, msg.sender);
     }
@@ -111,29 +107,7 @@ contract IdentityUtilities is IIdentityUtilities, AccessManagedUpgradeable, UUPS
     function removeTopic(uint256 topicId) external override restricted {
         require(_store().topics[topicId].encodedFieldNames.length != 0, "Topic does not exist");
         delete _store().topics[topicId];
-        _store().topicIds.remove(topicId);
         emit TopicRemoved(topicId, msg.sender);
-    }
-
-    /**
-     * @inheritdoc IIdentityUtilities
-     */
-    function getTopicIds() external view override returns (uint256[] memory) {
-        return _store().topicIds.values();
-    }
-
-    /**
-     * @inheritdoc IIdentityUtilities
-     */
-    function getTopicIds(uint256 start, uint256 end) external view override returns (uint256[] memory) {
-        return _store().topicIds.values(start, end);
-    }
-
-    /**
-     * @inheritdoc IIdentityUtilities
-     */
-    function getTopicIdsCount() external view override returns (uint256) {
-        return _store().topicIds.length();
     }
 
     /**
@@ -235,6 +209,8 @@ contract IdentityUtilities is IIdentityUtilities, AccessManagedUpgradeable, UUPS
         }
     }
 
+    /// @dev Asks the issuer with a low-level call, so one issuer that returns nothing or a
+    ///      malformed bool cannot make the whole listing revert. Only an answer of exactly 1 is valid.
     function _isClaimValid(
         address identity,
         uint256 topicId,
@@ -243,11 +219,15 @@ contract IdentityUtilities is IIdentityUtilities, AccessManagedUpgradeable, UUPS
         Structs.ClaimData memory data
     ) internal view returns (bool) {
         if (issuer == address(0)) return false;
-        try IClaimIssuer(issuer).isClaimValid(IIdentity(identity), topicId, signature, data) returns (bool valid) {
-            return valid;
-        } catch {
-            return false;
-        }
+
+        bytes memory isClaimValidCall =
+            abi.encodeCall(IClaimIssuer.isClaimValid, (IIdentity(identity), topicId, signature, data));
+        (bool callSucceeded, bytes32 answer,) = LowLevelCall.staticcallReturn64Bytes(issuer, isClaimValidCall);
+        bool answeredOneWord = LowLevelCall.returnDataSize() >= 32;
+
+        if (!callSucceeded) return false;
+        if (!answeredOneWord) return false;
+        return answer == bytes32(uint256(1));
     }
 
     function _buildClaimInfo(address identity, uint256 topicId, TopicInfo memory topicInfo, bytes32 claimId)

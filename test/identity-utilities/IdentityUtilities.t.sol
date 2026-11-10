@@ -14,6 +14,8 @@ import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { IdentityUtilitiesProxy } from "contracts/proxy/IdentityUtilitiesProxy.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 import { Test } from "forge-std/Test.sol";
+import { MockOutOfRangeClaimIssuer } from "test/mocks/MockOutOfRangeClaimIssuer.sol";
+import { MockSilentClaimIssuer } from "test/mocks/MockSilentClaimIssuer.sol";
 import { Test as TestContract } from "test/mocks/Test.sol";
 import { TestIdentityUtilities } from "test/mocks/TestIdentityUtilities.sol";
 
@@ -60,36 +62,6 @@ contract IdentityUtilitiesTest is Test {
     ) internal {
         vm.prank(admin);
         utilities.addTopic(topicId, name, _encodeNames(fieldNames), _encodeTypes(fieldTypes));
-    }
-
-    // =========================================================================
-    //  Topic id list
-    // =========================================================================
-
-    function test_getTopicIds_ListsAddedTopicsAndForgetsRemovedOnes() public {
-        _addDefaultTopic(1, "ISIN", _singleStringArray("isin"), _singleStringArray("string"));
-        _addDefaultTopic(2, "LEI", _singleStringArray("lei"), _singleStringArray("string"));
-        assertEq(utilities.getTopicIdsCount(), 2);
-
-        vm.prank(admin);
-        utilities.removeTopic(1);
-
-        uint256[] memory ids = utilities.getTopicIds();
-        assertEq(ids.length, 1);
-        assertEq(ids[0], 2);
-    }
-
-    function test_getTopicIds_PaginatesOverTheRegisteredIds() public {
-        _addDefaultTopic(1, "ISIN", _singleStringArray("isin"), _singleStringArray("string"));
-        _addDefaultTopic(2, "LEI", _singleStringArray("lei"), _singleStringArray("string"));
-        _addDefaultTopic(3, "NAV", _singleStringArray("nav"), _singleStringArray("uint256"));
-
-        uint256[] memory firstPage = utilities.getTopicIds(0, 2);
-        uint256[] memory secondPage = utilities.getTopicIds(2, 10);
-
-        assertEq(firstPage.length, 2);
-        assertEq(secondPage.length, 1);
-        assertEq(secondPage[0], 3);
     }
 
     // =========================================================================
@@ -1052,6 +1024,28 @@ contract IdentityUtilitiesTest is Test {
             Structs.ClaimData({ issuedAt: 0, validUntil: 0, metadataHash: 0, payload: hex"" });
         bool result = testUtil.checkIsClaimValid(address(identity), 3008, address(invalidContract), hex"", emptyData);
         assertFalse(result);
+    }
+
+    function test_isClaimValid_ReturnsFalseWhenTheIssuerReturnsNothing() public {
+        TestIdentityUtilities testUtil = new TestIdentityUtilities();
+        (Identity identity,) = IdentityHelper.deployIdentityWithProxy(admin);
+        MockSilentClaimIssuer silentIssuer = new MockSilentClaimIssuer();
+
+        Structs.ClaimData memory emptyData =
+            Structs.ClaimData({ issuedAt: 0, validUntil: 0, metadataHash: 0, payload: hex"" });
+        bool result = testUtil.checkIsClaimValid(address(identity), 3009, address(silentIssuer), hex"", emptyData);
+        assertFalse(result, "an issuer that returns nothing is not valid, and the read does not revert");
+    }
+
+    function test_isClaimValid_ReturnsFalseWhenTheIssuerAnswersNeitherTrueNorFalse() public {
+        TestIdentityUtilities testUtil = new TestIdentityUtilities();
+        (Identity identity,) = IdentityHelper.deployIdentityWithProxy(admin);
+        MockOutOfRangeClaimIssuer outOfRangeIssuer = new MockOutOfRangeClaimIssuer();
+
+        Structs.ClaimData memory emptyData =
+            Structs.ClaimData({ issuedAt: 0, validUntil: 0, metadataHash: 0, payload: hex"" });
+        bool result = testUtil.checkIsClaimValid(address(identity), 3010, address(outOfRangeIssuer), hex"", emptyData);
+        assertFalse(result, "an answer of 2 is not valid, and the read does not revert");
     }
 
     // =========================================================================

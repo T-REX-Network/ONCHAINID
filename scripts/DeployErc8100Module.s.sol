@@ -3,7 +3,6 @@ pragma solidity ^0.8.27;
 
 import { MODULE_TYPE_FALLBACK } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { Identity } from "contracts/Identity.sol";
-import { IIdentityUtilities } from "contracts/interface/IIdentityUtilities.sol";
 import { Erc8100Module } from "contracts/modules/fallbacks/Erc8100Module.sol";
 import { Script, console } from "forge-std/Script.sol";
 
@@ -17,8 +16,7 @@ import { Script, console } from "forge-std/Script.sol";
 /// Env:
 ///   DEPLOYER_PRIVATE_KEY         private key of a MANAGEMENT key holder on `IDENTITY`
 ///   IDENTITY                     identity to install on
-///   IDENTITY_UTILITIES           the topic schema registry proxy (only read when deploying)
-///   ERC8100_MODULE   optional, an already deployed module to install instead
+///   ERC8100_MODULE               optional, an already deployed module to install instead
 ///
 /// Usage:
 ///   forge script scripts/DeployErc8100Module.s.sol --rpc-url baseSepolia --broadcast
@@ -34,8 +32,7 @@ contract DeployErc8100Module is Script {
 
         address module = existingModule;
         if (module == address(0)) {
-            IIdentityUtilities identityUtilities = IIdentityUtilities(vm.envAddress("IDENTITY_UTILITIES"));
-            module = address(new Erc8100Module(identityUtilities));
+            module = address(new Erc8100Module());
         }
 
         bytes4[6] memory selectors = [

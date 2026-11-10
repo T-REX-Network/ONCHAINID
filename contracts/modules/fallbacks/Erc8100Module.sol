@@ -26,12 +26,11 @@ import { Identity } from "../../Identity.sol";
 import { IClaimIssuer } from "../../interface/IClaimIssuer.sol";
 import { IERC735 } from "../../interface/IERC735.sol";
 import { IIdentity } from "../../interface/IIdentity.sol";
-import { IIdentityUtilities } from "../../interface/IIdentityUtilities.sol";
 import { IXMLRepresentableState } from "../../interface/IRepresentableState.sol";
-import { Errors } from "../../libraries/Errors.sol";
 import { Structs } from "../../storage/Structs.sol";
 import { ERC734Validator } from "../validators/ERC734Validator.sol";
 import { IERC7579Module, MODULE_TYPE_FALLBACK } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import { LowLevelCall } from "@openzeppelin/contracts/utils/LowLevelCall.sol";
 import { Strings } from "@openzeppelin/contracts/utils/Strings.sol";
 
 /**
@@ -43,13 +42,13 @@ import { Strings } from "@openzeppelin/contracts/utils/Strings.sol";
  *         Every function here is reached through the identity's ERC-7579 fallback, so `msg.sender`
  *         is the identity being reported. The module keeps no storage.
  *
- *         Reported claim topics are the topics with a schema in {IIdentityUtilities}. The report
- *         grows when a schema is registered and shrinks when one is removed. A claim under a topic
- *         without a schema is not reported. Each claim costs two reads through the identity plus one
- *         call to its issuer, so the number of registered schemas is the size knob.
+ *         The document is a keys-and-claims view, not XML-complete in the ERC's sense: installed
+ *         modules, the key approval queue and revoked digests are not bound. Every claim the
+ *         identity holds is reported, under the topics the identity itself holds claims for.
  *
- *         The claim payload is returned raw. The schema registry plus one ABI decode off-chain turns
- *         it into named fields; decoding on-chain would be the hardest code in this contract.
+ *         The claim payload is returned raw. The topic schemas in IdentityUtilities plus one ABI
+ *         decode off-chain turn it into named fields; decoding on-chain would be the hardest code
+ *         in this contract.
  *
  */
 contract Erc8100Module is IERC7579Module, IXMLRepresentableState {
@@ -82,14 +81,6 @@ contract Erc8100Module is IERC7579Module, IXMLRepresentableState {
     uint256 private constant _STATUS_VALID = 1;
     uint256 private constant _STATUS_INVALID = 2;
 
-    /// @notice The topic schema registry. Its registered topic ids are the topics this module represents.
-    IIdentityUtilities public immutable identityUtilities;
-
-    constructor(IIdentityUtilities _identityUtilities) {
-        require(address(_identityUtilities) != address(0), Errors.ZeroAddress());
-        identityUtilities = _identityUtilities;
-    }
-
     // ---------------------------------------------------------------------------------------------
     // ERC-7579 module lifecycle
     // ---------------------------------------------------------------------------------------------
@@ -111,7 +102,10 @@ contract Erc8100Module is IERC7579Module, IXMLRepresentableState {
 
     /// @inheritdoc IXMLRepresentableState
     /// @dev `getIdentityType()` is a real function on the identity; the others are this module's
-    ///      fallbacks. `ValidUntil` stays a number because 0 means "no expiry".
+    ///      fallbacks. `ValidUntil` stays a number because 0 means "no expiry". `Uri` is the only
+    ///      free-form text and the issuer picks it: a renderer must set it as text through an XML
+    ///      DOM, never by string substitution, and decide what to write for characters XML 1.0
+    ///      cannot hold (control characters, invalid UTF-8), for example the hex bytes.
     function stateXmlTemplate() external pure returns (string memory) {
         return string.concat(
             "<Identity xmlns='urn:onchainid:identity:1.0' xmlns:evmstate='urn:evm:state:1.0'",
@@ -138,9 +132,10 @@ contract Erc8100Module is IERC7579Module, IXMLRepresentableState {
     // Lists bound by the template
     // ---------------------------------------------------------------------------------------------
 
-    /// @notice The claim topics this module reports: every topic with a registered schema.
+    /// @notice The topics under which the calling identity holds at least one claim.
     function stateClaimTopics() public view returns (uint256[] memory) {
-        return identityUtilities.getTopicIds();
+        address identity = msg.sender;
+        return _registry(identity).getClaimTopics(identity);
     }
 
     /// @notice Every key of the calling identity with its purposes. Use the `(start, end)`
@@ -160,7 +155,7 @@ contract Erc8100Module is IERC7579Module, IXMLRepresentableState {
         }
     }
 
-    /// @notice Every claim of the calling identity under a reported topic. Use the
+    /// @notice Every claim of the calling identity. Use the
     ///         `(topic, start, end)` overload for identities with many claims.
     function stateClaims() external view returns (Claim[] memory rows) {
         address identity = msg.sender;
@@ -204,8 +199,8 @@ contract Erc8100Module is IERC7579Module, IXMLRepresentableState {
     // Claims
     // ---------------------------------------------------------------------------------------------
 
-    /// @dev The claim ids under every reported topic, read through the identity's own fallback.
-    ///      Each topic's list is fetched once and kept, so the total is known before copying.
+    /// @dev The claim ids under every topic the identity holds claims for, read through the
+    ///      identity's own fallback. Each topic's list is fetched once and kept, so the total is known before copying.
     function _allClaimIds(address identity) private view returns (bytes32[] memory claimIds) {
         uint256[] memory topics = stateClaimTopics();
         bytes32[][] memory idsByTopic = new bytes32[][](topics.length);
@@ -249,7 +244,10 @@ contract Erc8100Module is IERC7579Module, IXMLRepresentableState {
         });
     }
 
-    /// @dev Asks the issuer. A revert is reported as unknown, never as invalid.
+    /// @dev Asks the issuer with a low-level call, so no answer can make the snapshot revert: a
+    ///      high-level call reverts when the issuer returns nothing or a malformed bool, and any
+    ///      trusted issuer can add a claim to any identity. A revert, a short answer or a word
+    ///      other than 0 or 1 is reported as unknown, never as invalid.
     function _claimStatus(
         address identity,
         uint256 topic,
@@ -258,12 +256,17 @@ contract Erc8100Module is IERC7579Module, IXMLRepresentableState {
         Structs.ClaimData memory data
     ) private view returns (uint256) {
         if (issuer == address(0)) return _STATUS_UNKNOWN;
-        try IClaimIssuer(issuer).isClaimValid(IIdentity(identity), topic, signature, data) returns (bool valid) {
-            if (valid) return _STATUS_VALID;
-            return _STATUS_INVALID;
-        } catch {
-            return _STATUS_UNKNOWN;
-        }
+
+        bytes memory isClaimValidCall =
+            abi.encodeCall(IClaimIssuer.isClaimValid, (IIdentity(identity), topic, signature, data));
+        (bool callSucceeded, bytes32 answer,) = LowLevelCall.staticcallReturn64Bytes(issuer, isClaimValidCall);
+        bool answeredOneWord = LowLevelCall.returnDataSize() >= 32;
+
+        if (!callSucceeded) return _STATUS_UNKNOWN;
+        if (!answeredOneWord) return _STATUS_UNKNOWN;
+        if (answer == bytes32(uint256(1))) return _STATUS_VALID;
+        if (answer == bytes32(0)) return _STATUS_INVALID;
+        return _STATUS_UNKNOWN;
     }
 
     // ---------------------------------------------------------------------------------------------
