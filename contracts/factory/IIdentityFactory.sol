@@ -40,6 +40,10 @@ import { Structs } from "../storage/Structs.sol";
 ///
 ///         Both setters are `restricted` (resolved by the AM).
 ///
+///         Admin events record `msg.sender` as the caller. When the AccessManager runs the
+///         call (a role with an execution delay, or a call sent through its `execute`), that
+///         is the AccessManager; the operator is in its `OperationScheduled` event or the tx.
+///
 ///         Wallets are addressed as ERC-7930 interoperable address envelopes (`bytes`).
 ///         EVM wallets are wrapped via OZ `InteroperableAddress.formatEvmV1(chainId, addr)`.
 ///         Non-EVM wallets (Solana, Bitcoin, Stellar, ...) supply the envelope for their
@@ -314,6 +318,8 @@ interface IIdentityFactory {
     ///         AccountLinked event is ever emitted for it, it never appears in
     ///         {getAccounts}, and its resolution entry can never be revoked. It also
     ///         means an identity can never be linked as an account of another identity.
+    ///         If its address was linked to another identity before it was deployed, the
+    ///         deploy revokes that link (AccountRevoked) and the address resolves to itself.
     function getIdentity(bytes calldata account) external view returns (address);
 
     /// @notice Same as {getIdentity}, but also returns the wallet's current lifecycle
