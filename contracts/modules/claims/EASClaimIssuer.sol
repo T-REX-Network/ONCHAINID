@@ -70,6 +70,10 @@ import { Attestation, IEAS } from "../../vendor/eas/IEAS.sol";
  *         Not supported: off-chain EAS attestations, non-EVM wallets, cross-chain
  *         reads. Any `IIdentity` / ERC-734 / ERC-735 method that has no meaning on a
  *         stateless reader reverts with `Errors.EASNotSupported`.
+ *
+ *         Admin events record `msg.sender` as the caller. When the AccessManager runs the
+ *         call (a role with an execution delay, or a call sent through its `execute`), that
+ *         is the AccessManager; the operator is in its `OperationScheduled` event or the tx.
  */
 contract EASClaimIssuer is IClaimIssuer, AccessManaged {
 
