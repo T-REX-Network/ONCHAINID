@@ -283,6 +283,11 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         revert Errors.EASNotSupported();
     }
 
+    /// @inheritdoc IClaimIssuer
+    function removeClaimFrom(uint256, IIdentity) external pure {
+        revert Errors.EASNotSupported();
+    }
+
     /// @inheritdoc IIdentity
     function getClaimHash(address, uint256, Structs.ClaimData memory) external pure returns (bytes32) {
         revert Errors.EASNotSupported();

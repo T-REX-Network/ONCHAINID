@@ -37,6 +37,7 @@ v3 is not storage-compatible or interface-compatible with 2.x. It is a new deplo
 - Claim lifecycle: claims carry `issuedAt` / `validUntil` validity windows, revocation is digest-based, and `getClaimStatus` returns an explicit status (Valid, BadSignature, NotYetValid, Expired, Revoked) instead of a bare boolean.
 - Identity types registered at the factory: ASSET (1), INDIVIDUAL (2), CORPORATE (3), IOT (4), CLAIM_ISSUER (5), SMART_CONTRACT (6), PUBLIC_AUTHORITY (7), AI_AGENT (8).
 - `ReputationRegistry`: per-identity reputation scores with per-type defaults, writable only through the REPUTATION_MANAGER role via `AccessManager`.
+- Trusted claim issuers: a factory CLAIM_ISSUER identity that meets the reputation threshold adds and removes its own claims on any holder without a key grant, through `addClaimTo` and `removeClaimFrom`, both gated on a MANAGEMENT key of the issuer. A direct `addClaim` or `removeClaim` from the issuer identity still needs a claim key on the holder. Identities need the `removeClaimFrom` fallback installed.
 - `IdentityUtilities` (UUPS-upgradeable): an on-chain registry of structured claim-topic schemas (field names and types), with `FormatResolver` for the supported field formats.
 - Full Foundry test suite with coverage enforced in CI.
 - `CallDispatched(address target, uint256 value, bytes data, address caller)` for identity calls dispatched through the ERC-7579 execute path.
