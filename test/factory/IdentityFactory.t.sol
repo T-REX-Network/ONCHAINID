@@ -2392,6 +2392,31 @@ contract IdentityFactoryTest is OnchainIDSetup {
         assertFalse(registry.keyHasPurpose(keccak256(abi.encodePacked(device)), KeyPurposes.MANAGEMENT));
     }
 
+    /// @notice A single-binding type skips the sole-manager check, as on createIdentityFor: its
+    ///         identity represents a contract, which is managed by someone other than itself.
+    function test_createIdentity_singleBindingTypeAllowsForeignManager() public {
+        address wallet = makeAddr("selfDeployWallet");
+        address manager = makeAddr("assetManager");
+
+        // Gated role, self-deployable, single binding. Production never makes a single-binding
+        // type self-deployable, so the case is set up here rather than taken from the helper.
+        vm.prank(deployer);
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.ASSET, 1, true, true);
+
+        vm.prank(wallet);
+        address identityAddr = onchainidSetup.idFactory
+            .createIdentity(IdentityTypes.ASSET, "foreignAssetManager", _makeSingleMgmtKeys(manager));
+
+        assertEq(
+            onchainidSetup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, wallet)),
+            identityAddr,
+            "wallet is bound to the identity"
+        );
+        IERC734 registry = IERC734(identityAddr);
+        assertTrue(registry.keyHasPurpose(keccak256(abi.encodePacked(manager)), KeyPurposes.MANAGEMENT));
+        assertFalse(registry.keyHasPurpose(keccak256(abi.encodePacked(wallet)), KeyPurposes.MANAGEMENT));
+    }
+
     // ============ IdentityInitialized event ============
 
     function test_createIdentity_emitsIdentityInitialized() public {
