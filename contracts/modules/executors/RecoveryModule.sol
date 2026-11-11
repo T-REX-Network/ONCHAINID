@@ -92,11 +92,11 @@ import {
 ///         set, threshold and schedule in module storage keyed by account.
 contract RecoveryModule is ERC7579SocialRecoveryExecutor {
 
-    /// @dev Per-account install counter. OZ keeps scheduled operations across
-    ///      uninstall on purpose, so without this a recovery scheduled under a
-    ///      previous installation could still execute after the module is
-    ///      reinstalled. While the module is uninstalled the account refuses its
-    ///      dispatches, so advancing on install is enough.
+    /// @dev Per-account counter, advanced on every install and uninstall. OZ keeps
+    ///      scheduled operations across uninstall on purpose, so without this a
+    ///      recovery scheduled under a previous installation could still execute
+    ///      after a reinstall, or after the account calls `onUninstall` directly
+    ///      and keeps the module installed.
     mapping(address account => uint256 generation) private _generation;
 
     /// @dev The generation each operation was scheduled under. Operation ids stay
@@ -108,6 +108,11 @@ contract RecoveryModule is ERC7579SocialRecoveryExecutor {
 
     function onInstall(bytes calldata data) public override {
         super.onInstall(data);
+        ++_generation[msg.sender];
+    }
+
+    function onUninstall(bytes calldata data) public override {
+        super.onUninstall(data);
         ++_generation[msg.sender];
     }
 

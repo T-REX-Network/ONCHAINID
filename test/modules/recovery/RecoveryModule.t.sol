@@ -3,7 +3,6 @@ pragma solidity ^0.8.27;
 
 import { OnchainIDSetup } from "../../helpers/OnchainIDSetup.sol";
 import { ERC7579DelayedExecutor } from "@openzeppelin/accounts/modules/executors/ERC7579DelayedExecutor.sol";
-import { ERC7579Utils } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
 import { IERC7579Execution } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
 import { Identity } from "contracts/Identity.sol";
 import { IERC734 } from "contracts/interface/IERC734.sol";
@@ -610,18 +609,13 @@ contract RecoveryModuleTest is OnchainIDSetup {
         assertEq(ret, abi.encodeWithSelector(Errors.OwnModuleTargetBlocked.selector, address(recovery)));
     }
 
-    // ---- helpers ----
-
-    /// @dev Wraps a call to the recovery module in an inner `execute`. Queue this at the
-    ///      identity with `to = identity` and the account calls `execute` on itself, and that
-    ///      self-call is allowed to target its own module.
     // ---- uninstall and reinstall ----
 
     /// @notice A recovery scheduled on one installation cannot run after the module is
-    ///         uninstalled. While the module is out the account refuses its dispatch; after a
-    ///         reinstall the schedule belongs to a previous generation and execute reverts.
-    ///         The account can still cancel it, and guardians can schedule a fresh recovery
-    ///         on the new installation.
+    ///         uninstalled, neither while the module is out nor after a reinstall: either way
+    ///         the schedule belongs to a previous generation and execute reverts. The account
+    ///         can still cancel it, and guardians can schedule a fresh recovery on the new
+    ///         installation.
     function test_scheduledRecoveryDoesNotSurviveUninstall() public {
         bytes32 salt = bytes32(uint256(41));
         bytes32 mode = bytes32(0);
@@ -637,17 +631,15 @@ contract RecoveryModuleTest is OnchainIDSetup {
         vm.prank(alice);
         aliceIdentity.uninstallModule(2, address(recovery), "");
 
-        // Past the delay, but the module is not installed, so the account rejects the call.
+        // Past the delay, but the uninstall moved the generation, so the module refuses first.
+        bytes32 id = recovery.hashOperation(address(aliceIdentity), salt, mode, recoveryData);
         vm.warp(block.timestamp + DELAY + 1);
-        vm.expectRevert(
-            abi.encodeWithSelector(ERC7579Utils.ERC7579UninstalledModule.selector, uint256(2), address(recovery))
-        );
+        vm.expectRevert(abi.encodeWithSelector(Errors.RecoveryScheduledUnderPreviousInstall.selector, id));
         recovery.executeRecovery(address(aliceIdentity), salt, mode, recoveryData);
 
         _reinstall(aliceIdentity, alice);
 
         // OZ's state view still says Ready: it cannot see the generation. Execute refuses.
-        bytes32 id = recovery.hashOperation(address(aliceIdentity), salt, mode, recoveryData);
         assertEq(
             uint8(recovery.state(address(aliceIdentity), salt, mode, recoveryData)),
             uint8(ERC7579DelayedExecutor.OperationState.Ready)
@@ -681,6 +673,36 @@ contract RecoveryModuleTest is OnchainIDSetup {
         vm.warp(block.timestamp + DELAY);
         recovery.executeRecovery(address(aliceIdentity), freshSalt, mode, recoveryData);
         assertTrue(
+            IERC734(address(aliceIdentity)).keyHasPurpose(keccak256(abi.encodePacked(newOwner)), KeyPurposes.MANAGEMENT)
+        );
+    }
+
+    /// @notice The account can call `onUninstall` on its own module without going through
+    ///         `uninstallModule`. Guardians and threshold are cleared but the module stays
+    ///         installed with its MANAGEMENT key, so the account no longer refuses its dispatch.
+    ///         A recovery scheduled before must still be dead.
+    function test_RevertWhen_ExecutingARecoveryScheduledBeforeADirectOnUninstall() public {
+        bytes32 salt = bytes32(uint256(47));
+        bytes32 mode = bytes32(0);
+        bytes memory recoveryData = _addNewOwnerCalldata();
+        recovery.startRecovery(
+            address(aliceIdentity),
+            salt,
+            mode,
+            recoveryData,
+            _guardianBundle(_scheduleDigest(address(aliceIdentity), salt, mode, recoveryData))
+        );
+
+        bytes memory onUninstallCall = abi.encodeWithSignature("onUninstall(bytes)", bytes(""));
+        vm.prank(alice);
+        IKeyExecutor(address(aliceIdentity)).execute(address(aliceIdentity), 0, _recoveryModuleCall(onUninstallCall));
+        assertTrue(aliceIdentity.isModuleInstalled(2, address(recovery), ""));
+
+        bytes32 id = recovery.hashOperation(address(aliceIdentity), salt, mode, recoveryData);
+        vm.warp(block.timestamp + DELAY + 1);
+        vm.expectRevert(abi.encodeWithSelector(Errors.RecoveryScheduledUnderPreviousInstall.selector, id));
+        recovery.executeRecovery(address(aliceIdentity), salt, mode, recoveryData);
+        assertFalse(
             IERC734(address(aliceIdentity)).keyHasPurpose(keccak256(abi.encodePacked(newOwner)), KeyPurposes.MANAGEMENT)
         );
     }
@@ -803,6 +825,8 @@ contract RecoveryModuleTest is OnchainIDSetup {
         );
     }
 
+    // ---- helpers ----
+
     /// @dev Installs the module on `identity` with the setUp guardian config and registers its
     ///      MODULE key, the same two steps setUp runs for alice.
     function _reinstall(Identity identity, address manager) internal {
@@ -829,6 +853,9 @@ contract RecoveryModuleTest is OnchainIDSetup {
         return abi.encode(signers, sigs);
     }
 
+    /// @dev Wraps a call to the recovery module in an inner `execute`. Queue this at the
+    ///      identity with `to = identity` and the account calls `execute` on itself, and that
+    ///      self-call is allowed to target its own module.
     function _recoveryModuleCall(bytes memory moduleCall) internal view returns (bytes memory) {
         return abi.encodeCall(
             IERC7579Execution.execute, (bytes32(0), abi.encodePacked(address(recovery), uint256(0), moduleCall))
