@@ -75,11 +75,11 @@ library Errors {
     /// @notice Reverts if no key with MANAGEMENT purpose is provided
     error NoManagementKeyInKeys();
 
-    /// @notice Reverts when {createIdentityFor} deploys for a signing type but `_account`
-    ///         is not the only wallet with MANAGEMENT on the new identity. The wallet the
-    ///         identity was created for has to manage it alone, or the caller could keep a
-    ///         key and strip that wallet later. The type's registered modules may hold
-    ///         MANAGEMENT alongside it.
+    /// @notice Reverts when a signing-type deploy ({createIdentity} or {createIdentityFor})
+    ///         leaves `account`, the wallet being bound, as anything but the only wallet
+    ///         with MANAGEMENT on the new identity. That wallet has to manage it alone, or
+    ///         another key holder could strip it later while the binding stays. The type's
+    ///         registered modules may hold MANAGEMENT alongside it.
     error AccountNotSoleManagementKey(address account);
 
     /// @notice Reverts when {createIdentityFor} deploys for a signing type and the caller
