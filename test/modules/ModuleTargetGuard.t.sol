@@ -29,13 +29,7 @@ contract ModuleTargetGuardTest is OnchainIDSetup {
     /// @dev Same canonical EntryPoint the account trusts; see PrivilegedReentryGuard.t.sol.
     address internal constant ENTRY_POINT = 0x433709009B8330FDa32311DF1C2AFA402eD8D009;
 
-    address internal attacker;
-    uint256 internal attackerPk;
-
-    function setUp() public override {
-        super.setUp();
-        (attacker, attackerPk) = makeAddrAndKey("attacker");
-    }
+    address internal attacker = makeAddr("attacker");
 
     // ---- H-03: a second installed validator -----------------------------------------------
 
