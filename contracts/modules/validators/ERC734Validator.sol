@@ -38,6 +38,7 @@ import { Bytes } from "@openzeppelin/contracts/utils/Bytes.sol";
 import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import { SignatureChecker } from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
+import { ERC7739Utils } from "@openzeppelin/contracts/utils/cryptography/draft-ERC7739Utils.sol";
 import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 import { IIdentityFactory } from "../../factory/IIdentityFactory.sol";
@@ -77,6 +78,9 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
 
     using EnumerableSet for EnumerableSet.UintSet;
     using EnumerableSet for EnumerableSet.Bytes32Set;
+    using ERC7739Utils for bytes;
+    using ERC7739Utils for bytes32;
+    using MessageHashUtils for bytes32;
 
     /// @dev Same shape as `Structs.Key`. `signerData` is the ERC-7913 verification material
     ///      (for WebAuthn, `verifier(20) || pubkey`), committed by `keyHash == keccak256(signerData)`.
@@ -422,20 +426,95 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
             && _verify(signer, hash, signature);
     }
 
-    /// @dev ERC-1271. Only a key that can act for the account may sign as the account. We require
-    ///      ACTION, which MANAGEMENT also satisfies. Claim, encryption and proposer keys are
-    ///      registered but hold no signing authority, so they are rejected here. The crypto and
-    ///      membership check itself is left to super via {_rawERC7579Validation}.
-    function isValidSignatureWithSender(address sender, bytes32 hash, bytes calldata signature)
+    /// @dev ERC-1271 for the account (`msg.sender`). Two rules:
+    ///
+    ///      1. The signature must be bound to this account (L-22). The same key often controls
+    ///         several accounts, for example a wallet and the identity it manages. A signature
+    ///         over the caller's raw hash would then be valid for all of them, so a message
+    ///         that does not name its owner (a Permit2 transfer, say) signed for one could be
+    ///         replayed for another. We follow ERC-7739: the key signs the caller's hash nested
+    ///         inside a struct on the account's own EIP-712 domain, either as typed data
+    ///         (`TypedDataSign`) or as a personal message (`PersonalSign`). See {ERC7739Utils}.
+    ///
+    ///      2. Only a key that can act for the account may sign as the account: ACTION, which
+    ///         MANAGEMENT also satisfies. Claim, encryption and proposer keys are registered but
+    ///         hold no signing authority, so they are rejected.
+    ///
+    ///      The key's own signature, inside the ERC-7739 envelope, keeps this module's format:
+    ///      `abi.encode(bytes signer, bytes signature)`.
+    function isValidSignatureWithSender(address, bytes32 hash, bytes calldata signature)
         public
         view
         virtual
         override
         returns (bytes4)
     {
-        (bytes memory signer,) = abi.decode(signature, (bytes, bytes));
-        if (!_keyHasPurpose(msg.sender, keccak256(signer), KeyPurposes.ACTION)) return bytes4(0xffffffff);
-        return super.isValidSignatureWithSender(sender, hash, signature);
+        address account = msg.sender;
+        bool valid = _isValidNestedTypedDataSignature(account, hash, signature)
+            || _isValidNestedPersonalSignature(account, hash, signature);
+        return valid ? IERC1271.isValidSignature.selector : bytes4(0xffffffff);
+    }
+
+    /// @dev ERC-7739 typed data: `signature` is `encodeTypedDataSig(keySignature, appSeparator,
+    ///      contentsHash, contentsDescr)`. The caller's `hash` must be the app's typed data hash,
+    ///      and the key must have signed it wrapped in `TypedDataSign` on the account's domain.
+    function _isValidNestedTypedDataSignature(address account, bytes32 hash, bytes calldata signature)
+        private
+        view
+        returns (bool)
+    {
+        (bytes calldata keySignature, bytes32 appSeparator, bytes32 contentsHash, string calldata contentsDescr) =
+            signature.decodeTypedDataSig();
+        if (bytes(contentsDescr).length == 0) return false; // not a typed data envelope
+        if (hash != appSeparator.toTypedDataHash(contentsHash)) return false;
+
+        (, string memory name, string memory version, uint256 chainId, address verifyingContract, bytes32 salt,) =
+            IERC5267(account).eip712Domain();
+        bytes memory accountDomain =
+            abi.encode(keccak256(bytes(name)), keccak256(bytes(version)), chainId, verifyingContract, salt);
+        bytes32 nestedHash = appSeparator.toTypedDataHash(
+            ERC7739Utils.typedDataSignStructHash(contentsDescr, contentsHash, accountDomain)
+        );
+        return _isValidActionKeySignature(account, nestedHash, keySignature);
+    }
+
+    /// @dev ERC-7739 personal message: the key signed `PersonalSign(bytes prefixed)` with the
+    ///      caller's `hash`, on the account's domain. `signature` is the key's signature as is.
+    function _isValidNestedPersonalSignature(address account, bytes32 hash, bytes calldata signature)
+        private
+        view
+        returns (bool)
+    {
+        bytes32 nestedHash = _accountDomainSeparator(account).toTypedDataHash(hash.personalSignStructHash());
+        return _isValidActionKeySignature(account, nestedHash, signature);
+    }
+
+    /// @dev The key in `keySignature` holds ACTION (or MANAGEMENT) on `account` and signed `hash`.
+    ///      A blob too short for `(bytes signer, bytes signature)` returns false. A longer blob
+    ///      that still does not decode reverts, and the account reports the signature as invalid.
+    function _isValidActionKeySignature(address account, bytes32 hash, bytes calldata keySignature)
+        private
+        view
+        returns (bool)
+    {
+        // Two offset words and two length words: anything shorter cannot decode.
+        if (keySignature.length < 128) return false;
+        (bytes memory signer,) = abi.decode(keySignature, (bytes, bytes));
+        if (!_keyHasPurpose(account, keccak256(signer), KeyPurposes.ACTION)) return false;
+        return _rawERC7579Validation(account, hash, keySignature);
+    }
+
+    /// @dev The EIP-712 domain separator `account` reports through ERC-5267.
+    function _accountDomainSeparator(address account) private view returns (bytes32) {
+        (
+            bytes1 fields,
+            string memory name,
+            string memory version,
+            uint256 chainId,
+            address verifyingContract,
+            bytes32 salt,
+        ) = IERC5267(account).eip712Domain();
+        return MessageHashUtils.toDomainSeparator(fields, name, version, chainId, verifyingContract, salt);
     }
 
     /// @dev Adds per-target scoping on top of crypto + membership. The account routes
