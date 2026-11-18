@@ -63,12 +63,11 @@ import { ERC7579Validator } from "./ERC7579Validator.sol";
 ///         The account calls `validateUserOp`; this module verifies the signature, checks the
 ///         signer is a registered key, and enforces the purpose the userOp needs.
 ///
-///         Constraint: the scoping rule guards this module's own address, but it does not know
-///         about other privileged targets (installed executors, fallback handlers). A userOp from
-///         an ACTION signer that calls `execute(installedExecutor, ...)` reads as an external
-///         target here, so ACTION suffices; the call then reaches the executor with
-///         `msg.sender == account`. Executor and fallback modules must gate their own callers
-///         rather than trust that reaching them implies authorization.
+///         Constraint: the scoping rule guards this module's own address and the factory, but
+///         it does not know about other modules. A userOp from an ACTION signer that calls
+///         `execute(someModule, ...)` reads as an external target here, so it validates. The
+///         account then refuses to dispatch it ({SmartAccount-_authorizeCall} blocks every call
+///         to an ERC-7579 module that is not a self-call), so the module is never reached.
 ///
 /// @dev userOp signature wire format: `abi.encode(bytes signer, bytes signature)`, where
 ///      `signer` is ERC-7913 (20 bytes = EOA/1271, longer = `verifier(20) || key`). Storage is
@@ -674,8 +673,8 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         // below runs against `_issuer` instead.
         //
         // {addClaimTo} is the only path that can produce this caller. The other candidates are
-        // closed: `execute(module, ...)` is blocked by the account's own-module guard
-        // (Errors.OwnModuleTargetBlocked in SmartAccount), a direct call to the module with a
+        // closed: `execute(module, ...)` is blocked by the account's module-target guard
+        // (Errors.ModuleTargetBlocked in SmartAccount), a direct call to the module with a
         // forged calldata tail only reaches the caller's own registry entry (msg.sender selects
         // the registry), and every other outbound call this module makes is a staticcall. As a
         // last line of defense, {_addKey} rejects the module's own address as a grantee. The

@@ -309,11 +309,11 @@ library Errors {
     /// @notice The execution mode requested is not supported by the account's purpose check.
     error UnsupportedExecutionMode(bytes32 mode);
 
-    /// @notice A dispatched call targeted one of the account's own modules (an installed executor,
-    ///         or the fallback handler for the call's selector). Module functions are reached via
-    ///         the account's fallback dispatch, never via `execute(module, ...)`. The only caller
-    ///         allowed to do this is the account itself.
-    error OwnModuleTargetBlocked(address target);
+    /// @notice A dispatched call targeted an ERC-7579 module: one installed on the account, or any
+    ///         contract that reports a module type through `isModuleType`. Modules read a call
+    ///         from the account as the account configuring itself, so only the account itself
+    ///         (a MANAGEMENT-authorized self-call) may make it.
+    error ModuleTargetBlocked(address target);
 
     /// @notice An installed executor or fallback handler tried to dispatch a call whose target
     ///         is not authorized by the purpose registered for that module at install time.
