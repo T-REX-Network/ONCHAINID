@@ -927,36 +927,50 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     ///      so signers sign against the issuer address, not this module. Issuers are not required
     ///      to implement ERC-5267: `_addClaim` only asks the issuer to validate its own claim, so
     ///      one without a domain (EASClaimIssuer) can be named as issuer. Returns zero for those
-    ///      instead of bubbling the failed call, which would make their claims unremovable.
+    ///      instead of bubbling the failure, which would make their claims unremovable.
+    /// @dev The work runs in {claimDigestOf}, called on this contract with try/catch. A plain
+    ///      `try issuer.eip712Domain()` only catches a revert inside the issuer: if the issuer
+    ///      answers with data that does not decode as a domain, the decoding reverts here, and
+    ///      the removal reverts with it (L-24). Running the whole computation in its own call
+    ///      means any failure, from the issuer or from decoding, lands in the catch.
     function _getClaimDigest(address account, address subject, uint256 topic, Structs.ClaimData memory data)
         internal
         view
         virtual
         returns (bytes32)
     {
-        try IERC5267(account).eip712Domain() returns (
+        try this.claimDigestOf(account, subject, topic, data) returns (bytes32 digest) {
+            return digest;
+        } catch {
+            return bytes32(0);
+        }
+    }
+
+    /// @notice The EIP-712 digest of a claim, built on the domain that `issuer` reports through
+    ///         ERC-5267. Reverts if the issuer has no domain, or reports one that does not decode.
+    /// @dev Called by this contract on itself from {_getClaimDigest}, which turns a revert into
+    ///      a zero digest. Also usable off-chain.
+    function claimDigestOf(address issuer, address subject, uint256 topic, Structs.ClaimData memory data)
+        external
+        view
+        returns (bytes32)
+    {
+        (
             bytes1 fields,
             string memory name,
             string memory version,
             uint256 chainId,
             address verifyingContract,
             bytes32 salt,
-            uint256[] memory
-        ) {
-            bytes32 domainSeparator = MessageHashUtils.toDomainSeparator(
-                fields, name, version, chainId, verifyingContract, salt
-            );
+        ) = IERC5267(issuer).eip712Domain();
+        bytes32 domainSeparator =
+            MessageHashUtils.toDomainSeparator(fields, name, version, chainId, verifyingContract, salt);
 
-            bytes32 dataHash = keccak256(
-                abi.encode(
-                    _CLAIM_DATA_TYPEHASH, data.issuedAt, data.validUntil, data.metadataHash, keccak256(data.payload)
-                )
-            );
-            bytes32 structHash = keccak256(abi.encode(_CLAIM_TYPEHASH, topic, subject, dataHash));
-            return MessageHashUtils.toTypedDataHash(domainSeparator, structHash);
-        } catch {
-            return bytes32(0);
-        }
+        bytes32 dataHash = keccak256(
+            abi.encode(_CLAIM_DATA_TYPEHASH, data.issuedAt, data.validUntil, data.metadataHash, keccak256(data.payload))
+        );
+        bytes32 structHash = keccak256(abi.encode(_CLAIM_TYPEHASH, topic, subject, dataHash));
+        return MessageHashUtils.toTypedDataHash(domainSeparator, structHash);
     }
 
     /// @dev Detailed claim validity. Checks are ordered cheapest first: time bounds, revoked
