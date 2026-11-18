@@ -589,7 +589,7 @@ contract RecoveryModuleTest is OnchainIDSetup {
     }
 
     /// @notice A dispatched call straight at the module is still rejected; only the account
-    ///         itself gets through the own-module guard.
+    ///         itself gets through the module-target guard.
     function test_directDispatchToRecoveryStillBlocked() public {
         bytes memory cancelCall = abi.encodeWithSignature(
             "cancelRecovery(address,bytes32,bytes32,bytes)", address(aliceIdentity), bytes32(0), bytes32(0), bytes("")
@@ -601,7 +601,7 @@ contract RecoveryModuleTest is OnchainIDSetup {
         vm.prank(ENTRY_POINT);
         (bool ok, bytes memory ret) = address(aliceIdentity).call(callData);
         assertFalse(ok, "dispatch into the recovery module must stay blocked");
-        assertEq(ret, abi.encodeWithSelector(Errors.OwnModuleTargetBlocked.selector, address(recovery)));
+        assertEq(ret, abi.encodeWithSelector(Errors.ModuleTargetBlocked.selector, address(recovery)));
     }
 
     // ---- helpers ----
