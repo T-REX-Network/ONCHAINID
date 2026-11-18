@@ -254,6 +254,10 @@ library Errors {
     ///         the one every deployed identity already holds its keys in.
     error ImplementationRegistryMismatch(address expected, address actual);
 
+    /// @notice The candidate beacon implementation calls registry functions that its registry
+    ///         module does not have: the registry does not answer `interfaceId` through ERC-165.
+    error RegistryInterfaceNotSupported(address registry, bytes4 interfaceId);
+
     /// @notice The candidate beacon implementation reports a different version than the one
     ///         the upgrader committed to in {IdentityFactory.upgradeBeacon}.
     error ImplementationVersionMismatch(string expected, string actual);

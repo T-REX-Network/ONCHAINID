@@ -22,10 +22,10 @@
 
 pragma solidity ^0.8.28;
 
+import { IKeyRegistry } from "./interface/IKeyRegistry.sol";
 import { Errors } from "./libraries/Errors.sol";
 import { hashAddress } from "./libraries/Hashing.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
-import { ERC734Validator } from "./modules/validators/ERC734Validator.sol";
 
 /**
  * @title KeyManager
@@ -82,9 +82,9 @@ abstract contract KeyManager {
     ///      derives the keyHash from the signer bytes), then forwards the write.
     function _addKey(bytes32 _key, uint256 _purpose, uint256 _type, address caller) internal {
         (bytes memory signerData, bytes memory clientData) =
-            ERC734Validator(registryModule()).getKeyData(address(this), _key);
+            IKeyRegistry(registryModule()).getKeyData(address(this), _key);
         require(signerData.length != 0, Errors.InvalidSignerData());
-        ERC734Validator(registryModule()).addKey(signerData, clientData, _purpose, _type, caller);
+        IKeyRegistry(registryModule()).addKey(signerData, clientData, _purpose, _type, caller);
     }
 
     /// @notice Remove a purpose from a key. Caller must hold MANAGEMENT, or be the identity itself.
@@ -98,7 +98,7 @@ abstract contract KeyManager {
     ///      {SmartAccount._uninstallModule} when it strips purposes off an uninstalled module.
     ///      Forwards to the module, which keeps the "can't remove the last MANAGEMENT key" check.
     function _removeKeyPurpose(bytes32 _key, uint256 _purpose, address caller) internal {
-        ERC734Validator(registryModule()).removeKey(_key, _purpose, caller);
+        IKeyRegistry(registryModule()).removeKey(_key, _purpose, caller);
     }
 
     /**
@@ -130,7 +130,7 @@ abstract contract KeyManager {
         // The keyHash MUST commit to the signer bytes forwarded with it. Without this guard a caller
         // could register one keyHash while attaching a different signer's bytes.
         require(_key == keccak256(_signerData), Errors.InvalidSignerData());
-        ERC734Validator(registryModule()).addKey(_signerData, _clientData, _purpose, _type, caller);
+        IKeyRegistry(registryModule()).addKey(_signerData, _clientData, _purpose, _type, caller);
     }
 
     /// @notice `IERC734.getKey` for this identity, answered by the enshrined registry.
@@ -140,13 +140,13 @@ abstract contract KeyManager {
         virtual
         returns (uint256[] memory purposes, uint256 keyType, bytes32 key)
     {
-        return ERC734Validator(registryModule()).getKey(address(this), _key);
+        return IKeyRegistry(registryModule()).getKey(address(this), _key);
     }
 
     /// @notice `IERC734.getKeyPurposes` for this identity. Returns the full set; use the
     ///         `(_key, start, end)` overload for large sets.
     function getKeyPurposes(bytes32 _key) public view virtual returns (uint256[] memory purposes) {
-        return ERC734Validator(registryModule()).getKeyPurposes(address(this), _key);
+        return IKeyRegistry(registryModule()).getKeyPurposes(address(this), _key);
     }
 
     /// @notice Paginated variant of {getKeyPurposes}. Returns purposes in the index range
@@ -157,13 +157,13 @@ abstract contract KeyManager {
         virtual
         returns (uint256[] memory purposes)
     {
-        return ERC734Validator(registryModule()).getKeyPurposes(address(this), _key, start, end);
+        return IKeyRegistry(registryModule()).getKeyPurposes(address(this), _key, start, end);
     }
 
     /// @notice `IERC734.getKeysByPurpose` for this identity. Returns the full set; use the
     ///         `(_purpose, start, end)` overload for large sets.
     function getKeysByPurpose(uint256 _purpose) public view virtual returns (bytes32[] memory keys) {
-        return ERC734Validator(registryModule()).getKeysByPurpose(address(this), _purpose);
+        return IKeyRegistry(registryModule()).getKeysByPurpose(address(this), _purpose);
     }
 
     /// @notice Paginated variant of {getKeysByPurpose}. Returns key hashes in the index range
@@ -174,7 +174,7 @@ abstract contract KeyManager {
         virtual
         returns (bytes32[] memory keys)
     {
-        return ERC734Validator(registryModule()).getKeysByPurpose(address(this), _purpose, start, end);
+        return IKeyRegistry(registryModule()).getKeysByPurpose(address(this), _purpose, start, end);
     }
 
     /// @notice `IERC734.keyHasPurpose` for this identity. MANAGEMENT satisfies any purpose.
@@ -188,7 +188,7 @@ abstract contract KeyManager {
 
     /// @dev MANAGEMENT / purpose read for the account itself, backed by the enshrined module.
     function _moduleKeyHasPurpose(bytes32 keyHash, uint256 purpose) internal view returns (bool) {
-        return ERC734Validator(registryModule()).keyHasPurpose(address(this), keyHash, purpose);
+        return IKeyRegistry(registryModule()).keyHasPurpose(address(this), keyHash, purpose);
     }
 
 }
