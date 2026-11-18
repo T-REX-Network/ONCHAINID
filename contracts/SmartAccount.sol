@@ -226,6 +226,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
     ///      2. Not installed (or installed under other selectors): it says so itself. Every
     ///         ERC-7579 module must implement `isModuleType`, and returns true for its types.
     function _isModule(address target, bytes4 selector) private view returns (bool) {
+        if (target == address(this)) return false; // the account is not a module of itself
         if (isModuleInstalled(MODULE_TYPE_VALIDATOR, target, Calldata.emptyBytes())) return true;
         if (isModuleInstalled(MODULE_TYPE_EXECUTOR, target, Calldata.emptyBytes())) return true;
         if (_fallbackHandler(selector) == target) return true;
