@@ -62,6 +62,21 @@ Modules follow the ERC-7579 standard and are installed per identity:
 - **`RecoveryModule`** — social recovery for an identity (see notes below).
 - **`EASClaimIssuer`** — a stateless claim issuer that reads [EAS](https://attest.org) attestations live (see notes below).
 
+## Sending user operations (ERC-4337)
+
+Identities can be driven through an ERC-4337 EntryPoint, but bundlers that enforce the [ERC-7562](https://eips.ethereum.org/EIPS/eip-7562) validation rules (public-mempool bundlers do) reject the user operations of an **unstaked** identity. Identities are unstaked by default. Validating a user operation breaks two of ERC-7562's storage rules for unstaked accounts:
+
+- The shared `ERC734Validator` keeps every account's keys in one nested mapping. The slots it reads during validation are derived from the key hash, so ERC-7562 does not count them as belonging to the account.
+- Each identity is a `BeaconProxy`, which reads its implementation from the shared beacon's storage on every call, `validateUserOp` included.
+
+Neither can be removed without giving up the shared registry and the shared upgrade path, so the supported setups are:
+
+- **Stake the identity with the EntryPoint.** ERC-7562 lets a staked account read the storage of other contracts during validation, so public bundlers accept its user operations.
+- **Use a bundler that does not enforce ERC-7562**, such as a private or permissioned one.
+- **Skip the EntryPoint.** A key holder can call the identity directly, for example through the `KeyApprovalModule`.
+
+**Passkey (WebAuthn) keys need the P-256 precompile.** They verify through OpenZeppelin's `P256`, which calls the RIP-7212 precompile at `0x100`. On a chain without it, `P256` falls back to a much more expensive Solidity check, and the call to an address without code also breaks ERC-7562. Check that every chain you deploy to has the precompile (Base does) before you rely on passkeys for user operations.
+
 ## Factory and cross-chain addresses
 
 `IdentityFactory` deploys each identity as a beacon proxy using `CREATE3`. Because of `CREATE3`, a given `(salt, wallet)` resolves to the **same identity address on every chain** — as long as the factory itself sits at the same address on each chain.
