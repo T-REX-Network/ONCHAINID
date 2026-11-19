@@ -949,11 +949,6 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         try this.claimDigestOf{ gas: _CLAIM_DIGEST_GAS }(account, subject, topic, data) returns (bytes32 digest) {
             return digest;
         } catch {
-            // The call may also have failed because the caller sent too little gas. Then the
-            // issuer did nothing wrong, and skipping the digest would skip its revocation, so
-            // revert instead. Under the 63/64 rule, a call that got less than its cap leaves
-            // less than cap / 63 behind.
-            require(gasleft() > _CLAIM_DIGEST_GAS / 63, Errors.ClaimDigestOutOfGas());
             return bytes32(0);
         }
     }
