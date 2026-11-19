@@ -9,7 +9,7 @@ import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 
-/// @notice M-10: a user op is paid from the identity's funds and uses up one of its nonces, so
+/// @notice A user op is paid from the identity's funds and uses up one of its nonces, so
 ///         only a key that can act for the identity (ACTION or MANAGEMENT) may sign one. Before
 ///         the fix, a key without signing authority could sign an empty batch: the per-call
 ///         ACTION check ran inside the batch loop, which an empty batch never enters.

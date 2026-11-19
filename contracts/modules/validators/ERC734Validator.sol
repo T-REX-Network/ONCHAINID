@@ -479,7 +479,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         // Every other user op needs ACTION, whatever it contains. A user op is paid from the
         // account's funds and uses up one of its nonces, so a key without signing authority
         // (CLAIM_SIGNER, CLAIM_ADDER, ENCRYPTION, PROPOSER) must not be able to send one, not
-        // even one that does nothing (M-10).
+        // even one that does nothing.
         if (!_keyHasPurpose(account, keyHash, KeyPurposes.ACTION)) return false;
 
         // Short calldata zero-pads and can't match the execute selector.
