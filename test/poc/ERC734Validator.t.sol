@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
+import { ERC7739Hashes } from "../helpers/ERC7739Hashes.sol";
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/ERC4337Utils.sol";
 import { ERC7579Utils } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
@@ -143,9 +144,11 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         );
     }
 
-    /// @dev Account 1271 signature: module address prefix, then the validator's `(signer, sig)` blob.
+    /// @dev Account 1271 signature: module address prefix, then the validator's `(signer, sig)` blob,
+    ///      signed over the ERC-7739 personal-sign hash that binds `digest` to alice's identity.
     function _sign1271(uint256 pk, address who, bytes32 digest) internal view returns (bytes memory) {
-        return abi.encodePacked(address(validator), _sign(pk, who, digest));
+        bytes32 bound = ERC7739Hashes.personalSign(address(aliceIdentity), digest);
+        return abi.encodePacked(address(validator), _sign(pk, who, bound));
     }
 
     /// @notice A MODULE-type key must not be able to sign as the account over ERC-1271. Module
