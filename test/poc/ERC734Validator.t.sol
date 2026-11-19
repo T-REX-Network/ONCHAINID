@@ -180,7 +180,7 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         );
     }
 
-    /// @notice Registration refuses a verifier without code (L-23): an EOA answers nothing, and a
+    /// @notice Registration refuses a verifier without code: an EOA answers nothing, and a
     ///         precompile answers whatever it computes.
     function test_addKey_codelessVerifier_reverts() public {
         address[2] memory verifiers = [makeAddr("eoa-verifier"), address(0x04)];
@@ -194,7 +194,7 @@ contract ERC734ValidatorTest is OnchainIDSetup {
 
     /// @notice A verifier that echoes its input (as the identity precompile at 0x04 does) returns
     ///         a first word equal to the magic value, but more than one word. Only an exact
-    ///         32-byte answer counts, so a garbage signature fails (L-23).
+    ///         32-byte answer counts, so a garbage signature fails.
     function test_validateUserOp_echoingVerifier_fails() public {
         bytes memory signerData = abi.encodePacked(address(new MockEchoVerifier()), "some-key");
         vm.prank(address(aliceIdentity));

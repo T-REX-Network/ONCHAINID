@@ -590,8 +590,8 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         // ABI-decodes the returndata, so the exact length is what rules out the wrong answers:
         //   - the 4 raw magic bytes (bytes-to-bytes32 pads on the right, so they would match);
         //   - a longer answer that starts with the magic value, such as the identity precompile
-        //     at 0x04, which echoes its input, and the input starts with the `verify` selector
-        //     (L-23). Registration also rejects verifiers without code, see {_addKey}.
+        //     at 0x04, which echoes its input, and the input starts with the `verify` selector.
+        //     Registration also rejects verifiers without code, see {_addKey}.
         return success && result.length == 32 && bytes32(result) == bytes32(IERC7913SignatureVerifier.verify.selector);
     }
 
@@ -611,7 +611,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         // A signer longer than 20 bytes is `verifier || key`, and {_verify} asks the verifier
         // contract to check every signature. An address without code cannot be a verifier: an EOA
         // answers nothing, and a precompile answers whatever it computes, which {_verify} must
-        // never have to trust (L-23). So the verifier must be a deployed contract.
+        // never have to trust. So the verifier must be a deployed contract.
         if (signerData.length > 20) {
             address verifier = address(bytes20(signerData));
             require(verifier.code.length != 0, VerifierHasNoCode(verifier));
