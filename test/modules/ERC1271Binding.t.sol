@@ -11,7 +11,7 @@ import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
 import { ERC7739Hashes } from "../helpers/ERC7739Hashes.sol";
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 
-/// @notice L-22: an ERC-1271 signature must be bound to the identity that verifies it. The same
+/// @notice An ERC-1271 signature must be bound to the identity that verifies it. The same
 ///         key often controls several accounts, so a signature over the app's raw hash would be
 ///         valid for each of them. Identities follow ERC-7739: the key signs the app's hash
 ///         nested in a struct on the identity's own EIP-712 domain.

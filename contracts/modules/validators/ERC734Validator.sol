@@ -428,7 +428,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
 
     /// @dev ERC-1271 for the account (`msg.sender`). Two rules:
     ///
-    ///      1. The signature must be bound to this account (L-22). The same key often controls
+    ///      1. The signature must be bound to this account. The same key often controls
     ///         several accounts, for example a wallet and the identity it manages. A signature
     ///         over the caller's raw hash would then be valid for all of them, so a message
     ///         that does not name its owner (a Permit2 transfer, say) signed for one could be
