@@ -199,6 +199,10 @@ library Errors {
     /// @notice The claim already exists.
     error ClaimAlreadyRevoked();
 
+    /// @notice Reading a claim issuer's EIP-712 domain ran out of gas because the transaction
+    ///         was sent with too little gas. Retry with more.
+    error ClaimDigestOutOfGas();
+
     /* ----- ERC734Validator trusted-issuer path ----- */
 
     /// @notice Reverts when the resolved issuer identity is not of type

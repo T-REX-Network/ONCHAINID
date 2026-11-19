@@ -148,6 +148,10 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     ///      with a signature taken from elsewhere cannot forge a record.
     event KeyUsed(address indexed account, bytes32 indexed keyHash, bytes32 userOpHash);
 
+    /// @dev Gas for reading an issuer's EIP-712 domain in {_getClaimDigest}. An identity issuer
+    ///      answers in well under this, even behind its beacon proxy.
+    uint256 private constant _CLAIM_DIGEST_GAS = 100_000;
+
     /// @dev EIP-712 typehash for `Claim`. The nested `ClaimData` type is appended per the EIP-712
     ///      rule for nested struct types.
     bytes32 internal constant _CLAIM_TYPEHASH = keccak256(
@@ -933,15 +937,23 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     ///      answers with data that does not decode as a domain, the decoding reverts here, and
     ///      the removal reverts with it. Running the whole computation in its own call
     ///      means any failure, from the issuer or from decoding, lands in the catch.
+    /// @dev The call gets at most {_CLAIM_DIGEST_GAS}. Without a cap, an issuer whose
+    ///      `eip712Domain` burns all the gas it gets would take 63/64 of the transaction's gas,
+    ///      and removing its claim would need millions of gas.
     function _getClaimDigest(address account, address subject, uint256 topic, Structs.ClaimData memory data)
         internal
         view
         virtual
         returns (bytes32)
     {
-        try this.claimDigestOf(account, subject, topic, data) returns (bytes32 digest) {
+        try this.claimDigestOf{ gas: _CLAIM_DIGEST_GAS }(account, subject, topic, data) returns (bytes32 digest) {
             return digest;
         } catch {
+            // The call may also have failed because the caller sent too little gas. Then the
+            // issuer did nothing wrong, and skipping the digest would skip its revocation, so
+            // revert instead. Under the 63/64 rule, a call that got less than its cap leaves
+            // less than cap / 63 behind.
+            require(gasleft() > _CLAIM_DIGEST_GAS / 63, Errors.ClaimDigestOutOfGas());
             return bytes32(0);
         }
     }

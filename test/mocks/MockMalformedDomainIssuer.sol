@@ -10,7 +10,8 @@ contract MockMalformedDomainIssuer {
 
     enum Mode {
         TooShort, // one word instead of seven
-        BadStringOffset // seven words, but the `name` offset points past the end
+        BadStringOffset, // seven words, but the `name` offset points past the end
+        BurnsAllGas // never answers: loops until it runs out of gas
     }
 
     Mode public mode;
@@ -26,6 +27,9 @@ contract MockMalformedDomainIssuer {
 
     /// @dev Same selector as `IERC5267.eip712Domain`, with a broken answer.
     function eip712Domain() external view returns (bytes memory) {
+        if (mode == Mode.BurnsAllGas) {
+            while (true) { }
+        }
         bytes memory answer = mode == Mode.TooShort
             ? abi.encode(bytes32(0))
             : abi.encode(bytes1(0x0f), type(uint256).max, uint256(0), uint256(0), address(0), bytes32(0), uint256(0));
