@@ -931,7 +931,7 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     /// @dev The work runs in {claimDigestOf}, called on this contract with try/catch. A plain
     ///      `try issuer.eip712Domain()` only catches a revert inside the issuer: if the issuer
     ///      answers with data that does not decode as a domain, the decoding reverts here, and
-    ///      the removal reverts with it (L-24). Running the whole computation in its own call
+    ///      the removal reverts with it. Running the whole computation in its own call
     ///      means any failure, from the issuer or from decoding, lands in the catch.
     function _getClaimDigest(address account, address subject, uint256 topic, Structs.ClaimData memory data)
         internal

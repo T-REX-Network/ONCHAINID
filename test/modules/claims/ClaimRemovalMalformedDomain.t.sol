@@ -8,7 +8,7 @@ import { Structs } from "contracts/storage/Structs.sol";
 import { OnchainIDSetup } from "../../helpers/OnchainIDSetup.sol";
 import { MockMalformedDomainIssuer } from "../../mocks/MockMalformedDomainIssuer.sol";
 
-/// @notice L-24: removing a claim reads the issuer's EIP-712 domain to revoke the claim's digest.
+/// @notice Removing a claim reads the issuer's EIP-712 domain to revoke the claim's digest.
 ///         An issuer that answers with data that does not decode as a domain must not make its
 ///         claim unremovable. Such a claim is removed like one from an issuer with no domain at
 ///         all: nothing is revoked, and the claim leaves the identity.
