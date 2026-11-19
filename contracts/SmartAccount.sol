@@ -200,8 +200,8 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         // keep their settings per account, keyed on `msg.sender`, so a call from the account
         // reads to them as the account configuring itself. Letting a key below MANAGEMENT make
         // that call would let it:
-        //   - give an installed validator a new signer, which then signs anything (H-03);
-        //   - set up a module before MANAGEMENT installs it, e.g. plant a recovery (H-04).
+        //   - give an installed validator a new signer, which then signs anything;
+        //   - set up a module before MANAGEMENT installs it, e.g. plant a recovery.
         // Module functions meant for callers are reached through the account's fallback
         // dispatch instead, which appends the real caller (ERC-2771 style).
         //

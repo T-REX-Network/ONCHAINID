@@ -16,7 +16,7 @@ import { RecoveryModule } from "contracts/modules/executors/RecoveryModule.sol";
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
 import { MockStockECDSAValidator } from "../mocks/MockStockECDSAValidator.sol";
 
-/// @notice H-03 and H-04: a key below MANAGEMENT must not be able to make the account call an
+/// @notice A key below MANAGEMENT must not be able to make the account call an
 ///         ERC-7579 module. Modules keep their settings per account, keyed on `msg.sender`, so
 ///         such a call reads to the module as the account configuring itself.
 ///
@@ -31,7 +31,7 @@ contract ModuleTargetGuardTest is OnchainIDSetup {
 
     address internal attacker = makeAddr("attacker");
 
-    // ---- H-03: a second installed validator -----------------------------------------------
+    // ---- a second installed validator -----------------------------------------------------
 
     /// @notice MANAGEMENT installs a stock validator with an honest signer. An ACTION key then
     ///         tries to swap that signer for the attacker. The user op passes the ERC734Validator
@@ -66,7 +66,7 @@ contract ModuleTargetGuardTest is OnchainIDSetup {
         assertEq(second.signer(address(aliceIdentity)), alice, "the honest signer must stay");
     }
 
-    // ---- H-04: a module that is not installed yet -----------------------------------------
+    // ---- a module that is not installed yet -----------------------------------------------
 
     /// @notice An ACTION key tries to set up a RecoveryModule that alice has not installed yet,
     ///         with an attacker guardian. The module is not installed, but it reports its module
