@@ -73,6 +73,11 @@ import { ERC7579Validator } from "./ERC7579Validator.sol";
 /// @dev userOp signature wire format: `abi.encode(bytes signer, bytes signature)`, where
 ///      `signer` is ERC-7913 (20 bytes = EOA/1271, longer = `verifier(20) || key`). Storage is
 ///      ERC-7201 namespaced.
+/// @dev ERC-7562: this module is a singleton, and the slots it reads during validation are
+///      derived from the key hash, not from the account. Bundlers that enforce ERC-7562 therefore
+///      accept an identity's user ops only if the identity is staked with the EntryPoint. See the
+///      README, "Sending user operations (ERC-4337)". The code below still avoids the other
+///      things ERC-7562 forbids (EXTCODESIZE, calls back into the account) where it can.
 contract ERC734Validator is ERC7579Validator, IERC735 {
 
     using EnumerableSet for EnumerableSet.UintSet;

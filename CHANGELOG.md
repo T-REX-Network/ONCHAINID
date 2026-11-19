@@ -29,7 +29,7 @@ v3 is not storage-compatible or interface-compatible with 2.x. It is a new deplo
 
 ### Added
 
-- ERC-4337 account abstraction: identities validate `UserOperation`s through the installed validator module and can operate with bundlers and paymasters.
+- ERC-4337 account abstraction: identities validate `UserOperation`s through the installed validator module and can operate with bundlers and paymasters. Bundlers that enforce ERC-7562 need the identity to be staked with the EntryPoint, and passkey keys need the RIP-7212 P-256 precompile on the chain (see the README).
 - ERC-7913 signers: the userOp signature wire format is `abi.encode(signer, signature)`, where a 20-byte signer is an EOA or ERC-1271 contract and a longer signer is a `verifier || key` blob. Supported key types: ECDSA, RSA, WEBAUTHN (passkeys), MODULE, ACCESS_MANAGER. This enables multi-device signing, including claim signing from passkey devices.
 - Per-identity EIP-712 domains, so signatures cannot be replayed against another identity sharing the same module deployment.
 - `RecoveryModule`: social recovery for identities, wrapping OpenZeppelin's `ERC7579SocialRecoveryExecutor`. Weighted guardian quorum, delayed execution, cancellable by the account or by a guardian quorum before it runs.
