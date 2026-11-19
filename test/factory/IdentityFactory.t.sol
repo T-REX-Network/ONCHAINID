@@ -219,7 +219,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.0.0");
     }
 
-    /// @notice Diff audit L-02: an implementation built against a registry interface the
+    /// @notice An implementation built against a registry interface the
     ///         registry does not have would make every key write revert once behind the beacon.
     ///         The factory refuses it, even though the registry address itself is unchanged.
     function test_upgradeBeacon_revertWhenRegistryLacksRequiredInterface() public {

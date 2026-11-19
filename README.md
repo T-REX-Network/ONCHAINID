@@ -81,7 +81,7 @@ Each identity type must be registered by an admin before it can be used, and acc
 
 All identities share one implementation through the factory's beacon, and `upgradeBeacon` swaps it for every identity at once. The key registry (`ERC734Validator`) is not upgradeable: an implementation must keep the registry the identities already hold their keys in, and that registry must have every function the implementation calls on it. The factory checks this before an upgrade. The implementation reports the `IKeyRegistry` interface id it was built with (`requiredRegistryInterface`), and the registry must answer it through ERC-165.
 
-**Deployments made before this check (before the OpenZeppelin diff audit fixes) must not be upgraded to the current implementation.** Their registry has older `addKey` / `removeKey` signatures, so every key write would revert, and their factory does not have the check that would refuse the upgrade. Use a new deployment of the full stack instead.
+**Deployments made before this check must not be upgraded to the current implementation.** Their registry has older `addKey` / `removeKey` signatures, so every key write would revert, and their factory does not have the check that would refuse the upgrade. Use a new deployment of the full stack instead.
 
 ## Recovery module integration notes
 
