@@ -472,9 +472,13 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
             IERC5267(account).eip712Domain();
         bytes memory accountDomain =
             abi.encode(keccak256(bytes(name)), keccak256(bytes(version)), chainId, verifyingContract, salt);
-        bytes32 nestedHash = appSeparator.toTypedDataHash(
-            ERC7739Utils.typedDataSignStructHash(contentsDescr, contentsHash, accountDomain)
-        );
+        bytes32 typedDataSignHash = ERC7739Utils.typedDataSignStructHash(contentsDescr, contentsHash, accountDomain);
+
+        // A descriptor with no valid type name gives a zero hash, which names neither this
+        // account nor the message, so a signature over it would hold for every account.
+        if (typedDataSignHash == bytes32(0)) return false;
+
+        bytes32 nestedHash = appSeparator.toTypedDataHash(typedDataSignHash);
         return _isValidActionKeySignature(account, nestedHash, keySignature);
     }
 

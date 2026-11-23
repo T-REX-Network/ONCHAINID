@@ -62,6 +62,20 @@ contract ERC1271BindingTest is OnchainIDSetup {
         assertEq(_isValid(aliceIdentity, otherAppHash, signature), INVALID);
     }
 
+    /// @notice A descriptor with no type name ("(uint256 id)") nests the message in nothing: the
+    ///         hash left to sign names neither the identity nor the message. Signing it once
+    ///         must not give a signature that either identity accepts.
+    function test_typedData_withMalformedDescriptor_isRejected() public view {
+        bytes32 appHash = MessageHashUtils.toTypedDataHash(APP_SEPARATOR, _mailHash(1));
+        bytes32 hashNamingNoAccount = MessageHashUtils.toTypedDataHash(APP_SEPARATOR, bytes32(0));
+        bytes memory signature = ERC7739Utils.encodeTypedDataSig(
+            _keySignature(hashNamingNoAccount), APP_SEPARATOR, _mailHash(1), "(uint256 id)"
+        );
+
+        assertEq(_isValid(aliceIdentity, appHash, signature), INVALID, "rejected by alice's identity");
+        assertEq(_isValid(bobIdentity, appHash, signature), INVALID, "rejected by bob's identity");
+    }
+
     // ---- what is accepted ------------------------------------------------------------------
 
     /// @notice ERC-7739 personal message: `PersonalSign(bytes prefixed)` on the identity's domain.
