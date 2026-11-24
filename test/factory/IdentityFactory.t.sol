@@ -234,6 +234,22 @@ contract IdentityFactoryTest is OnchainIDSetup {
         onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.0.0");
     }
 
+    /// @notice The real-world shape: a registry from before this check, with no
+    ///         `supportsInterface` at all, named by the implementation a new factory starts from.
+    function test_initializeBeacon_revertWhenRegistryHasNoERC165() public {
+        AccessManager am = new AccessManager(deployer);
+        IdentityFactory freshFactory = new IdentityFactory(address(am));
+        address registryWithoutERC165 = address(new RegistryWithoutERC165());
+        Identity freshImpl = new Identity(registryWithoutERC165, address(freshFactory));
+        bytes4 required = freshImpl.requiredRegistryInterface();
+
+        vm.prank(deployer);
+        vm.expectRevert(
+            abi.encodeWithSelector(Errors.RegistryInterfaceNotSupported.selector, registryWithoutERC165, required)
+        );
+        freshFactory.initializeBeacon(address(freshImpl));
+    }
+
     /// @notice The current registry answers the interface the current implementation needs.
     function test_registry_supportsTheInterfaceTheImplementationNeeds() public view {
         bytes4 required = getIdentityImplementation().requiredRegistryInterface();
@@ -2402,3 +2418,6 @@ contract IdentityFactoryTest is OnchainIDSetup {
     }
 
 }
+
+/// @dev Stands in for a registry deployed before the interface check: it has no `supportsInterface`.
+contract RegistryWithoutERC165 { }

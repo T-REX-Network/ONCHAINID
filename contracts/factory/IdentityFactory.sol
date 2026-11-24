@@ -224,9 +224,10 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     ///      stay continuous with.
     /// @dev The registry must also support every function the candidate calls on it. The
     ///      registry is kept across upgrades, but a new implementation may be built against a
-    ///      newer registry interface. Behind the beacon, every key write would then revert. The candidate names the {IKeyRegistry} interface id it was built with,
-    ///      and the registry must answer it through ERC-165. A registry older than this check
-    ///      has no `supportsInterface`, so it fails too.
+    ///      newer registry interface. Behind the beacon, every key write would then revert. The
+    ///      candidate names the {IKeyRegistry} interface id it was built with, and the registry
+    ///      must answer it through ERC-165. A registry older than this check has no
+    ///      `supportsInterface`, so it fails too.
     function _checkImplementation(address implementation, address current) private view {
         require(implementation.code.length != 0, Errors.ImplementationNotAContract(implementation));
         require(
