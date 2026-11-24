@@ -156,12 +156,14 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
     ///         MANAGEMENT self-calls) and {executeFromExecutor} go through here, so there is only one
     ///         authorization path to keep right. DELEGATECALL and unknown call types are rejected.
     function _execute(Mode mode, bytes calldata executionCalldata) internal virtual override returns (bytes[] memory) {
+        // Only the modes {supportsExecutionMode} advertises: SINGLE or BATCH, DEFAULT or TRY.
+        require(supportsExecutionMode(Mode.unwrap(mode)), Errors.UnsupportedExecutionMode(Mode.unwrap(mode)));
+        (CallType callType, ExecType execType,,) = ERC7579Utils.decodeMode(mode);
+
         // Work out who is calling: their key hash, and whether they are an installed executor
         // (which gets purpose-checked).
         bytes32 callerKeyHash = hashAddress(msg.sender);
         bool callerIsExecutor = isModuleInstalled(MODULE_TYPE_EXECUTOR, msg.sender, Calldata.emptyBytes());
-
-        (CallType callType, ExecType execType,,) = ERC7579Utils.decodeMode(mode);
 
         if (callType == ERC7579Utils.CALLTYPE_SINGLE) {
             // SINGLE layout: target (20) | value (32) | data. A shorter payload is malformed;
@@ -175,43 +177,26 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
             return super._execute(mode, executionCalldata);
         }
 
-        if (callType == ERC7579Utils.CALLTYPE_BATCH) {
-            // Each call is authorized right before it runs, not all up front: an earlier call in
-            // the batch can change what a later target is, for example by deploying a module at
-            // its address. Decode into memory so a bad offset can't point past the batch and let
-            // us authorize a different target than we run, and so the validator (which decodes
-            // the same way) and this check always agree.
-            Execution[] memory batch = abi.decode(executionCalldata, (Execution[]));
-            bytes[] memory results = new bytes[](batch.length);
-            for (uint256 i = 0; i < batch.length; i++) {
-                address target = batch[i].target;
-                if (target == address(0)) target = address(this);
-                _authorizeCall(target, batch[i].callData, callerKeyHash, callerIsExecutor);
-                emit CallDispatched(target, batch[i].value, batch[i].callData, msg.sender);
-                results[i] = _runBatchCall(i, execType, target, batch[i].value, batch[i].callData);
-            }
-            return results;
-        }
+        // BATCH. Each call is authorized right before it runs, not all up front: an earlier call
+        // can change what a later target is, for example by deploying a module at its address.
+        // Decode into memory so a bad offset can't point past the batch and let us authorize a
+        // different target than we run, and so the validator (which decodes the same way) and
+        // this check always agree.
+        bool tryMode = execType == ERC7579Utils.EXECTYPE_TRY;
+        Execution[] memory batch = abi.decode(executionCalldata, (Execution[]));
+        bytes[] memory results = new bytes[](batch.length);
+        for (uint256 i = 0; i < batch.length; i++) {
+            address target = batch[i].target;
+            if (target == address(0)) target = address(this);
+            _authorizeCall(target, batch[i].callData, callerKeyHash, callerIsExecutor);
+            emit CallDispatched(target, batch[i].value, batch[i].callData, msg.sender);
 
-        revert Errors.UnsupportedExecutionMode(Mode.unwrap(mode));
-    }
-
-    /// @dev Runs one call of a batch the way OpenZeppelin's `execBatch` does: a failure reverts
-    ///      the whole batch in DEFAULT mode, and is only reported with `ERC7579TryExecuteFail`
-    ///      in TRY mode.
-    function _runBatchCall(uint256 index, ExecType execType, address target, uint256 value, bytes memory callData)
-        private
-        returns (bytes memory)
-    {
-        (bool success, bytes memory returnData) = target.call{ value: value }(callData);
-        if (execType == ERC7579Utils.EXECTYPE_DEFAULT) {
-            Address.verifyCallResult(success, returnData);
-        } else if (execType == ERC7579Utils.EXECTYPE_TRY) {
-            if (!success) emit ERC7579Utils.ERC7579TryExecuteFail(index, returnData);
-        } else {
-            revert ERC7579Utils.ERC7579UnsupportedExecType(execType);
+            (bool success, bytes memory returnData) = target.call{ value: batch[i].value }(batch[i].callData);
+            if (!success && !tryMode) Address.verifyCallResult(success, returnData); // bubbles the revert
+            if (!success && tryMode) emit ERC7579Utils.ERC7579TryExecuteFail(i, returnData);
+            results[i] = returnData;
         }
-        return returnData;
+        return results;
     }
 
     /// @dev Authorizes one call: no dispatched call may target an ERC-7579 module (unless the

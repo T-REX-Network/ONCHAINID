@@ -2,6 +2,7 @@
 pragma solidity ^0.8.27;
 
 import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/ERC4337Utils.sol";
+import { ERC7579Utils } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
 import { IERC1271 } from "@openzeppelin/contracts/interfaces/IERC1271.sol";
 import { PackedUserOperation } from "@openzeppelin/contracts/interfaces/IERC4337.sol";
 import { IAccount } from "@openzeppelin/contracts/interfaces/IERC4337.sol";
@@ -105,6 +106,40 @@ contract SmartAccountTest is OnchainIDSetup {
         emit SmartAccount.CallDispatched(address(aliceIdentity), 0, addKeyCall, ENTRY_POINT);
         vm.prank(ENTRY_POINT);
         IERC7579Execution(address(aliceIdentity)).execute(batchMode, abi.encode(batch));
+    }
+
+    /// @notice In DEFAULT mode, one failing call reverts the whole batch with that call's error,
+    ///         so the calls before it are undone too.
+    function test_execute_batchInDefaultMode_revertsWithTheFailingCallsError() public {
+        Counter counter = new Counter();
+        Reverter reverter = new Reverter();
+        Execution[] memory batch = new Execution[](2);
+        batch[0] = Execution({ target: address(counter), value: 0, callData: abi.encodeCall(Counter.increment, ()) });
+        batch[1] = Execution({ target: address(reverter), value: 0, callData: abi.encodeCall(Reverter.fail, ()) });
+        bytes32 defaultBatchMode = bytes32(bytes1(0x01)); // CALLTYPE_BATCH, EXECTYPE_DEFAULT
+
+        vm.prank(ENTRY_POINT);
+        vm.expectRevert(Reverter.Failed.selector);
+        IERC7579Execution(address(aliceIdentity)).execute(defaultBatchMode, abi.encode(batch));
+
+        assertEq(counter.count(), 0, "the call before the failure is undone");
+    }
+
+    /// @notice In TRY mode, a failing call is only reported, and the rest of the batch still runs.
+    function test_execute_batchInTryMode_reportsTheFailureAndRunsTheRest() public {
+        Counter counter = new Counter();
+        Reverter reverter = new Reverter();
+        Execution[] memory batch = new Execution[](2);
+        batch[0] = Execution({ target: address(reverter), value: 0, callData: abi.encodeCall(Reverter.fail, ()) });
+        batch[1] = Execution({ target: address(counter), value: 0, callData: abi.encodeCall(Counter.increment, ()) });
+        bytes32 tryBatchMode = bytes32(bytes2(0x0101)); // CALLTYPE_BATCH, EXECTYPE_TRY
+
+        vm.expectEmit(address(aliceIdentity));
+        emit ERC7579Utils.ERC7579TryExecuteFail(0, abi.encodeWithSelector(Reverter.Failed.selector));
+        vm.prank(ENTRY_POINT);
+        IERC7579Execution(address(aliceIdentity)).execute(tryBatchMode, abi.encode(batch));
+
+        assertEq(counter.count(), 1, "the call after the failure still runs");
     }
 
     function _addActionKeyCall(address grantee) internal pure returns (bytes memory) {
@@ -1148,6 +1183,17 @@ contract Counter {
 
     function increment() external {
         count++;
+    }
+
+}
+
+/// @dev A target whose only function always reverts.
+contract Reverter {
+
+    error Failed();
+
+    function fail() external pure {
+        revert Failed();
     }
 
 }
