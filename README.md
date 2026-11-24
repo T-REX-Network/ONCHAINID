@@ -71,11 +71,11 @@ Identities can be driven through an ERC-4337 EntryPoint, but bundlers that enfor
 
 Neither can be removed without giving up the shared registry and the shared upgrade path, so the supported setups are:
 
-- **Stake the identity with the EntryPoint.** ERC-7562 lets a staked account read the storage of other contracts during validation, so public bundlers accept its user operations.
+- **Stake the identity with the EntryPoint.** The reference bundler (eth-infinitism) lets a staked account read the storage of other contracts during validation, so it accepts its user operations. ERC-7562 as written grants this only to a staked paymaster or factory, so check what your bundler does. To stake, the identity itself calls `EntryPoint.addStake(unstakeDelaySec)` with the stake as value, through `execute`. The amount and the delay must meet the bundler's `MIN_STAKE_VALUE` and `MIN_UNSTAKE_DELAY`.
 - **Use a bundler that does not enforce ERC-7562**, such as a private or permissioned one.
 - **Skip the EntryPoint.** A key holder can call the identity directly, for example through the `KeyApprovalModule`.
 
-**Passkey (WebAuthn) keys need the P-256 precompile.** They verify through OpenZeppelin's `P256`, which calls the RIP-7212 precompile at `0x100`. On a chain without it, `P256` falls back to a much more expensive Solidity check, and the call to an address without code also breaks ERC-7562. Check that every chain you deploy to has the precompile (Base does) before you rely on passkeys for user operations.
+**Passkey (WebAuthn) keys need the P-256 precompile.** They verify through OpenZeppelin's `P256`, which calls the P-256 precompile at `0x100` (RIP-7212 on rollups, EIP-7951 on L1; ERC-7562 allows it). On a chain without it, `P256` falls back to a much more expensive Solidity check, and the call to an address without code also breaks ERC-7562. Check that every chain you deploy to has the precompile (Base does) before you rely on passkeys for user operations.
 
 ## Factory and cross-chain addresses
 

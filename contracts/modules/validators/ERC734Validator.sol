@@ -76,8 +76,7 @@ import { ERC7579Validator } from "./ERC7579Validator.sol";
 /// @dev ERC-7562: this module is a singleton, and the slots it reads during validation are
 ///      derived from the key hash, not from the account. Bundlers that enforce ERC-7562 therefore
 ///      accept an identity's user ops only if the identity is staked with the EntryPoint. See the
-///      README, "Sending user operations (ERC-4337)". The code below still avoids the other
-///      things ERC-7562 forbids (EXTCODESIZE, calls back into the account) where it can.
+///      README, "Sending user operations (ERC-4337)".
 contract ERC734Validator is ERC7579Validator, IERC735 {
 
     using EnumerableSet for EnumerableSet.UintSet;
