@@ -3,9 +3,16 @@ pragma solidity ^0.8.27;
 
 import { ERC7579DelayedExecutor } from "@openzeppelin/accounts/modules/executors/ERC7579DelayedExecutor.sol";
 import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/ERC4337Utils.sol";
+import {
+    ERC7579Utils,
+    Mode,
+    ModePayload,
+    ModeSelector
+} from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
 import { IAccount, PackedUserOperation } from "@openzeppelin/contracts/interfaces/IERC4337.sol";
 import { IERC5267 } from "@openzeppelin/contracts/interfaces/IERC5267.sol";
 import {
+    Execution,
     IERC7579Execution,
     IERC7579Module,
     MODULE_TYPE_EXECUTOR,
@@ -103,6 +110,43 @@ contract ModuleTargetGuardTest is OnchainIDSetup {
 
         assertFalse(ran, "the dispatch must fail");
         assertEq(recovery.getGuardianCount(address(aliceIdentity)), 0, "no guardian may be planted");
+    }
+
+    // ---- a module deployed inside the same batch --------------------------------------------
+
+    /// @notice An ACTION key batches two calls: deploy a RecoveryModule through a public CREATE2
+    ///         deployer, then set it up with an attacker guardian. Before the batch runs, the
+    ///         module's address has no code and looks like an ordinary target. Each call is
+    ///         checked right before it runs, so the second one sees the module and is refused.
+    function test_actionKey_cannotDeployAndConfigureAModuleInOneBatch() public {
+        Create2Deployer deployer = new Create2Deployer();
+        bytes32 salt = bytes32(uint256(1));
+        address predictedModule = deployer.predict(salt, type(RecoveryModule).creationCode);
+
+        Execution[] memory batch = new Execution[](2);
+        batch[0] = Execution({
+            target: address(deployer),
+            value: 0,
+            callData: abi.encodeCall(Create2Deployer.deploy, (salt, type(RecoveryModule).creationCode))
+        });
+        batch[1] = Execution({
+            target: predictedModule,
+            value: 0,
+            callData: abi.encodeCall(IERC7579Module.onInstall, (_recoveryConfigWithGuardian(attacker)))
+        });
+        bytes32 batchMode = Mode.unwrap(
+            ERC7579Utils.encodeMode(
+                ERC7579Utils.CALLTYPE_BATCH, ERC7579Utils.EXECTYPE_DEFAULT, ModeSelector.wrap(0), ModePayload.wrap(0)
+            )
+        );
+        bytes memory callData = abi.encodeCall(IERC7579Execution.execute, (batchMode, ERC7579Utils.encodeBatch(batch)));
+
+        vm.prank(ENTRY_POINT);
+        (bool ok, bytes memory ret) = address(aliceIdentity).call(callData);
+
+        assertFalse(ok, "configuring the freshly deployed module must be blocked");
+        assertEq(ret, abi.encodeWithSelector(Errors.ModuleTargetBlocked.selector, predictedModule));
+        assertEq(predictedModule.code.length, 0, "the whole batch reverts, deploy included");
     }
 
     // ---- what still works ------------------------------------------------------------------
@@ -287,5 +331,22 @@ contract ModuleTargetGuardTest is OnchainIDSetup {
 contract Plain {
 
     fallback() external { }
+
+}
+
+/// @dev A public CREATE2 deployer, like the ones third-party modules are deployed through.
+contract Create2Deployer {
+
+    function deploy(bytes32 salt, bytes memory creationCode) external returns (address deployed) {
+        assembly ("memory-safe") {
+            deployed := create2(0, add(creationCode, 0x20), mload(creationCode), salt)
+        }
+        require(deployed != address(0), "deploy failed");
+    }
+
+    function predict(bytes32 salt, bytes memory creationCode) external view returns (address) {
+        bytes32 deployHash = keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, keccak256(creationCode)));
+        return address(uint160(uint256(deployHash)));
+    }
 
 }

@@ -39,6 +39,7 @@ import {
     MODULE_TYPE_HOOK,
     MODULE_TYPE_VALIDATOR
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import { Address } from "@openzeppelin/contracts/utils/Address.sol";
 import { Calldata } from "@openzeppelin/contracts/utils/Calldata.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 
@@ -160,7 +161,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         bytes32 callerKeyHash = hashAddress(msg.sender);
         bool callerIsExecutor = isModuleInstalled(MODULE_TYPE_EXECUTOR, msg.sender, Calldata.emptyBytes());
 
-        (CallType callType,,,) = ERC7579Utils.decodeMode(mode);
+        (CallType callType, ExecType execType,,) = ERC7579Utils.decodeMode(mode);
 
         if (callType == ERC7579Utils.CALLTYPE_SINGLE) {
             // SINGLE layout: target (20) | value (32) | data. A shorter payload is malformed;
@@ -171,22 +172,46 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
             if (target == address(0)) target = address(this);
             _authorizeCall(target, executionCalldata[52:], callerKeyHash, callerIsExecutor);
             emit CallDispatched(target, uint256(bytes32(executionCalldata[20:52])), executionCalldata[52:], msg.sender);
-        } else if (callType == ERC7579Utils.CALLTYPE_BATCH) {
-            // Every call in the batch must pass. Decode into memory so a bad offset can't point
-            // past the batch and let us authorize a different target than we run, and so the
-            // validator (which decodes the same way) and this check always agree.
+            return super._execute(mode, executionCalldata);
+        }
+
+        if (callType == ERC7579Utils.CALLTYPE_BATCH) {
+            // Each call is authorized right before it runs, not all up front: an earlier call in
+            // the batch can change what a later target is, for example by deploying a module at
+            // its address. Decode into memory so a bad offset can't point past the batch and let
+            // us authorize a different target than we run, and so the validator (which decodes
+            // the same way) and this check always agree.
             Execution[] memory batch = abi.decode(executionCalldata, (Execution[]));
+            bytes[] memory results = new bytes[](batch.length);
             for (uint256 i = 0; i < batch.length; i++) {
                 address target = batch[i].target;
                 if (target == address(0)) target = address(this);
                 _authorizeCall(target, batch[i].callData, callerKeyHash, callerIsExecutor);
                 emit CallDispatched(target, batch[i].value, batch[i].callData, msg.sender);
+                results[i] = _runBatchCall(i, execType, target, batch[i].value, batch[i].callData);
             }
-        } else {
-            revert Errors.UnsupportedExecutionMode(Mode.unwrap(mode));
+            return results;
         }
 
-        return super._execute(mode, executionCalldata);
+        revert Errors.UnsupportedExecutionMode(Mode.unwrap(mode));
+    }
+
+    /// @dev Runs one call of a batch the way OpenZeppelin's `execBatch` does: a failure reverts
+    ///      the whole batch in DEFAULT mode, and is only reported with `ERC7579TryExecuteFail`
+    ///      in TRY mode.
+    function _runBatchCall(uint256 index, ExecType execType, address target, uint256 value, bytes memory callData)
+        private
+        returns (bytes memory)
+    {
+        (bool success, bytes memory returnData) = target.call{ value: value }(callData);
+        if (execType == ERC7579Utils.EXECTYPE_DEFAULT) {
+            Address.verifyCallResult(success, returnData);
+        } else if (execType == ERC7579Utils.EXECTYPE_TRY) {
+            if (!success) emit ERC7579Utils.ERC7579TryExecuteFail(index, returnData);
+        } else {
+            revert ERC7579Utils.ERC7579UnsupportedExecType(execType);
+        }
+        return returnData;
     }
 
     /// @dev Authorizes one call: no dispatched call may target an ERC-7579 module (unless the
