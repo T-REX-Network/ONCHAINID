@@ -211,6 +211,11 @@ library Errors {
     ///         below the consumer's claim-add threshold.
     error ReputationBelowClaimAddThreshold(address identity, uint256 score, uint256 threshold);
 
+    /// @notice Reverts when the claim-add threshold is zero: every score passes `>= 0`, so
+    ///         the reputation gate could never block an issuer. The setter refuses the
+    ///         value and the validator refuses a registry that still reports it.
+    error ZeroClaimAddThreshold();
+
     /* ----- ERC734Validator field caps (see {Structs}) ----- */
 
     /// @notice Reverts when a key's clientData exceeds {Structs.MAX_CLIENT_DATA_LENGTH}.
@@ -323,6 +328,12 @@ library Errors {
 
     /// @notice ETH push from `KeyApprovalModule` back to the identity failed.
     error ReturnToAccountFailed();
+
+    /* ----- RecoveryModule ----- */
+
+    /// @notice The recovery was scheduled under a previous installation of the module on this
+    ///         account. It can be canceled by the account but never executed.
+    error RecoveryScheduledUnderPreviousInstall(bytes32 operationId);
 
     /* ----- EASClaimIssuer ----- */
 
