@@ -10,6 +10,7 @@ import { IIdentity } from "contracts/interface/IIdentity.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
+import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 
 /// @notice Coverage for ERC-735 claim management on an Identity (add, remove, get, isClaimValid).
@@ -145,6 +146,21 @@ contract ClaimsTest is OnchainIDSetup {
 
         uint256[] memory topics = onchainidSetup.signatureValidator.getClaimTopics(address(aliceIdentity));
         assertEq(topics.length, 0, "alice holds no claim any more");
+    }
+
+    function test_getClaimTopics_PagesTheSameTopicsAsTheFullSet() public {
+        _addExternalIssuerClaim(new ExternalIssuer(), claimTopic);
+        ERC734Validator registry = onchainidSetup.signatureValidator;
+        uint256[] memory everyTopic = registry.getClaimTopics(address(aliceIdentity));
+
+        uint256[] memory firstPage = registry.getClaimTopics(address(aliceIdentity), 0, 1);
+        uint256[] memory pastTheEnd = registry.getClaimTopics(address(aliceIdentity), 1, 1000);
+
+        assertEq(everyTopic.length, 2, "alice holds claims under topic 666 and the test topic");
+        assertEq(firstPage.length, 1, "the page holds one topic");
+        assertEq(firstPage[0], everyTopic[0], "the first page starts at the first topic");
+        assertEq(pastTheEnd.length, 1, "an end past the set returns the tail");
+        assertEq(pastTheEnd[0], everyTopic[1], "the tail is the last topic");
     }
 
     // ============ Claim ids of an account by topic ============

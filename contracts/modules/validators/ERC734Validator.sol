@@ -836,8 +836,15 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     }
 
     /// @notice The topics under which `account` holds at least one claim, in no particular order.
+    ///         Returns the full set. Use the `(account, start, end)` overload for large sets.
     function getClaimTopics(address account) public view returns (uint256[] memory) {
-        return _store().registries[account].claimTopics.values();
+        return _store().registries[account].claimTopics.values(0, type(uint64).max);
+    }
+
+    /// @notice Paginated variant of {getClaimTopics}. Returns topics in the index range
+    ///         `[start, end)`. `end` past the set size returns the available tail.
+    function getClaimTopics(address account, uint256 start, uint256 end) public view returns (uint256[] memory) {
+        return _store().registries[account].claimTopics.values(start, end);
     }
 
     /// @notice Paginated claim ids of `account` under `topic`, in the index range `[start, end)`.
