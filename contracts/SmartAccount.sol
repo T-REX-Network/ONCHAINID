@@ -177,6 +177,10 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
             return super._execute(mode, executionCalldata);
         }
 
+        // An override of {supportsExecutionMode} that adds a call type must handle it here,
+        // not have it decoded as a batch.
+        require(callType == ERC7579Utils.CALLTYPE_BATCH, Errors.UnsupportedExecutionMode(Mode.unwrap(mode)));
+
         // BATCH. Each call is authorized right before it runs, not all up front: an earlier call
         // can change what a later target is, for example by deploying a module at its address.
         // Decode into memory so a bad offset can't point past the batch and let us authorize a
