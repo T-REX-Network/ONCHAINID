@@ -71,7 +71,7 @@ Identities can be driven through an ERC-4337 EntryPoint, but bundlers that enfor
 
 Neither can be removed without giving up the shared registry and the shared upgrade path, so the supported setups are:
 
-- **Stake the identity with the EntryPoint.** The reference bundler (eth-infinitism) lets a staked account read the storage of other contracts during validation, so it accepts its user operations. ERC-7562 as written grants this only to a staked paymaster or factory, so check what your bundler does. To stake, the identity itself calls `EntryPoint.addStake(unstakeDelaySec)` with the stake as value, through `execute`. The amount and the delay must meet the bundler's `MIN_STAKE_VALUE` and `MIN_UNSTAKE_DELAY`.
+- **Stake the identity with the EntryPoint.** The reference bundler (eth-infinitism) lets a staked account read the storage of other contracts during validation, so it accepts its user operations. ERC-7562 as written grants this only to a staked paymaster or factory, so check what your bundler does. To stake, the identity itself calls `EntryPoint.addStake(unstakeDelaySec)` with the stake as value. The amount and the delay must meet the bundler's `MIN_STAKE_VALUE` and `MIN_UNSTAKE_DELAY`. An unstaked identity cannot send this first call as a user operation through an ERC-7562 bundler, so a key holder sends it directly, through the identity's ERC-734 `execute(to, value, data)` (handled by the `KeyApprovalModule`), or through a bundler that does not enforce ERC-7562.
 - **Use a bundler that does not enforce ERC-7562**, such as a private or permissioned one.
 - **Skip the EntryPoint.** A key holder can call the identity directly, for example through the `KeyApprovalModule`.
 
@@ -91,6 +91,12 @@ The factory offers two entry points:
 - **`createIdentityFor`** — the caller deploys an identity for another account (a token, a vault, and so on). This requires the right role for that identity type.
 
 Each identity type must be registered by an admin before it can be used, and access is controlled with OpenZeppelin's `AccessManager`.
+
+### Upgrading identities
+
+All identities share one implementation through the factory's beacon, and `upgradeBeacon` swaps it for every identity at once. The key registry (`ERC734Validator`) is not upgradeable: an implementation must keep the registry the identities already hold their keys in, and that registry must have every function the implementation calls on it. The factory checks this before an upgrade. The implementation reports the `IKeyRegistry` interface id it was built with (`requiredRegistryInterface`), and the registry must answer it through ERC-165.
+
+**Deployments made before this check must not be upgraded to the current implementation.** Their registry has older `addKey` / `removeKey` signatures, so every key write would revert, and their factory does not have the check that would refuse the upgrade. Use a new deployment of the full stack instead.
 
 ## Recovery module integration notes
 
