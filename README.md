@@ -77,6 +77,20 @@ The factory offers two entry points:
 
 Each identity type must be registered by an admin before it can be used, and access is controlled with OpenZeppelin's `AccessManager`.
 
+### Upgrading identities
+
+All identities share one implementation through the factory's beacon, and `upgradeBeacon` swaps it for every identity at once. The key registry (`ERC734Validator`) is not upgradeable: an implementation must keep the registry the identities already hold their keys in, and that registry must have every function the implementation calls on it. The factory checks this before an upgrade. The implementation reports the `IKeyRegistry` interface id it was built with (`requiredRegistryInterface`), and the registry must answer it through ERC-165.
+
+**Deployments made before this check must not be upgraded to the current implementation.** Their registry has older `addKey` / `removeKey` signatures, so every key write would revert, and their factory does not have the check that would refuse the upgrade. Use a new deployment of the full stack instead.
+
+## ERC-1271 signatures
+
+An identity answers ERC-1271 `isValidSignature` with plain ERC-1271: the signature is `validator (20 bytes) || abi.encode(signer, signature)`, and the key signs the app's hash as is. Only a key with ACTION (or MANAGEMENT) can sign; MODULE keys never can.
+
+- **A key shared with another account signs for both.** If a wallet is also a key on its identity, a signature it makes for one is valid for the other when the signed message does not name the owner (Permit2 signature transfers are the usual example).
+- **Identities are not meant to hold assets.** An identity holds keys and claims. Keep tokens and approvals in the wallets, not on the identity, and do not give an identity Permit2 approvals.
+- **Why not ERC-7739.** ERC-7739 would bind each signature to the identity, but it does not compose: a key that is itself a smart wallet using ERC-7739 could not produce a readable signature for the identity, and wallet support is limited. Plain ERC-1271 works with every app.
+
 ## Recovery module integration notes
 
 `RecoveryModule` adds social recovery to an identity. It is a thin wrapper around OpenZeppelin's `ERC7579SocialRecoveryExecutor`, pulled in from the `openzeppelin-accounts` repository via soldeer, pinned to the commit that closes OpenZeppelin's September 2026 audit of that module. All recovery logic lives upstream; the wrapper only turns the upstream `abstract` contract into a deployable one.

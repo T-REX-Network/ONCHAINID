@@ -26,9 +26,9 @@ import { SmartAccount } from "./SmartAccount.sol";
 import { IERC734 } from "./interface/IERC734.sol";
 import { IERC735 } from "./interface/IERC735.sol";
 import { IIdentity } from "./interface/IIdentity.sol";
+import { IKeyRegistry } from "./interface/IKeyRegistry.sol";
 import { Errors } from "./libraries/Errors.sol";
 import { KeyTypes } from "./libraries/KeyTypes.sol";
-import { ERC734Validator } from "./modules/validators/ERC734Validator.sol";
 import { Structs } from "./storage/Structs.sol";
 import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import { MODULE_TYPE_EXECUTOR, MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
@@ -126,6 +126,14 @@ contract Identity is Initializable, SmartAccount, ERC165 {
         return _registryModule;
     }
 
+    /// @notice The ERC-165 id of the registry functions this implementation calls ({IKeyRegistry}).
+    ///         The factory requires the registry module to support it before it puts this
+    ///         implementation behind the beacon, so an upgrade cannot leave key writes calling
+    ///         functions the registry does not have.
+    function requiredRegistryInterface() external pure returns (bytes4) {
+        return type(IKeyRegistry).interfaceId;
+    }
+
     /// @notice The factory that deploys this identity. Fixed at implementation deploy time like
     ///         {registryModule}. The account uses it to require MANAGEMENT for the factory's
     ///         wallet-binding calls (linkAccount, revokeAccount, settlePendingCrossChainLink).
@@ -161,7 +169,7 @@ contract Identity is Initializable, SmartAccount, ERC165 {
             _installModule(_modules[i].moduleType, _modules[i].module, _modules[i].initData);
 
             if (_modules[i].purpose != 0) {
-                ERC734Validator(registryModule())
+                IKeyRegistry(registryModule())
                     .addKey(abi.encodePacked(_modules[i].module), "", _modules[i].purpose, KeyTypes.MODULE, msg.sender);
             }
         }
