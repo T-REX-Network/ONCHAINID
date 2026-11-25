@@ -54,6 +54,11 @@ interface IClaimIssuer is IIdentity {
     );
 
     /**
+     * @dev Emitted when this claim issuer removes its claim on `topic` from an identity contract.
+     */
+    event ClaimRemovedFrom(address indexed identity, uint256 topic, address caller);
+
+    /**
      * @dev Mark a claim digest as spent. Canonical revocation entry point.
      * @param digest the EIP-712 claim digest to mark spent.
      */
@@ -78,6 +83,12 @@ interface IClaimIssuer is IIdentity {
         string calldata _uri,
         IIdentity _identity
     ) external;
+
+    /**
+     * @dev Remove this issuer's claim on `_topic` from a target identity contract. Needs a
+     *      MANAGEMENT key on this issuer.
+     */
+    function removeClaimFrom(uint256 _topic, IIdentity _identity) external;
 
     /**
      * @dev Checks if a claim is valid.

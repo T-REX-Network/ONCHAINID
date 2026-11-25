@@ -44,6 +44,10 @@ pragma solidity ^0.8.27;
 ///         type 5 cannot inherit the CLAIM_ISSUER default. The explicit-entry
 ///         path bypasses the factory check because the manager may want to
 ///         score externally-deployed identities by hand.
+///
+///         Admin events record `msg.sender` as the caller. When the AccessManager runs the
+///         call (a role with an execution delay, or a call sent through its `execute`), that
+///         is the AccessManager; the operator is in its `OperationScheduled` event or the tx.
 interface IReputationRegistry {
 
     /// @dev Per-identity entry. Packs into a single 32-byte slot. `setAt == 0`
@@ -99,8 +103,9 @@ interface IReputationRegistry {
     function defaultFor(uint256 identityType) external view returns (uint128);
 
     /// @notice Global threshold consumers compare against {reputationOf} when
-    ///         deciding whether a claim-add should auto-approve. Tunable by the
-    ///         REPUTATION_MANAGER via {setClaimAddThreshold}.
+    ///         deciding whether a claim-add should auto-approve. A fresh registry
+    ///         reads 0, which consumers treat as "not configured" and refuse.
+    ///         Tunable by the REPUTATION_MANAGER via {setClaimAddThreshold}.
     function claimAddThreshold() external view returns (uint128);
 
     // ---- Writes: REPUTATION_MANAGER (restricted via AccessManager) ----
@@ -114,7 +119,7 @@ interface IReputationRegistry {
     function setDefault(uint256 identityType, uint128 newDefault) external;
 
     /// @notice Set the global claim-add auto-approval threshold consumers use.
-    ///         `restricted` via the AM.
+    ///         Zero is rejected. `restricted` via the AM.
     function setClaimAddThreshold(uint128 newThreshold) external;
 
 }

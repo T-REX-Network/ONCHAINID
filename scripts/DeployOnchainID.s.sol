@@ -80,6 +80,12 @@ contract DeployOnchainID is Script {
     ///      sticky; self-deploy remains open for these types.
     uint64 internal constant ROLE_ISSUER = 4;
 
+    /// @dev Factory CLAIM_ISSUER identities start at this score, and the trusted-issuer
+    ///      claim path needs at least the threshold. Equal, so a fresh issuer passes and
+    ///      lowering one below the threshold blocks it. The threshold must not be 0.
+    uint128 internal constant CLAIM_ISSUER_DEFAULT_REPUTATION = 50;
+    uint128 internal constant CLAIM_ADD_THRESHOLD = 50;
+
     function run() external {
         uint256 deployerKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
         vm.startBroadcast(deployerKey);
@@ -125,6 +131,8 @@ contract DeployOnchainID is Script {
         // 5. ReputationRegistry. Needs the factory address so its lazy default-tier
         //    fallback can gate on factory membership. Writes are restricted via the AM.
         ReputationRegistry reputationRegistry = new ReputationRegistry(address(am), address(idFactory));
+        reputationRegistry.setDefault(IdentityTypes.CLAIM_ISSUER, CLAIM_ISSUER_DEFAULT_REPUTATION);
+        reputationRegistry.setClaimAddThreshold(CLAIM_ADD_THRESHOLD);
         console.log("ReputationRegistry:", address(reputationRegistry));
 
         // 6. Validator module singleton — one module, ERC-7913 signer shape, EOA/1271/7913
@@ -273,7 +281,7 @@ contract DeployOnchainID is Script {
         pure
         returns (Structs.ModuleInstall[] memory installs)
     {
-        installs = new Structs.ModuleInstall[](19);
+        installs = new Structs.ModuleInstall[](20);
         installs[0] =
             Structs.ModuleInstall({ moduleType: MODULE_TYPE_VALIDATOR, module: validator, initData: "", purpose: 0 });
         installs[1] = Structs.ModuleInstall({
@@ -293,10 +301,11 @@ contract DeployOnchainID is Script {
         installs[12] = _fallback(validator, IClaimIssuer.revokeClaimByDigest.selector);
         installs[13] = _fallback(validator, IClaimIssuer.isDigestRevoked.selector);
         installs[14] = _fallback(validator, IClaimIssuer.addClaimTo.selector);
-        installs[15] = _fallback(validator, IERC734.keyHasPurpose.selector);
-        installs[16] = _fallback(validator, IERC734.getKey.selector);
-        installs[17] = _fallback(validator, IERC734.getKeyPurposes.selector);
-        installs[18] = _fallback(validator, IERC734.getKeysByPurpose.selector);
+        installs[15] = _fallback(validator, IClaimIssuer.removeClaimFrom.selector);
+        installs[16] = _fallback(validator, IERC734.keyHasPurpose.selector);
+        installs[17] = _fallback(validator, IERC734.getKey.selector);
+        installs[18] = _fallback(validator, IERC734.getKeyPurposes.selector);
+        installs[19] = _fallback(validator, IERC734.getKeysByPurpose.selector);
     }
 
     function _fallback(address module, bytes4 selector) private pure returns (Structs.ModuleInstall memory) {
