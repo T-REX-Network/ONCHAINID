@@ -435,7 +435,8 @@ contract ERC734Validator is ERC7579Validator, IERC735, IKeyRegistry, IERC165 {
     ///      registered but hold no signing authority, so they are rejected here. The crypto and
     ///      membership check itself is left to super via {_rawERC7579Validation}.
     /// @dev The key signs the app's hash as is, so a key shared with another account (a wallet that
-    ///      is also a key here) signs for both. Identities are not meant to hold assets; see the
+    ///      is also a key here) signs for both. Identities are not meant to hold assets, and a key
+    ///      must not sign for two owners of one multisig, where each signature is a vote; see the
     ///      README section "ERC-1271 signatures".
     function isValidSignatureWithSender(address sender, bytes32 hash, bytes calldata signature)
         public
