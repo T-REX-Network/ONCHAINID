@@ -23,10 +23,10 @@
 pragma solidity ^0.8.28;
 
 import { KeyManager } from "./KeyManager.sol";
+import { IKeyRegistry } from "./interface/IKeyRegistry.sol";
 import { Errors } from "./libraries/Errors.sol";
 import { hashAddress } from "./libraries/Hashing.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
-import { ERC734Validator } from "./modules/validators/ERC734Validator.sol";
 import {
     AccountERC7579Upgradeable
 } from "@openzeppelin/contracts-upgradeable/account/extensions/draft-AccountERC7579Upgradeable.sol";
@@ -127,7 +127,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         // its onUninstall callback to grant itself keys. Stripping first closes that window.
         if (moduleTypeId != MODULE_TYPE_FALLBACK) {
             bytes32 moduleKey = hashAddress(module);
-            ERC734Validator registry = ERC734Validator(registryModule());
+            IKeyRegistry registry = IKeyRegistry(registryModule());
 
             // Drop each purpose the module holds. Snapshot first, since the set shrinks as we remove.
             // At most the 6 ERC-734 purposes, so the loop is cheap. Skip if the module had no key.
