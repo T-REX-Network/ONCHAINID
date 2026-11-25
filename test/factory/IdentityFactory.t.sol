@@ -4,6 +4,7 @@ pragma solidity ^0.8.27;
 import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { IdentityHelper } from "../helpers/IdentityHelper.sol";
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
+import { IdentityNeedingNewerRegistry } from "../mocks/IdentityNeedingNewerRegistry.sol";
 import { MockERC1271Wallet } from "../mocks/MockERC1271Wallet.sol";
 import { MockERC7786Gateway } from "../mocks/MockERC7786Gateway.sol";
 import { MockERC7913PermissiveVerifier } from "../mocks/MockERC7913PermissiveVerifier.sol";
@@ -216,6 +217,43 @@ contract IdentityFactoryTest is OnchainIDSetup {
             )
         );
         onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.0.0");
+    }
+
+    /// @notice An implementation built against a registry interface the
+    ///         registry does not have would make every key write revert once behind the beacon.
+    ///         The factory refuses it, even though the registry address itself is unchanged.
+    function test_upgradeBeacon_revertWhenRegistryLacksRequiredInterface() public {
+        address registry = address(onchainidSetup.signatureValidator);
+        IdentityNeedingNewerRegistry newImpl =
+            new IdentityNeedingNewerRegistry(address(onchainidSetup.idFactory), registry);
+
+        bytes4 newerInterface = newImpl.NEWER_REGISTRY_INTERFACE();
+
+        vm.prank(deployer);
+        vm.expectRevert(abi.encodeWithSelector(Errors.RegistryInterfaceNotSupported.selector, registry, newerInterface));
+        onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.0.0");
+    }
+
+    /// @notice The real-world shape: a registry from before this check, with no
+    ///         `supportsInterface` at all, named by the implementation a new factory starts from.
+    function test_initializeBeacon_revertWhenRegistryHasNoERC165() public {
+        AccessManager am = new AccessManager(deployer);
+        IdentityFactory freshFactory = new IdentityFactory(address(am));
+        address registryWithoutERC165 = address(new RegistryWithoutERC165());
+        Identity freshImpl = new Identity(registryWithoutERC165, address(freshFactory));
+        bytes4 required = freshImpl.requiredRegistryInterface();
+
+        vm.prank(deployer);
+        vm.expectRevert(
+            abi.encodeWithSelector(Errors.RegistryInterfaceNotSupported.selector, registryWithoutERC165, required)
+        );
+        freshFactory.initializeBeacon(address(freshImpl));
+    }
+
+    /// @notice The current registry answers the interface the current implementation needs.
+    function test_registry_supportsTheInterfaceTheImplementationNeeds() public view {
+        bytes4 required = getIdentityImplementation().requiredRegistryInterface();
+        assertTrue(onchainidSetup.signatureValidator.supportsInterface(required));
     }
 
     /// @notice The candidate has to name this factory, otherwise the account's factory-gated
@@ -2442,3 +2480,6 @@ contract IdentityFactoryTest is OnchainIDSetup {
     }
 
 }
+
+/// @dev Stands in for a registry deployed before the interface check: it has no `supportsInterface`.
+contract RegistryWithoutERC165 { }

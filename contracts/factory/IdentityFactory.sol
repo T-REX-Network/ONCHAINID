@@ -28,6 +28,7 @@ import { ERC7786Recipient } from "@openzeppelin/contracts/crosschain/ERC7786Reci
 import { Nonces } from "@openzeppelin/contracts/utils/Nonces.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import { SignatureChecker } from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
+import { ERC165Checker } from "@openzeppelin/contracts/utils/introspection/ERC165Checker.sol";
 import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 import { BeaconProxy } from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
@@ -42,7 +43,7 @@ import { KeyPurposes } from "../libraries/KeyPurposes.sol";
 import { KeyTypes } from "../libraries/KeyTypes.sol";
 import { Create3 } from "@openzeppelin/contracts/utils/Create3.sol";
 
-import { ERC734Validator } from "../modules/validators/ERC734Validator.sol";
+import { IKeyRegistry } from "../interface/IKeyRegistry.sol";
 import { Structs } from "../storage/Structs.sol";
 import { IIdentityFactory } from "./IIdentityFactory.sol";
 
@@ -221,6 +222,12 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     ///      outgoing registry when there is one, and to have its own initializers locked.
     ///      `current` is the zero address on the initial deploy, where there is nothing to
     ///      stay continuous with.
+    /// @dev The registry must also support every function the candidate calls on it. The
+    ///      registry is kept across upgrades, but a new implementation may be built against a
+    ///      newer registry interface. Behind the beacon, every key write would then revert. The
+    ///      candidate names the {IKeyRegistry} interface id it was built with, and the registry
+    ///      must answer it through ERC-165. A registry older than this check has no
+    ///      `supportsInterface`, so it fails too.
     function _checkImplementation(address implementation, address current) private view {
         require(implementation.code.length != 0, Errors.ImplementationNotAContract(implementation));
         require(
@@ -237,6 +244,13 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
             address actual = Identity(payable(implementation)).registryModule();
             require(actual == expected, Errors.ImplementationRegistryMismatch(expected, actual));
         }
+
+        address registry = Identity(payable(implementation)).registryModule();
+        bytes4 requiredInterface = Identity(payable(implementation)).requiredRegistryInterface();
+        require(
+            ERC165Checker.supportsInterface(registry, requiredInterface),
+            Errors.RegistryInterfaceNotSupported(registry, requiredInterface)
+        );
     }
 
     /// @inheritdoc IIdentityFactory
@@ -644,7 +658,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
     ///      Read through `registryModule()` rather than the account, so a fallback handler
     ///      the caller installed cannot answer these reads (M-04).
     function _requireSoleManagementKey(address identity, address _account) private view {
-        ERC734Validator registry = ERC734Validator(Identity(payable(identity)).registryModule());
+        IKeyRegistry registry = IKeyRegistry(Identity(payable(identity)).registryModule());
 
         require(
             registry.keyHasPurpose(identity, hashAddress(_account), KeyPurposes.MANAGEMENT),
@@ -714,7 +728,7 @@ contract IdentityFactory is IIdentityFactory, AccessManaged, EIP712, Nonces, ERC
         // is answered by the canonical key store and not by any handler the caller installed.
         // `registryModule()` is a plain function on the beacon-controlled implementation.
         require(
-            ERC734Validator(Identity(payable(identity)).registryModule())
+            IKeyRegistry(Identity(payable(identity)).registryModule())
             .getKeysByPurpose(identity, KeyPurposes.MANAGEMENT)
             .length >= 1,
             Errors.NoManagementKeyInKeys()
