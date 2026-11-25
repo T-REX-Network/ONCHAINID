@@ -211,6 +211,11 @@ library Errors {
     ///         below the consumer's claim-add threshold.
     error ReputationBelowClaimAddThreshold(address identity, uint256 score, uint256 threshold);
 
+    /// @notice Reverts when the claim-add threshold is zero: every score passes `>= 0`, so
+    ///         the reputation gate could never block an issuer. The setter refuses the
+    ///         value and the validator refuses a registry that still reports it.
+    error ZeroClaimAddThreshold();
+
     /* ----- ERC734Validator field caps (see {Structs}) ----- */
 
     /// @notice Reverts when a key's clientData exceeds {Structs.MAX_CLIENT_DATA_LENGTH}.
