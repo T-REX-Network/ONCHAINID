@@ -60,6 +60,9 @@ library IdentityHelper {
         setup.accessManager = new AccessManager(managementKey);
         setup.idFactory = new IdentityFactory(address(setup.accessManager));
         setup.reputationRegistry = new ReputationRegistry(address(setup.accessManager), address(setup.idFactory));
+        // Mirrors the deploy script: factory claim issuers meet the threshold out of the box.
+        setup.reputationRegistry.setDefault(IdentityTypes.CLAIM_ISSUER, 50);
+        setup.reputationRegistry.setClaimAddThreshold(50);
         setup.signatureValidator = new ERC734Validator(address(setup.idFactory), address(setup.reputationRegistry));
         setup.identityImplementation = new Identity(address(setup.signatureValidator), address(setup.idFactory));
         // The factory deploys the beacon at its predetermined CREATE3 slot; its owner is
