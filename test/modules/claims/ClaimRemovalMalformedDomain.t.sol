@@ -8,10 +8,9 @@ import { Structs } from "contracts/storage/Structs.sol";
 import { OnchainIDSetup } from "../../helpers/OnchainIDSetup.sol";
 import { MockMalformedDomainIssuer } from "../../mocks/MockMalformedDomainIssuer.sol";
 
-/// @notice Removing a claim reads the issuer's EIP-712 domain to revoke the claim's digest.
-///         An issuer that answers with data that does not decode as a domain must not make its
-///         claim unremovable. Such a claim is removed like one from an issuer with no domain at
-///         all: nothing is revoked, and the claim leaves the identity.
+/// @notice Removing a claim must not depend on the issuer: one whose `eip712Domain` answers
+///         with data that does not decode as a domain, or burns all its gas, must not make its
+///         claim unremovable or expensive to remove.
 ///
 ///         In the fixture, `alice` holds MANAGEMENT on `aliceIdentity` and `carol` holds
 ///         CLAIM_SIGNER, so carol can add a claim from any issuer that accepts it.
@@ -36,8 +35,8 @@ contract ClaimRemovalMalformedDomainTest is OnchainIDSetup {
         _addAndRemoveAsManagement();
     }
 
-    /// @notice An issuer that burns all the gas it gets cannot make removal expensive: reading
-    ///         its domain is capped, so an ordinary gas limit is enough.
+    /// @notice An issuer that burns all the gas it gets cannot make removal expensive: removal
+    ///         never calls the issuer, so an ordinary gas limit is enough.
     function test_claimFromIssuerThatBurnsAllGas_canBeRemovedWithNormalGas() public {
         issuer.setMode(MockMalformedDomainIssuer.Mode.BurnsAllGas);
         ERC734Validator claims = ERC734Validator(address(aliceIdentity));
@@ -47,26 +46,6 @@ contract ClaimRemovalMalformedDomainTest is OnchainIDSetup {
         claims.removeClaim{ gas: 300_000 }(claimId);
 
         assertEq(IERC735(address(aliceIdentity)).getClaimIdsByTopic(TOPIC).length, 0, "the claim must be gone");
-    }
-
-    /// @notice A real identity issuer answers well within the cap, so its digest is still
-    ///         computed (and revoked on removal).
-    function test_identityIssuerDomain_fitsInTheCap() public view {
-        Structs.ClaimData memory data;
-        uint256 before = gasleft();
-        bytes32 digest =
-            onchainidSetup.signatureValidator.claimDigestOf(address(claimIssuer), address(aliceIdentity), TOPIC, data);
-        uint256 used = before - gasleft();
-        assertTrue(digest != bytes32(0));
-        assertLt(used, 50_000, "an identity issuer's domain must fit well under the 100k cap");
-    }
-
-    /// @notice The digest helper itself still reverts on a broken domain; only the removal path
-    ///         turns that into "no digest".
-    function test_claimDigestOf_revertsOnBrokenDomain() public {
-        Structs.ClaimData memory data;
-        vm.expectRevert();
-        onchainidSetup.signatureValidator.claimDigestOf(address(issuer), address(aliceIdentity), TOPIC, data);
     }
 
     /// @dev carol adds a claim from `issuer`, then alice (MANAGEMENT) removes it.

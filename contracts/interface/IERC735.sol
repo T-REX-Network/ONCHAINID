@@ -122,7 +122,7 @@ interface IERC735 {
      * Triggers Event: `ClaimRemoved`
      *
      * Claim IDs are generated using `keccak256(abi.encode(address issuer_address, uint256 topic))`.
-     * The removed claim's EIP-712 digest is marked spent, so the exact same `(issuer, topic, data)`
+     * The removed claim is marked spent, so the exact same `(issuer, topic, data)`
      * cannot be re-added.
      */
     function removeClaim(bytes32 _claimId) external returns (bool success);

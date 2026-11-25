@@ -454,8 +454,8 @@ contract EASClaimIssuerTest is OnchainIDSetup {
 
     /* ----- local claim lifecycle ----- */
 
-    /// @notice The adapter has no `eip712Domain()`, so removal must not try to compute a digest
-    ///         from it. A claim added from an attestation stays removable after EAS revocation.
+    /// @notice The adapter has no `eip712Domain()`; removal never calls the issuer, so a claim
+    ///         added from an attestation stays removable after EAS revocation.
     function test_removeClaim_worksForDomainlessIssuer() public {
         bytes32 uid = _attestValid(address(aliceIdentity));
         // The envelope has to mirror the attestation: same issue time, no expiry, no payload.
