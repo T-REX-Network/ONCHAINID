@@ -38,6 +38,7 @@ import { Bytes } from "@openzeppelin/contracts/utils/Bytes.sol";
 import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import { SignatureChecker } from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
+import { IERC165 } from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 import { IIdentityFactory } from "../../factory/IIdentityFactory.sol";
@@ -45,6 +46,7 @@ import { IClaimIssuer } from "../../interface/IClaimIssuer.sol";
 import { IERC734 } from "../../interface/IERC734.sol";
 import { IERC735 } from "../../interface/IERC735.sol";
 import { IIdentity } from "../../interface/IIdentity.sol";
+import { IKeyRegistry } from "../../interface/IKeyRegistry.sol";
 import { Errors } from "../../libraries/Errors.sol";
 import { hashAddress } from "../../libraries/Hashing.sol";
 import { IdentityTypes } from "../../libraries/IdentityTypes.sol";
@@ -73,7 +75,7 @@ import { ERC7579Validator } from "./ERC7579Validator.sol";
 /// @dev userOp signature wire format: `abi.encode(bytes signer, bytes signature)`, where
 ///      `signer` is ERC-7913 (20 bytes = EOA/1271, longer = `verifier(20) || key`). Storage is
 ///      ERC-7201 namespaced.
-contract ERC734Validator is ERC7579Validator, IERC735 {
+contract ERC734Validator is ERC7579Validator, IERC735, IKeyRegistry, IERC165 {
 
     using EnumerableSet for EnumerableSet.UintSet;
     using EnumerableSet for EnumerableSet.Bytes32Set;
@@ -236,6 +238,12 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     )
         public
         virtual { }
+
+    /// @notice ERC-165. Answers for {IKeyRegistry}, the functions an identity calls on this
+    ///         registry. The factory checks it before it puts an implementation behind the beacon.
+    function supportsInterface(bytes4 interfaceId) public pure returns (bool) {
+        return interfaceId == type(IKeyRegistry).interfaceId || interfaceId == type(IERC165).interfaceId;
+    }
 
     // --- registry (called by the account on itself) ----------------------
 
