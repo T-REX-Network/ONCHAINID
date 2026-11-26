@@ -2,7 +2,7 @@
 
 ![GitHub](https://img.shields.io/github/license/T-REX-Network/ONCHAINID?color=green)
 ![GitHub release (latest by date)](https://img.shields.io/github/v/release/T-REX-Network/ONCHAINID)
-![GitHub Workflow Status (branch)](https://img.shields.io/github/actions/workflow/status/T-REX-Network/ONCHAINID/publish-release.yml)
+![GitHub Workflow Status (branch)](https://img.shields.io/github/actions/workflow/status/T-REX-Network/ONCHAINID/foundry.yml?branch=main)
 ![GitHub repo size](https://img.shields.io/github/repo-size/T-REX-Network/ONCHAINID)
 ![GitHub Release Date](https://img.shields.io/github/release-date/T-REX-Network/ONCHAINID)
 
@@ -167,8 +167,7 @@ v3 originated as a fork of the ONCHAINID reference implementation by the [onchai
 
 ## Security and audits
 
-<!-- TODO: link the OpenZeppelin audit report for ONCHAINID v3 when published -->
-ONCHAINID v3 is being audited by OpenZeppelin. The audit report will be linked here once published.
+ONCHAINID v3 has been audited by OpenZeppelin. Read the [audit report](https://www.openzeppelin.com/news/onchainid-audit).
 
 Please report security vulnerabilities responsibly to security@trex.network rather than opening a public issue.
 
