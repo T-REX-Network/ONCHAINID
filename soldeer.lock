@@ -1,3 +1,5 @@
+version = 2
+
 [[dependencies]]
 name = "@openzeppelin-accounts"
 version = "0.0.0-4ceb836d"

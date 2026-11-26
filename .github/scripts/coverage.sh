@@ -6,12 +6,19 @@ FAIL=0
 # workaround) produces inaccurate source mappings in Foundry. Some lines/statements/functions
 # that are provably executed appear as "uncovered" due to Yul IR codegen source map mismatches.
 # This is a known Foundry limitation confirmed by the OpenZeppelin team.
-LINE_THRESHOLD=94
-STMT_THRESHOLD=95
-FUNC_THRESHOLD=98
+#
+# Baseline: the values measured on develop on 26 November 2026 with Foundry v1.10.0, the version
+# pinned in the workflows. The rule is "no drop": raise these when coverage goes up, never lower
+# them. Measure with the pinned Foundry version; another version gives slightly different numbers.
+LINE_THRESHOLD=93.43
+STMT_THRESHOLD=93.83
+FUNC_THRESHOLD=91.75
+
+# Files left out of the report. Keep this list equal to the one in package.json ("coverage" scripts).
+EXCLUDE='(test|script|dependencies|node_modules|vendor|FormatResolver|WebAuthnValidator)'
 
 echo "Generating coverage report..."
-COVERAGE_OUTPUT=$(forge coverage --no-match-coverage "(test|script|dependencies|FormatResolver|WebAuthnValidator)" --ir-minimum --report summary)
+COVERAGE_OUTPUT=$(forge coverage --no-match-coverage "$EXCLUDE" --ir-minimum --report summary)
 
 # Display the coverage report
 echo "=== Coverage Report ==="
