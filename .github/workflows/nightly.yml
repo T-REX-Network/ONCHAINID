@@ -1,0 +1,42 @@
+name: Nightly
+
+# Long runs that are too slow for a pull request. They run on develop every night.
+# A red night blocks the next release branch.
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+env:
+  HUSKY: 0
+  ALCHEMY_KEY: ${{ secrets.ALCHEMY_KEY }}
+
+jobs:
+  long-fuzz:
+    name: Long fuzz runs
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: develop
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.10.0
+
+      - name: Show Forge version
+        run: forge --version
+
+      - name: Install dependencies
+        run: forge soldeer install
+
+      - name: Run tests with long fuzz runs
+        run: forge test
+        env:
+          FOUNDRY_FUZZ_RUNS: 20000
