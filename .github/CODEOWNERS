@@ -1,0 +1,5 @@
+# Code owners. With "Require review from Code Owners" turned on in branch protection,
+# a pull request that touches these paths needs an approval from one of them.
+
+/contracts/          @Joachim-Lebrun @mohamadhammoud @yehia67
+/.github/            @Joachim-Lebrun @mohamadhammoud @yehia67
