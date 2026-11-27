@@ -75,11 +75,11 @@ library Errors {
     /// @notice Reverts if no key with MANAGEMENT purpose is provided
     error NoManagementKeyInKeys();
 
-    /// @notice Reverts when {createIdentityFor} deploys for a signing type but `_account`
-    ///         is not the only wallet with MANAGEMENT on the new identity. The wallet the
-    ///         identity was created for has to manage it alone, or the caller could keep a
-    ///         key and strip that wallet later. The type's registered modules may hold
-    ///         MANAGEMENT alongside it.
+    /// @notice Reverts when a signing-type deploy ({createIdentity} or {createIdentityFor})
+    ///         leaves `account`, the wallet being bound, as anything but the only wallet
+    ///         with MANAGEMENT on the new identity. That wallet has to manage it alone, or
+    ///         another key holder could strip it later while the binding stays. The type's
+    ///         registered modules may hold MANAGEMENT alongside it.
     error AccountNotSoleManagementKey(address account);
 
     /// @notice Reverts when {createIdentityFor} deploys for a signing type and the caller
@@ -318,11 +318,11 @@ library Errors {
     /// @notice The execution mode requested is not supported by the account's purpose check.
     error UnsupportedExecutionMode(bytes32 mode);
 
-    /// @notice A dispatched call targeted one of the account's own modules (an installed executor,
-    ///         or the fallback handler for the call's selector). Module functions are reached via
-    ///         the account's fallback dispatch, never via `execute(module, ...)`. The only caller
-    ///         allowed to do this is the account itself.
-    error OwnModuleTargetBlocked(address target);
+    /// @notice A dispatched call targeted an ERC-7579 module: one installed on the account, or any
+    ///         contract that reports a module type through `isModuleType`. Modules read a call
+    ///         from the account as the account configuring itself, so only the account itself
+    ///         (a MANAGEMENT-authorized self-call) may make it.
+    error ModuleTargetBlocked(address target);
 
     /// @notice An installed executor or fallback handler tried to dispatch a call whose target
     ///         is not authorized by the purpose registered for that module at install time.
