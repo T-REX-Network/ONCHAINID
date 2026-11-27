@@ -2,7 +2,7 @@
 
 ![GitHub](https://img.shields.io/github/license/T-REX-Network/ONCHAINID?color=green)
 ![GitHub release (latest by date)](https://img.shields.io/github/v/release/T-REX-Network/ONCHAINID)
-![GitHub Workflow Status (branch)](https://img.shields.io/github/actions/workflow/status/T-REX-Network/ONCHAINID/publish-release.yml)
+![GitHub Workflow Status (branch)](https://img.shields.io/github/actions/workflow/status/T-REX-Network/ONCHAINID/foundry.yml?branch=main)
 ![GitHub repo size](https://img.shields.io/github/repo-size/T-REX-Network/ONCHAINID)
 ![GitHub Release Date](https://img.shields.io/github/release-date/T-REX-Network/ONCHAINID)
 
@@ -62,6 +62,21 @@ Modules follow the ERC-7579 standard and are installed per identity:
 - **`RecoveryModule`** — social recovery for an identity (see notes below).
 - **`EASClaimIssuer`** — a stateless claim issuer that reads [EAS](https://attest.org) attestations live (see notes below).
 
+## Sending user operations (ERC-4337)
+
+Identities can be driven through an ERC-4337 EntryPoint, but bundlers that enforce the [ERC-7562](https://eips.ethereum.org/EIPS/eip-7562) validation rules (public-mempool bundlers do) reject the user operations of an **unstaked** identity. Identities are unstaked by default. Validating a user operation breaks two of ERC-7562's storage rules for unstaked accounts:
+
+- The shared `ERC734Validator` keeps every account's keys in one nested mapping. The slots it reads during validation are derived from the key hash, so ERC-7562 does not count them as belonging to the account.
+- Each identity is a `BeaconProxy`, which reads its implementation from the shared beacon's storage on every call, `validateUserOp` included.
+
+Neither can be removed without giving up the shared registry and the shared upgrade path, so the supported setups are:
+
+- **Stake the identity with the EntryPoint.** The reference bundler (eth-infinitism) lets a staked account read the storage of other contracts during validation, so it accepts its user operations. ERC-7562 as written grants this only to a staked paymaster or factory, so check what your bundler does. To stake, the identity itself calls `EntryPoint.addStake(unstakeDelaySec)` with the stake as value. The amount and the delay must meet the bundler's `MIN_STAKE_VALUE` and `MIN_UNSTAKE_DELAY`. An unstaked identity cannot send this first call as a user operation through an ERC-7562 bundler, so a key holder sends it directly, through the identity's ERC-734 `execute(to, value, data)` (handled by the `KeyApprovalModule`), or through a bundler that does not enforce ERC-7562.
+- **Use a bundler that does not enforce ERC-7562**, such as a private or permissioned one.
+- **Skip the EntryPoint.** A key holder can call the identity directly, for example through the `KeyApprovalModule`.
+
+**Passkey (WebAuthn) keys need the P-256 precompile.** They verify through OpenZeppelin's `P256`, which calls the P-256 precompile at `0x100` (RIP-7212 on rollups, EIP-7951 on L1; ERC-7562 allows it). On a chain without it, `P256` falls back to a much more expensive Solidity check, and the call to an address without code also breaks ERC-7562. Check that every chain you deploy to has the precompile (Base does) before you rely on passkeys for user operations.
+
 ## Factory and cross-chain addresses
 
 `IdentityFactory` deploys each identity as a beacon proxy using `CREATE3`. Because of `CREATE3`, a given `(salt, wallet)` resolves to the **same identity address on every chain** — as long as the factory itself sits at the same address on each chain.
@@ -82,6 +97,15 @@ Each identity type must be registered by an admin before it can be used, and acc
 All identities share one implementation through the factory's beacon, and `upgradeBeacon` swaps it for every identity at once. The key registry (`ERC734Validator`) is not upgradeable: an implementation must keep the registry the identities already hold their keys in, and that registry must have every function the implementation calls on it. The factory checks this before an upgrade. The implementation reports the `IKeyRegistry` interface id it was built with (`requiredRegistryInterface`), and the registry must answer it through ERC-165.
 
 **Deployments made before this check must not be upgraded to the current implementation.** Their registry has older `addKey` / `removeKey` signatures, so every key write would revert, and their factory does not have the check that would refuse the upgrade. Use a new deployment of the full stack instead.
+
+## ERC-1271 signatures
+
+An identity answers ERC-1271 `isValidSignature` with plain ERC-1271: the signature is `validator (20 bytes) || abi.encode(signer, signature)`, and the key signs the app's hash as is. Only a key with ACTION (or MANAGEMENT) can sign; MODULE keys never can.
+
+- **A key shared with another account signs for both.** If a wallet is also a key on its identity, a signature it makes for one is valid for the other when the signed message does not name the owner (Permit2 signature transfers are the usual example).
+- **Identities are not meant to hold assets.** An identity holds keys and claims. Keep tokens and approvals in the wallets, not on the identity, and do not give an identity Permit2 approvals.
+- **An identity that co-owns a multisig is not covered by "no assets".** When an identity is an owner of a Safe or another multisig account, its signature is a vote. A key shared with another owner, such as the key's own wallet or a second identity, makes one signature count for both, so one person can reach the threshold alone. Keep each signing key on one owner only, and check the owner set before deploying the account and before adding a key.
+- **Why not ERC-7739.** ERC-7739 would bind each signature to the identity, but it does not compose: a key that is itself a smart wallet using ERC-7739 could not produce a readable signature for the identity. Plain ERC-1271 works with every app.
 
 ## Recovery module integration notes
 
@@ -173,8 +197,7 @@ v3 originated as a fork of the ONCHAINID reference implementation by the [onchai
 
 ## Security and audits
 
-<!-- TODO: link the OpenZeppelin audit report for ONCHAINID v3 when published -->
-ONCHAINID v3 is being audited by OpenZeppelin. The audit report will be linked here once published.
+ONCHAINID v3 has been audited by OpenZeppelin. Read the [audit report](https://www.openzeppelin.com/news/onchainid-audit).
 
 Please report security vulnerabilities responsibly to security@trex.network rather than opening a public issue.
 

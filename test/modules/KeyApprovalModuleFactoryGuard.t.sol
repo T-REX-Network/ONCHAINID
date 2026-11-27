@@ -105,7 +105,7 @@ contract KeyApprovalModuleFactoryGuardTest is OnchainIDSetup {
     }
 
     /// @notice The enshrined key registry is management-grade. Its address is known to the account
-    ///         even when the registry is not installed as an executor, so the own-module block
+    ///         even when the registry is not installed as an executor, so the module-target block
     ///         cannot be relied on; the classification must cover it directly.
     function test_isManagementTarget_coversRegistry() public view {
         address registry = aliceIdentity.registryModule();
@@ -152,7 +152,7 @@ contract KeyApprovalModuleFactoryGuardTest is OnchainIDSetup {
     /// @dev Module list that reproduces the finding's deployment: KeyApprovalModule as an executor
     ///      (holding MANAGEMENT) plus the registry as a validator and ERC-734 getter fallback, but
     ///      WITHOUT the registry installed as an executor. That missing entry is the only thing that
-    ///      made SmartAccount._authorizeCall's own-module block catch a registry-targeted call, so
+    ///      made SmartAccount._authorizeCall's module-target block catch a registry-targeted call, so
     ///      this set removes the accidental protection and leaves only the KeyApprovalModule gate.
     function _modulesWithoutRegistryExecutor() internal view returns (Structs.ModuleInstall[] memory installs) {
         address kam = address(onchainidSetup.keyApprovalModule);
@@ -198,7 +198,7 @@ contract KeyApprovalModuleFactoryGuardTest is OnchainIDSetup {
     }
 
     /// @notice The finding's exact scenario: with the registry NOT installed as an executor (so the
-    ///         own-module block does not fire for it), an ACTION key still cannot escalate through
+    ///         module-target block does not fire for it), an ACTION key still cannot escalate through
     ///         the queue. The fix lives in the KeyApprovalModule gate, not in the accidental block.
     function test_approve_registryAddKey_blockedEvenWithoutOwnModuleProtection() public {
         (address owner,) = makeAddrAndKey("vulnOwner");
@@ -244,7 +244,7 @@ contract KeyApprovalModuleFactoryGuardTest is OnchainIDSetup {
         KeyApprovalModule.Execution memory queued = onchainidSetup.keyApprovalModule.getExecutionData(idAddr, execId);
         assertFalse(queued.executed, "registry call must not auto-run for an ACTION key");
 
-        // And the ACTION approver is rejected by the module gate, not the own-module block.
+        // And the ACTION approver is rejected by the module gate, not the module-target block.
         vm.prank(attacker);
         vm.expectRevert(Errors.SenderDoesNotHaveManagementKey.selector);
         IKeyExecutor(idAddr).approve(execId, true);
