@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity ^0.8.27;
 
+import { IKeyRegistry } from "contracts/interface/IKeyRegistry.sol";
+
 /// @notice Mock identity whose initialize always reverts, causing IdentityProxy CREATE3 to fail.
 ///         It still answers the factory's beacon shape check (same factory, locked initializers,
-///         a registry module) so the revert happens at deploy time, not at beacon setup.
+///         a registry module that supports the registry interface) so the revert happens at deploy time, not at beacon setup.
 contract RevertingIdentity {
 
     address private immutable _identityFactory;
@@ -20,6 +22,10 @@ contract RevertingIdentity {
 
     function registryModule() external view returns (address) {
         return _registryModule;
+    }
+
+    function requiredRegistryInterface() external pure returns (bytes4) {
+        return type(IKeyRegistry).interfaceId;
     }
 
     function initializedVersion() external pure returns (uint64) {

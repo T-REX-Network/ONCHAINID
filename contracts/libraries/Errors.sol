@@ -75,11 +75,11 @@ library Errors {
     /// @notice Reverts if no key with MANAGEMENT purpose is provided
     error NoManagementKeyInKeys();
 
-    /// @notice Reverts when {createIdentityFor} deploys for a signing type but `_account`
-    ///         is not the only wallet with MANAGEMENT on the new identity. The wallet the
-    ///         identity was created for has to manage it alone, or the caller could keep a
-    ///         key and strip that wallet later. The type's registered modules may hold
-    ///         MANAGEMENT alongside it.
+    /// @notice Reverts when a signing-type deploy ({createIdentity} or {createIdentityFor})
+    ///         leaves `account`, the wallet being bound, as anything but the only wallet
+    ///         with MANAGEMENT on the new identity. That wallet has to manage it alone, or
+    ///         another key holder could strip it later while the binding stays. The type's
+    ///         registered modules may hold MANAGEMENT alongside it.
     error AccountNotSoleManagementKey(address account);
 
     /// @notice Reverts when {createIdentityFor} deploys for a signing type and the caller
@@ -258,6 +258,10 @@ library Errors {
     /// @notice The candidate beacon implementation names a different registry module than
     ///         the one every deployed identity already holds its keys in.
     error ImplementationRegistryMismatch(address expected, address actual);
+
+    /// @notice The candidate beacon implementation calls registry functions that its registry
+    ///         module does not have: the registry does not answer `interfaceId` through ERC-165.
+    error RegistryInterfaceNotSupported(address registry, bytes4 interfaceId);
 
     /// @notice The candidate beacon implementation reports a different version than the one
     ///         the upgrader committed to in {IdentityFactory.upgradeBeacon}.
