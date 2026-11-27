@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0]
+
+Fixes from OpenZeppelin's diff audit and its follow-up findings, plus trusted claim issuers, factory identity records and paged registry views. The key registry now reports the interface an implementation needs (see `IKeyRegistry` below), and a 3.0.0 deployment has no such check, so do not upgrade a 3.0.0 deployment to this release: deploy the full stack again.
+
+### Breaking changes
+
+- The account refuses to dispatch a call to any ERC-7579 module, installed or not, unless the account calls itself. A module reads a call from the account as the account configuring itself, so a key below MANAGEMENT must not be able to make one. MANAGEMENT reaches module settings through a self-call: `execute` on the account, with an inner `execute` that targets the module.
+- An identity that uses another account's module, for example as a guardian on its RecoveryModule, keeps working: guardians approve with signatures checked through the identity's ERC-1271, and anyone may send the module call. Only sending that call from the identity itself now needs MANAGEMENT (a self-call) instead of ACTION.
+- Every user operation not signed by a MANAGEMENT key needs an ACTION key, and an empty batch is rejected.
+- Claim revocations are keyed on the claim's EIP-712 struct hash in the issuer's own set, not on the digest. `revokeClaimByDigest` and `isDigestRevoked` take the struct hash (`getClaimStructHash` on `ERC734Validator` computes it); a digest passed to them revokes nothing. Removing a claim never calls its issuer, so an issuer with a missing, malformed or gas-burning EIP-712 domain cannot make its claim unremovable.
+- `getClaimIdsByTopicPaginated(topic, start, end)` is replaced by `getClaimIdsByTopic(account, topic, start, end)` on `ERC734Validator`.
+- `createIdentity` requires the caller to be the identity's only MANAGEMENT key (single-binding types excepted), the check `createIdentityFor` already ran. Keys with other purposes may still be passed for other signers.
+- Updated project event ABIs for subgraph indexing and audit attribution: key, claim, claim issuer, and module data events now carry caller attribution directly; `KeyAdded` also carries `signerData` and `clientData` directly.
+- Extended `Approved(address account, uint256 executionId, bool approved)` with trailing `address approver`, `PendingCrossChainLinkProposed(bytes account, address identity, uint256 expiry)` with trailing `address gateway` and `bytes32 receiveId`, and `BeaconUpgraded(address implementation)` with trailing `string version`.
+
+### Added
+
+- Trusted claim issuers: a factory CLAIM_ISSUER identity that meets the reputation threshold adds and removes its own claims on any holder without a key grant, through `addClaimTo` and `removeClaimFrom`, both gated on a MANAGEMENT key of the issuer. A direct `addClaim` or `removeClaim` from the issuer identity still needs a claim key on the holder. Identities need the `removeClaimFrom` fallback installed.
+- The factory records each identity's type at creation (`identityTypeOf`), write-once.
+- Factory identities resolve to themselves on every resolution view (`getIdentity`, `getIdentityIncludingRevoked`, `getAccountStatus`).
+- `IKeyRegistry`: the functions an identity calls on its key registry. `ERC734Validator` answers its ERC-165 id, `Identity.requiredRegistryInterface()` reports the id an implementation was built with, and `IdentityFactory` refuses a beacon implementation whose registry does not support it (`RegistryInterfaceNotSupported`).
+- Registry views on `ERC734Validator` that take the account explicitly: `getKeys`, `getClaimTopics` and `getClaimIdsByTopic`, each with a paged overload.
+- `getClaimStructHash` on `ERC734Validator`: the key claim revocations are stored under.
+- `CallDispatched(address target, uint256 value, bytes data, address caller)` for identity calls dispatched through the ERC-7579 execute path.
+- `ModuleInstallData(uint256 moduleTypeId, address module, bytes initData, address caller)` and `ModuleUninstallData(uint256 moduleTypeId, address module, bytes deInitData, address caller)` for module lifecycle data omitted by ERC-7579 events.
+- `KeyUsed(address account, bytes32 keyHash, bytes32 userOpHash)` for ERC-4337 validation attribution.
+
+### Changed
+
+- Batches are decoded in memory and each call is authorized right before it runs, so a malformed batch pointer cannot hide a call's target, and a module deployed earlier in a batch is seen as one by a later call. Only the SINGLE and BATCH call types run.
+- `openzeppelin-accounts` is pinned to the commit that closes OpenZeppelin's audit of `ERC7579SocialRecoveryExecutor`.
+- README: bundlers that enforce ERC-7562 need the identity to be staked with the EntryPoint, the first stake is sent directly or through a bundler that does not enforce ERC-7562, and passkey keys need the P-256 precompile at `0x100` (RIP-7212 on rollups, EIP-7951 on L1). See "Sending user operations (ERC-4337)".
+- README: ERC-1271 on identities stays plain ERC-1271 (the key signs the app's hash as is, and needs ACTION). A key shared with another account signs for both, so identities are not meant to hold assets. See "ERC-1271 signatures".
+
+### Fixed
+
+- A verifier key is accepted only when the verifier answers exactly 32 bytes, and a `verifier || key` signer whose verifier has no code is refused at registration (`VerifierHasNoCode`).
+- Removing a third party's claim no longer marks the holder's own revocation set, which could revoke a claim the holder issued about itself with the same topic and data.
+- A claim-add threshold of zero is refused (`ZeroClaimAddThreshold`) instead of letting every issuer through.
+- A recovery scheduled before the RecoveryModule is uninstalled can no longer execute, including after a reinstall; the account can still cancel it.
+- At deploy, an Active link of the identity's own address to another identity is revoked first (`AccountRevoked`), so a deployed identity always resolves to itself.
+- The trusted-issuer claim path needs a MANAGEMENT key on the issuer, not just a trusted issuer identity.
+
+### Removed
+
+- The deployment scripts (`DeployOnchainID.s.sol` and the others) and the `.env` template. Deployments are maintained outside this repository.
+
 ## [3.0.0]
 
 ONCHAINID v3 is a ground-up re-architecture of the identity stack, developed by T-REX Network in collaboration with OpenZeppelin. The identity is no longer a monolithic ERC-734 / ERC-735 contract: it is an ERC-7579 modular smart account with ERC-4337 account abstraction support, where keys live at the account level and claims, execution rules, signature validation, and recovery are installable modules.

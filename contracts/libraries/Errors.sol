@@ -39,9 +39,6 @@ library Errors {
     /// @notice Reverts if the string is empty
     error EmptyString();
 
-    /// @notice Reverts if the token is already linked
-    error TokenAlreadyLinked(address token);
-
     /// @notice Reverts when a caller tries to deploy an identity of a type whose
     ///         configured AM role they do not hold.
     /// @param caller the address that attempted the deployment.
@@ -63,6 +60,11 @@ library Errors {
     ///         `PUBLIC_ROLE` for open types.
     error UnknownIdentityType(uint256 identityType);
 
+    /// @notice Reverts when {setIdentityTypePolicy} is called with type 0. In the
+    ///         factory's type record a 0 means "not deployed by this factory", so 0
+    ///         can never be a real type.
+    error ZeroIdentityType();
+
     /// @notice Reverts when {createIdentity} is called for a type whose policy has
     ///         `selfDeployable = false`. Self-deploy is gated per type because some
     ///         types (e.g. ASSET, SMART_CONTRACT) represent contracts, not EOAs, so
@@ -73,11 +75,11 @@ library Errors {
     /// @notice Reverts if no key with MANAGEMENT purpose is provided
     error NoManagementKeyInKeys();
 
-    /// @notice Reverts when {createIdentityFor} deploys for a signing type but `_account`
-    ///         is not the only wallet with MANAGEMENT on the new identity. The wallet the
-    ///         identity was created for has to manage it alone, or the caller could keep a
-    ///         key and strip that wallet later. The type's registered modules may hold
-    ///         MANAGEMENT alongside it.
+    /// @notice Reverts when a signing-type deploy ({createIdentity} or {createIdentityFor})
+    ///         leaves `account`, the wallet being bound, as anything but the only wallet
+    ///         with MANAGEMENT on the new identity. That wallet has to manage it alone, or
+    ///         another key holder could strip it later while the binding stays. The type's
+    ///         registered modules may hold MANAGEMENT alongside it.
     error AccountNotSoleManagementKey(address account);
 
     /// @notice Reverts when {createIdentityFor} deploys for a signing type and the caller
@@ -128,6 +130,11 @@ library Errors {
     ///         identity represents one specific token contract. Adding more wallets to
     ///         it would break the 1:1 token↔identity mapping.
     error CannotLinkToAssetIdentity(address identity);
+
+    /// @notice Reverts when a factory-deployed identity is presented as an account to link
+    ///         to another identity. A factory identity always resolves to itself, so binding
+    ///         it as an account would make identity resolution ambiguous.
+    error CannotLinkFactoryIdentity(address identity);
 
     /// @notice Reverts when {revokeAccount} is called on a non-signing-entity identity
     ///         (ASSET or SMART_CONTRACT). The bound contract cannot sign a fresh
@@ -187,43 +194,12 @@ library Errors {
     ///         encoding and the registry only accepts that one.
     error NonCanonicalAccount(bytes account);
 
-    /* ----- Verifier ----- */
-
-    /// @notice The claim topic already exists.
-    error ClaimTopicAlreadyExists(uint256 claimTopic);
-
-    /// @notice The maximum number of claim topics is exceeded.
-    error MaxClaimTopicsExceeded();
-
-    /// @notice The maximum number of trusted issuers is exceeded.
-    error MaxTrustedIssuersExceeded();
-
-    /// @notice The trusted issuer already exists.
-    error TrustedIssuerAlreadyExists(address trustedIssuer);
-
-    /// @notice The trusted claim topics cannot be empty.
-    error TrustedClaimTopicsCannotBeEmpty();
-
-    /// @notice The trusted issuer does not exist.
-    error NotATrustedIssuer(address trustedIssuer);
-
     /* ----- ClaimIssuer ----- */
 
     /// @notice The claim already exists.
     error ClaimAlreadyRevoked();
 
     /* ----- ERC734Validator trusted-issuer path ----- */
-
-    /// @notice Reverts when {ERC734Validator.addClaimByTrustedIssuer} is called by a wallet
-    ///         that the factory does not resolve to any identity. The trusted-issuer path
-    ///         requires the caller wallet to be a linked account on a factory-deployed
-    ///         identity.
-    error CallerNotLinkedToFactoryIdentity(address caller);
-
-    /// @notice Reverts when the claim's declared `issuer` field does not match the
-    ///         identity the caller wallet resolves to. A trusted issuer cannot ship a
-    ///         claim attributed to a different issuer.
-    error DeclaredIssuerMismatch(address declaredIssuer, address resolvedIdentity);
 
     /// @notice Reverts when the resolved issuer identity is not of type
     ///         {IdentityTypes.CLAIM_ISSUER}. The trusted-issuer path is reserved for
@@ -234,6 +210,11 @@ library Errors {
     /// @notice Reverts when the resolved CLAIM_ISSUER identity's reputation score is
     ///         below the consumer's claim-add threshold.
     error ReputationBelowClaimAddThreshold(address identity, uint256 score, uint256 threshold);
+
+    /// @notice Reverts when the claim-add threshold is zero: every score passes `>= 0`, so
+    ///         the reputation gate could never block an issuer. The setter refuses the
+    ///         value and the validator refuses a registry that still reports it.
+    error ZeroClaimAddThreshold();
 
     /* ----- ERC734Validator field caps (see {Structs}) ----- */
 
@@ -278,6 +259,10 @@ library Errors {
     ///         the one every deployed identity already holds its keys in.
     error ImplementationRegistryMismatch(address expected, address actual);
 
+    /// @notice The candidate beacon implementation calls registry functions that its registry
+    ///         module does not have: the registry does not answer `interfaceId` through ERC-165.
+    error RegistryInterfaceNotSupported(address registry, bytes4 interfaceId);
+
     /// @notice The candidate beacon implementation reports a different version than the one
     ///         the upgrader committed to in {IdentityFactory.upgradeBeacon}.
     error ImplementationVersionMismatch(string expected, string actual);
@@ -294,12 +279,6 @@ library Errors {
     /// @notice The caller holds no key on the target identity that authorizes proposing an
     ///         execution. PROPOSER, ACTION, CLAIM_SIGNER, CLAIM_ADDER, or MANAGEMENT works.
     error SenderCannotPropose(address sender);
-
-    /// @notice The key is not registered.
-    error KeyNotRegistered(bytes32 key);
-
-    /// @notice The key already has the purpose.
-    error KeyAlreadyHasPurpose(bytes32 key, uint256 purpose);
 
     /// @notice The key does not have the purpose.
     error KeyDoesNotHavePurpose(bytes32 key, uint256 purpose);
@@ -336,26 +315,14 @@ library Errors {
     /// @notice The signer data is invalid or too short.
     error InvalidSignerData();
 
-    /// @notice The last MANAGEMENT key cannot be removed (would render the identity unrecoverable).
-    error CannotRemoveLastManagementKey();
-
-    /// @notice Reverts when a ClaimIssuer attempts to revoke a claim that was not issued by itself.
-    error NotOwnIssuance();
-
-    /// @notice The validator module specified in a UserOp/signature is not installed.
-    error ValidatorModuleNotInstalled(address module);
-
-    /// @notice The signer key does not have the required purpose for the requested execution.
-    error PurposeNotAuthorizedForCall(bytes32 keyHash, address target);
-
     /// @notice The execution mode requested is not supported by the account's purpose check.
     error UnsupportedExecutionMode(bytes32 mode);
 
-    /// @notice A dispatched call targeted one of the account's own modules (an installed executor,
-    ///         or the fallback handler for the call's selector). Module functions are reached via
-    ///         the account's fallback dispatch, never via `execute(module, ...)`. The only caller
-    ///         allowed to do this is the account itself.
-    error OwnModuleTargetBlocked(address target);
+    /// @notice A dispatched call targeted an ERC-7579 module: one installed on the account, or any
+    ///         contract that reports a module type through `isModuleType`. Modules read a call
+    ///         from the account as the account configuring itself, so only the account itself
+    ///         (a MANAGEMENT-authorized self-call) may make it.
+    error ModuleTargetBlocked(address target);
 
     /// @notice An installed executor or fallback handler tried to dispatch a call whose target
     ///         is not authorized by the purpose registered for that module at install time.
@@ -366,36 +333,11 @@ library Errors {
     /// @notice ETH push from `KeyApprovalModule` back to the identity failed.
     error ReturnToAccountFailed();
 
-    /// @notice `addKey` `_type` doesn't match the existing key's stored type.
-    error KeyTypeMismatch(bytes32 key, uint256 storedType, uint256 providedType);
+    /* ----- RecoveryModule ----- */
 
-    /* ----- IdentityUtilities ----- */
-
-    /// @notice 0 is not a valid topic.
-    error EmptyTopic();
-
-    /// @notice 0 is not a valid Format.
-    error EmptyFormat();
-
-    /// @notice Name cannot be left empty.
-    error EmptyName();
-
-    /// @notice Use update function for existing topics.
-    error TopicAlreadyExists(uint256 topic);
-
-    /// @notice Topic is not registered yet.
-    error TopicNotFound(uint256 topic);
-
-    /* ----- ClaimIssuerFactory ----- */
-
-    /// @notice The claim issuer already exists.
-    error ClaimIssuerAlreadyDeployed(address managementKey);
-
-    /// @notice The address is blacklisted.
-    error Blacklisted(address addr);
-
-    /// @notice The call failed.
-    error CallFailed();
+    /// @notice The recovery was scheduled under a previous installation of the module on this
+    ///         account. It can be canceled by the account but never executed.
+    error RecoveryScheduledUnderPreviousInstall(bytes32 operationId);
 
     /* ----- EASClaimIssuer ----- */
 

@@ -23,21 +23,23 @@
 pragma solidity ^0.8.28;
 
 import { KeyManager } from "./KeyManager.sol";
+import { IKeyRegistry } from "./interface/IKeyRegistry.sol";
 import { Errors } from "./libraries/Errors.sol";
 import { hashAddress } from "./libraries/Hashing.sol";
 import { KeyPurposes } from "./libraries/KeyPurposes.sol";
-import { ERC734Validator } from "./modules/validators/ERC734Validator.sol";
-import { SafeCalldataBatch } from "./vendor/utils/SafeCalldataBatch.sol";
 import {
     AccountERC7579Upgradeable
 } from "@openzeppelin/contracts-upgradeable/account/extensions/draft-AccountERC7579Upgradeable.sol";
-import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/ERC4337Utils.sol";
 import { CallType, ERC7579Utils, ExecType, Mode } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
 import {
     Execution,
+    IERC7579Module,
     MODULE_TYPE_EXECUTOR,
-    MODULE_TYPE_FALLBACK
+    MODULE_TYPE_FALLBACK,
+    MODULE_TYPE_HOOK,
+    MODULE_TYPE_VALIDATOR
 } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
+import { Address } from "@openzeppelin/contracts/utils/Address.sol";
 import { Calldata } from "@openzeppelin/contracts/utils/Calldata.sol";
 import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 
@@ -47,6 +49,24 @@ import { EIP712 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 ///         re-check a user op the validator accepted; the per-target purpose rule in
 ///         {_authorizeCall} applies to executor callers only.
 abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 {
+
+    /// @dev Gas given to each `isModuleType` probe in {_isModule}. A real module answers from a
+    ///      pure function, even behind a proxy, so this is plenty. The cap stops an unrelated
+    ///      target's fallback from using up the caller's gas.
+    uint256 private constant _MODULE_PROBE_GAS = 30_000;
+
+    /// @dev Emitted for every call dispatched through the ERC-7579 execute path, before it runs.
+    ///      `caller` is the address that called the account to dispatch it. A zero target is
+    ///      logged as the account itself, which is where the call runs.
+    event CallDispatched(address target, uint256 value, bytes data, address caller);
+
+    /// @dev Emitted right after ERC-7579 `ModuleInstalled`, which omits the install data.
+    ///      `caller` here and on ModuleUninstallData follows the same paths as on
+    ///      {ERC734Validator-KeyAdded}.
+    event ModuleInstallData(uint256 moduleTypeId, address module, bytes initData, address caller);
+
+    /// @dev Emitted right after ERC-7579 `ModuleUninstalled`, which omits the uninstall data.
+    event ModuleUninstallData(uint256 moduleTypeId, address module, bytes deInitData, address caller);
 
     /// @notice Install a module. Gated on MANAGEMENT.
     /// @dev The OZ default gate (`onlyEntryPointOrSelf`) is replaced with the stricter
@@ -88,6 +108,12 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         _uninstallModule(moduleTypeId, module, deInitData);
     }
 
+    /// @dev Runs the base install, then logs the install data the ERC-7579 `ModuleInstalled` event omits.
+    function _installModule(uint256 moduleTypeId, address module, bytes memory initData) internal virtual override {
+        super._installModule(moduleTypeId, module, initData);
+        emit ModuleInstallData(moduleTypeId, module, initData, msg.sender);
+    }
+
     /// @dev Strips every ERC-734 purpose the module holds, then runs the base uninstall.
     ///      Purposes are read from, and removed on, the enshrined registry module (self-calls).
     ///      Fallback uninstalls don't strip: fallback handlers register per selector, so one
@@ -101,7 +127,7 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
         // its onUninstall callback to grant itself keys. Stripping first closes that window.
         if (moduleTypeId != MODULE_TYPE_FALLBACK) {
             bytes32 moduleKey = hashAddress(module);
-            ERC734Validator registry = ERC734Validator(registryModule());
+            IKeyRegistry registry = IKeyRegistry(registryModule());
 
             // Drop each purpose the module holds. Snapshot first, since the set shrinks as we remove.
             // At most the 6 ERC-734 purposes, so the loop is cheap. Skip if the module had no key.
@@ -109,12 +135,13 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
             if (signerData.length != 0) {
                 uint256[] memory purposes = registry.getKeyPurposes(address(this), moduleKey);
                 for (uint256 i = 0; i < purposes.length; i++) {
-                    _removeKeyPurpose(moduleKey, purposes[i]);
+                    _removeKeyPurpose(moduleKey, purposes[i], msg.sender);
                 }
             }
         }
 
         super._uninstallModule(moduleTypeId, module, deInitData);
+        emit ModuleUninstallData(moduleTypeId, module, deInitData, msg.sender);
     }
 
     /// @notice Advertises the modes {_execute} accepts. The OZ base also claims DELEGATECALL,
@@ -129,65 +156,110 @@ abstract contract SmartAccount is KeyManager, AccountERC7579Upgradeable, EIP712 
     ///         MANAGEMENT self-calls) and {executeFromExecutor} go through here, so there is only one
     ///         authorization path to keep right. DELEGATECALL and unknown call types are rejected.
     function _execute(Mode mode, bytes calldata executionCalldata) internal virtual override returns (bytes[] memory) {
+        // Only the modes {supportsExecutionMode} advertises: SINGLE or BATCH, DEFAULT or TRY.
+        require(supportsExecutionMode(Mode.unwrap(mode)), Errors.UnsupportedExecutionMode(Mode.unwrap(mode)));
+        (CallType callType, ExecType execType,,) = ERC7579Utils.decodeMode(mode);
+
         // Work out who is calling: their key hash, and whether they are an installed executor
         // (which gets purpose-checked).
         bytes32 callerKeyHash = hashAddress(msg.sender);
         bool callerIsExecutor = isModuleInstalled(MODULE_TYPE_EXECUTOR, msg.sender, Calldata.emptyBytes());
-
-        (CallType callType,,,) = ERC7579Utils.decodeMode(mode);
 
         if (callType == ERC7579Utils.CALLTYPE_SINGLE) {
             // SINGLE layout: target (20) | value (32) | data. A shorter payload is malformed;
             // reject it here so a call can never skip the guard below and reach super unauthorized.
             require(executionCalldata.length >= 52, Errors.UnsupportedExecutionMode(Mode.unwrap(mode)));
             address target = address(bytes20(executionCalldata[:20]));
+            // OZ runs a zero target against the account; resolve it so the check and the event agree.
+            if (target == address(0)) target = address(this);
             _authorizeCall(target, executionCalldata[52:], callerKeyHash, callerIsExecutor);
-        } else if (callType == ERC7579Utils.CALLTYPE_BATCH) {
-            // Every call in the batch must pass. {SafeCalldataBatch} keeps the batch in calldata but
-            // validates each entry against the slice bounds, so a backward offset can't point past
-            // the batch and let us authorize a different target than we run. The validator decodes
-            // the same way, so the two checks always agree.
-            Execution[] calldata batch = SafeCalldataBatch.decodeBatch(executionCalldata);
-            for (uint256 i = 0; i < batch.length; i++) {
-                _authorizeCall(batch[i].target, batch[i].callData, callerKeyHash, callerIsExecutor);
-            }
-        } else {
-            revert Errors.UnsupportedExecutionMode(Mode.unwrap(mode));
+            emit CallDispatched(target, uint256(bytes32(executionCalldata[20:52])), executionCalldata[52:], msg.sender);
+            return super._execute(mode, executionCalldata);
         }
 
-        return super._execute(mode, executionCalldata);
+        // An override of {supportsExecutionMode} that adds a call type must handle it here,
+        // not have it decoded as a batch.
+        require(callType == ERC7579Utils.CALLTYPE_BATCH, Errors.UnsupportedExecutionMode(Mode.unwrap(mode)));
+
+        // BATCH. Each call is authorized right before it runs, not all up front: an earlier call
+        // can change what a later target is, for example by deploying a module at its address.
+        // Decode into memory so a bad offset can't point past the batch and let us authorize a
+        // different target than we run, and so the validator (which decodes the same way) and
+        // this check always agree.
+        bool tryMode = execType == ERC7579Utils.EXECTYPE_TRY;
+        Execution[] memory batch = abi.decode(executionCalldata, (Execution[]));
+        bytes[] memory results = new bytes[](batch.length);
+        for (uint256 i = 0; i < batch.length; i++) {
+            address target = batch[i].target;
+            if (target == address(0)) target = address(this);
+            _authorizeCall(target, batch[i].callData, callerKeyHash, callerIsExecutor);
+            emit CallDispatched(target, batch[i].value, batch[i].callData, msg.sender);
+
+            (bool success, bytes memory returnData) = target.call{ value: batch[i].value }(batch[i].callData);
+            if (!success && !tryMode) Address.verifyCallResult(success, returnData); // bubbles the revert
+            if (!success && tryMode) emit ERC7579Utils.ERC7579TryExecuteFail(i, returnData);
+            results[i] = returnData;
+        }
+        return results;
     }
 
-    /// @dev Authorizes one call: no dispatched call may target one of the account's own modules
-    ///      (unless the account itself is the caller), and an executor caller needs a key
-    ///      purpose for the target.
-    function _authorizeCall(address target, bytes calldata inner, bytes32 callerKeyHash, bool callerIsExecutor)
+    /// @dev Authorizes one call: no dispatched call may target an ERC-7579 module (unless the
+    ///      account itself is the caller), and an executor caller needs a key purpose for the
+    ///      target. {_execute} has already resolved a zero target to the account.
+    function _authorizeCall(address target, bytes memory inner, bytes32 callerKeyHash, bool callerIsExecutor)
         private
         view
     {
-        // OZ rewrites target 0 to the account before dispatch; do the same so the checks agree.
-        if (target == address(0)) target = address(this);
-
-        // A dispatched call must never land on one of the account's own modules: an installed
-        // executor, or the fallback handler for this call's selector. Module functions are reached
-        // through the account's fallback dispatch, which appends the real caller (ERC-2771 style);
-        // `execute(module, ...)` skips that append, so the module would misread its caller.
-        // `bytes4(inner)` zero-pads short/empty calldata, which matches no handler.
+        // A dispatched call must never land on an ERC-7579 module, installed or not. Modules
+        // keep their settings per account, keyed on `msg.sender`, so a call from the account
+        // reads to them as the account configuring itself. Letting a key below MANAGEMENT make
+        // that call would let it:
+        //   - give an installed validator a new signer, which then signs anything;
+        //   - set up a module before MANAGEMENT installs it, e.g. plant a recovery.
+        // Module functions meant for callers are reached through the account's fallback
+        // dispatch instead, which appends the real caller (ERC-2771 style).
         //
-        // Exception: the account itself may call its own modules. Some module functions only
-        // accept the account as caller (the recovery module's cancel and its config setters),
-        // and this is the only way to reach them. A self-call to `execute` always comes from a
+        // Exception: the account itself may call modules. Some module functions only accept the
+        // account as caller (the recovery module's cancel and its config setters), and this is
+        // the only way to reach them. A self-call to `execute` always comes from a
         // MANAGEMENT-authorized flow, so nothing is escalated.
-        bool targetIsOwnModule = isModuleInstalled(MODULE_TYPE_EXECUTOR, target, Calldata.emptyBytes())
-            || _fallbackHandler(bytes4(inner)) == target;
-        if (targetIsOwnModule && msg.sender != address(this)) {
-            revert Errors.OwnModuleTargetBlocked(target);
+        if (msg.sender != address(this) && _isModule(target, bytes4(inner))) {
+            revert Errors.ModuleTargetBlocked(target);
         }
 
         // An executor's own key must have a purpose that authorizes this target.
         if (callerIsExecutor && !_isKeyAuthorizedToCallTarget(callerKeyHash, target)) {
             revert Errors.ExecutorPurposeNotAuthorized();
         }
+    }
+
+    /// @dev Whether `target` is an ERC-7579 module, for the call selector `selector`.
+    ///      1. Installed on this account: as a validator, as an executor, or as the fallback
+    ///         handler for this selector. Read from our own storage, so it holds even if the
+    ///         module changes its answer to `isModuleType` later.
+    ///      2. Not installed (or installed under other selectors): it says so itself. Every
+    ///         ERC-7579 module must implement `isModuleType`, and returns true for its types.
+    function _isModule(address target, bytes4 selector) private view returns (bool) {
+        if (target == address(this)) return false; // the account is not a module of itself
+        if (isModuleInstalled(MODULE_TYPE_VALIDATOR, target, Calldata.emptyBytes())) return true;
+        if (isModuleInstalled(MODULE_TYPE_EXECUTOR, target, Calldata.emptyBytes())) return true;
+        if (_fallbackHandler(selector) == target) return true;
+
+        uint256[4] memory moduleTypes =
+            [MODULE_TYPE_VALIDATOR, MODULE_TYPE_EXECUTOR, MODULE_TYPE_FALLBACK, MODULE_TYPE_HOOK];
+        for (uint256 i = 0; i < moduleTypes.length; i++) {
+            if (_claimsModuleType(target, moduleTypes[i])) return true;
+        }
+        return false;
+    }
+
+    /// @dev Asks `target.isModuleType(moduleTypeId)`. Only an ABI-encoded `true` (exactly 32 bytes,
+    ///      value 1) counts. An EOA, a contract without the function, a revert, or any other
+    ///      answer reads as "not a module".
+    function _claimsModuleType(address target, uint256 moduleTypeId) private view returns (bool) {
+        (bool success, bytes memory result) =
+            target.staticcall{ gas: _MODULE_PROBE_GAS }(abi.encodeCall(IERC7579Module.isModuleType, (moduleTypeId)));
+        return success && result.length == 32 && uint256(bytes32(result)) == 1;
     }
 
     /// @dev The purpose an executor's key needs for a target. Management-grade targets need

@@ -26,9 +26,9 @@ import { SmartAccount } from "./SmartAccount.sol";
 import { IERC734 } from "./interface/IERC734.sol";
 import { IERC735 } from "./interface/IERC735.sol";
 import { IIdentity } from "./interface/IIdentity.sol";
+import { IKeyRegistry } from "./interface/IKeyRegistry.sol";
 import { Errors } from "./libraries/Errors.sol";
 import { KeyTypes } from "./libraries/KeyTypes.sol";
-import { ERC734Validator } from "./modules/validators/ERC734Validator.sol";
 import { Structs } from "./storage/Structs.sol";
 import { Initializable } from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import { MODULE_TYPE_EXECUTOR, MODULE_TYPE_VALIDATOR } from "@openzeppelin/contracts/interfaces/draft-IERC7579.sol";
@@ -85,7 +85,7 @@ contract Identity is Initializable, SmartAccount, ERC165 {
     /// @dev Release version. {accountId} and {version} both read this so they cannot drift
     ///      apart. The EIP-712 domain version in the constructor is separate on purpose: it is
     ///      baked into every stored claim signature and must not follow releases.
-    string private constant _VERSION = "3.0.0";
+    string private constant _VERSION = "3.1.0";
 
     /// @dev ERC-7201 storage slot for identity-level metadata.
     bytes32 internal constant _IDENTITY_METADATA_SLOT =
@@ -126,6 +126,14 @@ contract Identity is Initializable, SmartAccount, ERC165 {
         return _registryModule;
     }
 
+    /// @notice The ERC-165 id of the registry functions this implementation calls ({IKeyRegistry}).
+    ///         The factory requires the registry module to support it before it puts this
+    ///         implementation behind the beacon, so an upgrade cannot leave key writes calling
+    ///         functions the registry does not have.
+    function requiredRegistryInterface() external pure returns (bytes4) {
+        return type(IKeyRegistry).interfaceId;
+    }
+
     /// @notice The factory that deploys this identity. Fixed at implementation deploy time like
     ///         {registryModule}. The account uses it to require MANAGEMENT for the factory's
     ///         wallet-binding calls (linkAccount, revokeAccount, settlePendingCrossChainLink).
@@ -161,8 +169,8 @@ contract Identity is Initializable, SmartAccount, ERC165 {
             _installModule(_modules[i].moduleType, _modules[i].module, _modules[i].initData);
 
             if (_modules[i].purpose != 0) {
-                ERC734Validator(registryModule())
-                    .addKey(abi.encodePacked(_modules[i].module), "", _modules[i].purpose, KeyTypes.MODULE);
+                IKeyRegistry(registryModule())
+                    .addKey(abi.encodePacked(_modules[i].module), "", _modules[i].purpose, KeyTypes.MODULE, msg.sender);
             }
         }
 
@@ -170,7 +178,7 @@ contract Identity is Initializable, SmartAccount, ERC165 {
         // commits to the keys actually registered.
         for (uint256 i = 0; i < _keys.length; i++) {
             Structs.KeyParam calldata key = _keys[i];
-            _addKeyWithData(key.keyHash, key.purpose, key.keyType, key.signerData, key.clientData);
+            _addKeyWithData(key.keyHash, key.purpose, key.keyType, key.signerData, key.clientData, msg.sender);
         }
 
         emit IdentityInitialized(_identityType);

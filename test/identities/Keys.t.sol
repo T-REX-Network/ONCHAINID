@@ -56,6 +56,62 @@ contract KeysTest is OnchainIDSetup {
         assertTrue(aliceFound, "alice should be a MANAGEMENT key");
     }
 
+    // ============ Every key of an account ============
+
+    function test_getKeys_ListsTheModuleKeyLeftOutOfTheManagementSet() public view {
+        bytes32 moduleKeyHash = ClaimSignerHelper.addressToKey(address(onchainidSetup.keyApprovalModule));
+        ERC734Validator registry = onchainidSetup.signatureValidator;
+
+        bytes32[] memory everyKey = registry.getKeys(address(aliceIdentity));
+        bytes32[] memory managementKeys = registry.getKeysByPurpose(address(aliceIdentity), KeyPurposes.MANAGEMENT);
+
+        assertTrue(registry.keyHasPurpose(address(aliceIdentity), moduleKeyHash, KeyPurposes.MANAGEMENT));
+        assertTrue(_contains(everyKey, moduleKeyHash), "getKeys lists the module key");
+        assertFalse(_contains(managementKeys, moduleKeyHash), "the MANAGEMENT set leaves it out");
+        assertTrue(_contains(everyKey, aliceKeyHash), "getKeys lists the signer keys too");
+    }
+
+    function test_getKeys_ListsAKeyOnceWhateverItsPurposes() public {
+        uint256 keyCountBefore = onchainidSetup.signatureValidator.getKeys(address(aliceIdentity)).length;
+
+        vm.prank(alice);
+        aliceIdentity.addKey(aliceKeyHash, KeyPurposes.ACTION, KeyTypes.ECDSA);
+
+        uint256 keyCountAfter = onchainidSetup.signatureValidator.getKeys(address(aliceIdentity)).length;
+        assertEq(keyCountAfter, keyCountBefore, "a second purpose does not add a second entry");
+    }
+
+    function test_getKeys_DropsAKeyWhenItsLastPurposeIsRemoved() public {
+        bytes32 davidKeyHash = ClaimSignerHelper.addressToKey(david);
+
+        vm.prank(alice);
+        aliceIdentity.removeKey(davidKeyHash, KeyPurposes.ACTION);
+
+        bytes32[] memory everyKey = onchainidSetup.signatureValidator.getKeys(address(aliceIdentity));
+        assertFalse(_contains(everyKey, davidKeyHash), "david held ACTION only");
+    }
+
+    function test_getKeys_PagesTheSameKeysAsTheFullSet() public view {
+        ERC734Validator registry = onchainidSetup.signatureValidator;
+        bytes32[] memory everyKey = registry.getKeys(address(aliceIdentity));
+
+        bytes32[] memory secondPage = registry.getKeys(address(aliceIdentity), 1, 3);
+        bytes32[] memory pastTheEnd = registry.getKeys(address(aliceIdentity), everyKey.length - 1, 1000);
+
+        assertEq(secondPage.length, 2);
+        assertEq(secondPage[0], everyKey[1]);
+        assertEq(secondPage[1], everyKey[2]);
+        assertEq(pastTheEnd.length, 1, "an end past the set returns the tail");
+        assertEq(pastTheEnd[0], everyKey[everyKey.length - 1]);
+    }
+
+    function _contains(bytes32[] memory keyHashes, bytes32 keyHash) internal pure returns (bool) {
+        for (uint256 i = 0; i < keyHashes.length; i++) {
+            if (keyHashes[i] == keyHash) return true;
+        }
+        return false;
+    }
+
     function test_ReturnTrueIfKeyHasGivenPurpose() public view {
         bool hasPurpose = IERC734(address(aliceIdentity)).keyHasPurpose(aliceKeyHash, KeyPurposes.MANAGEMENT);
 
@@ -154,7 +210,7 @@ contract KeysTest is OnchainIDSetup {
     }
 
     function test_RevertRemoveKey_WhenKeyDoesNotExist() public {
-        vm.expectRevert(abi.encodeWithSelector(Errors.KeyNotRegistered.selector, bobKeyHash));
+        vm.expectRevert(abi.encodeWithSelector(ERC734Validator.KeyNotRegistered.selector, bobKeyHash));
         vm.prank(alice);
         aliceIdentity.removeKey(bobKeyHash, KeyPurposes.ACTION);
     }
@@ -237,6 +293,10 @@ contract KeysTest is OnchainIDSetup {
         bytes memory signerData = abi.encodePacked(bob);
 
         vm.prank(alice);
+        vm.expectEmit(address(onchainidSetup.signatureValidator));
+        emit ERC734Validator.KeyAdded(
+            address(aliceIdentity), keyHash, KeyPurposes.ACTION, KeyTypes.ECDSA, signerData, "", alice
+        );
         aliceIdentity.addKeyWithData(keyHash, KeyPurposes.ACTION, KeyTypes.ECDSA, signerData, "");
 
         (, uint256 keyType, bytes32 storedKey) = IERC734(address(aliceIdentity)).getKey(keyHash);
@@ -264,8 +324,9 @@ contract KeysTest is OnchainIDSetup {
     }
 
     function test_AddKey_AcceptsFieldsAtCap() public {
-        bytes memory signerData = new bytes(Structs.MAX_SIGNER_DATA_LENGTH);
-        signerData[0] = 0x01;
+        // `verifier || key`, with the verifier a deployed contract (any contract will do here).
+        bytes memory signerData =
+            bytes.concat(abi.encodePacked(address(aliceIdentity)), new bytes(Structs.MAX_SIGNER_DATA_LENGTH - 20));
         bytes memory clientData = new bytes(Structs.MAX_CLIENT_DATA_LENGTH);
         bytes32 keyHash = keccak256(signerData);
 

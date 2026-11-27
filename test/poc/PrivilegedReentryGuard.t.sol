@@ -89,12 +89,13 @@ contract PrivilegedReentryGuardTest is OnchainIDSetup {
         assertTrue(validator.keyHasPurpose(address(aliceIdentity), _davidKey(), KeyPurposes.ACTION), "david is ACTION");
 
         bytes memory addMgmt = abi.encodeCall(
-            ERC734Validator.addKey, (abi.encodePacked(david), "", KeyPurposes.MANAGEMENT, KeyTypes.ECDSA)
+            ERC734Validator.addKey,
+            (abi.encodePacked(david), "", KeyPurposes.MANAGEMENT, KeyTypes.ECDSA, address(aliceIdentity))
         );
         bytes memory innerKamCall = abi.encodeCall(KeyApprovalModule.execute, (address(validator), 0, addMgmt));
         bytes memory callData = _singleExecute(address(kam), innerKamCall);
 
-        vm.expectRevert(abi.encodeWithSelector(Errors.OwnModuleTargetBlocked.selector, address(kam)));
+        vm.expectRevert(abi.encodeWithSelector(Errors.ModuleTargetBlocked.selector, address(kam)));
         _dispatchAsEntryPoint(callData);
 
         assertFalse(
@@ -109,7 +110,8 @@ contract PrivilegedReentryGuardTest is OnchainIDSetup {
     ///         MANAGEMENT; the `_execute` guard now rejects the call before KAM ever runs.
     function test_actionKey_cannotEscalate_viaKeyApprovalModule_forgedTail() public {
         bytes memory addMgmt = abi.encodeCall(
-            ERC734Validator.addKey, (abi.encodePacked(david), "", KeyPurposes.MANAGEMENT, KeyTypes.ECDSA)
+            ERC734Validator.addKey,
+            (abi.encodePacked(david), "", KeyPurposes.MANAGEMENT, KeyTypes.ECDSA, address(aliceIdentity))
         );
         // Pad so that, once ABI-encoded as KAM.execute's last `bytes` arg, david's 20 bytes land as
         // the final 20 bytes of the calldata KAM sees, forging `_msgSender()` to david.
@@ -119,7 +121,7 @@ contract PrivilegedReentryGuardTest is OnchainIDSetup {
         bytes memory innerKamCall = abi.encodeCall(KeyApprovalModule.execute, (address(validator), 0, forgedData));
         bytes memory callData = _singleExecute(address(kam), innerKamCall);
 
-        vm.expectRevert(abi.encodeWithSelector(Errors.OwnModuleTargetBlocked.selector, address(kam)));
+        vm.expectRevert(abi.encodeWithSelector(Errors.ModuleTargetBlocked.selector, address(kam)));
         _dispatchAsEntryPoint(callData);
 
         assertFalse(
@@ -131,13 +133,14 @@ contract PrivilegedReentryGuardTest is OnchainIDSetup {
     /// @notice An ACTION key routes the queue module's legacy `IKeyExecutor.execute` at the
     ///         registry module to run `addKey(david, MANAGEMENT)`. KAM auto-approves it (external
     ///         target + ACTION) and dispatches through `executeFromExecutor`, but the account's
-    ///         own-module guard rejects the registry (an installed executor) as a target, so no
+    ///         module-target guard rejects the registry (an installed executor) as a target, so no
     ///         MANAGEMENT key is granted.
     function test_actionKey_cannotEscalate_viaLegacyExecuteAtRegistry() public {
         assertTrue(validator.keyHasPurpose(address(aliceIdentity), _davidKey(), KeyPurposes.ACTION), "david is ACTION");
 
         bytes memory addMgmt = abi.encodeCall(
-            ERC734Validator.addKey, (abi.encodePacked(david), "", KeyPurposes.MANAGEMENT, KeyTypes.ECDSA)
+            ERC734Validator.addKey,
+            (abi.encodePacked(david), "", KeyPurposes.MANAGEMENT, KeyTypes.ECDSA, address(aliceIdentity))
         );
 
         // david calls the identity's legacy execute (served by KAM via fallback), targeting the
@@ -157,11 +160,12 @@ contract PrivilegedReentryGuardTest is OnchainIDSetup {
     ///         privileged-module re-entry and is rejected.
     function test_actionKey_cannotTargetFallbackHandlerModule() public {
         bytes memory addMgmt = abi.encodeCall(
-            ERC734Validator.addKey, (abi.encodePacked(david), "", KeyPurposes.MANAGEMENT, KeyTypes.ECDSA)
+            ERC734Validator.addKey,
+            (abi.encodePacked(david), "", KeyPurposes.MANAGEMENT, KeyTypes.ECDSA, address(aliceIdentity))
         );
         bytes memory callData = _singleExecute(address(validator), addMgmt);
 
-        vm.expectRevert(abi.encodeWithSelector(Errors.OwnModuleTargetBlocked.selector, address(validator)));
+        vm.expectRevert(abi.encodeWithSelector(Errors.ModuleTargetBlocked.selector, address(validator)));
         _dispatchAsEntryPoint(callData);
     }
 
@@ -170,7 +174,8 @@ contract PrivilegedReentryGuardTest is OnchainIDSetup {
     function test_batch_withPrivilegedTarget_rejected() public {
         PocCounter counter = new PocCounter();
         bytes memory addMgmt = abi.encodeCall(
-            ERC734Validator.addKey, (abi.encodePacked(david), "", KeyPurposes.MANAGEMENT, KeyTypes.ECDSA)
+            ERC734Validator.addKey,
+            (abi.encodePacked(david), "", KeyPurposes.MANAGEMENT, KeyTypes.ECDSA, address(aliceIdentity))
         );
 
         Execution[] memory batch = new Execution[](2);
@@ -182,7 +187,7 @@ contract PrivilegedReentryGuardTest is OnchainIDSetup {
             IERC7579Execution.execute.selector, bytes32(uint256(0x01) << 248), ERC7579Utils.encodeBatch(batch)
         );
 
-        vm.expectRevert(abi.encodeWithSelector(Errors.OwnModuleTargetBlocked.selector, address(kam)));
+        vm.expectRevert(abi.encodeWithSelector(Errors.ModuleTargetBlocked.selector, address(kam)));
         _dispatchAsEntryPoint(callData);
     }
 
@@ -220,14 +225,16 @@ contract PrivilegedReentryGuardTest is OnchainIDSetup {
         assertEq(counter.count(), 1, "ordinary external ACTION call must still run");
     }
 
-    /// @notice The own-module guard exempts the account itself: a self-call may target an
+    /// @notice The module-target guard exempts the account itself: a self-call may target an
     ///         installed module. That is how the account runs module functions that only accept
     ///         the account as caller, like the recovery module's cancel. Getting the account to
     ///         self-call `execute` requires MANAGEMENT on every route, so nothing is escalated.
     ///         The full nested flow is covered in test/modules/recovery/RecoveryModule.t.sol.
     function test_selfCall_canTargetOwnModules() public {
-        bytes memory addKeyData =
-            abi.encodeCall(ERC734Validator.addKey, (abi.encodePacked(bob), "", KeyPurposes.ACTION, KeyTypes.ECDSA));
+        bytes memory addKeyData = abi.encodeCall(
+            ERC734Validator.addKey,
+            (abi.encodePacked(bob), "", KeyPurposes.ACTION, KeyTypes.ECDSA, address(aliceIdentity))
+        );
 
         // Registry module target: the call goes through and lands on the validator, which sees
         // the account as caller, the same shape as KeyManager's own self-call forwarding.

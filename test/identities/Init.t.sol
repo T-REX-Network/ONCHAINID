@@ -31,7 +31,7 @@ contract InitTest is OnchainIDSetup {
 
     function test_versionInitializedWhenDeployedAsRegularContract() public {
         Identity identityImplementation = getIdentityImplementation();
-        assertEq(identityImplementation.version(), "3.0.0");
+        assertEq(identityImplementation.version(), "3.1.0");
     }
 
     function test_revert_whenCallingLibraryImplementationDirectly() public {
@@ -46,7 +46,7 @@ contract InitTest is OnchainIDSetup {
     }
 
     function test_accountId_returnsExpectedValue() public view {
-        assertEq(aliceIdentity.accountId(), "trex.onchainid.identity.v3.0.0");
+        assertEq(aliceIdentity.accountId(), "trex.onchainid.identity.v3.1.0");
     }
 
     function test_supportsERC165InterfaceDetection() public {

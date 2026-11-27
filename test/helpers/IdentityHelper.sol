@@ -60,6 +60,9 @@ library IdentityHelper {
         setup.accessManager = new AccessManager(managementKey);
         setup.idFactory = new IdentityFactory(address(setup.accessManager));
         setup.reputationRegistry = new ReputationRegistry(address(setup.accessManager), address(setup.idFactory));
+        // Mirrors the deploy script: factory claim issuers meet the threshold out of the box.
+        setup.reputationRegistry.setDefault(IdentityTypes.CLAIM_ISSUER, 50);
+        setup.reputationRegistry.setClaimAddThreshold(50);
         setup.signatureValidator = new ERC734Validator(address(setup.idFactory), address(setup.reputationRegistry));
         setup.identityImplementation = new Identity(address(setup.signatureValidator), address(setup.idFactory));
         // The factory deploys the beacon at its predetermined CREATE3 slot; its owner is
@@ -136,7 +139,7 @@ library IdentityHelper {
             initData: abi.encodePacked(IKeyExecutor.getCurrentNonce.selector),
             purpose: 0
         });
-        // ----- claim module (merged validator): 1 executor + 9 claim fallbacks -----
+        // ----- claim module (merged validator): 1 executor + 10 claim fallbacks -----
         installs[5] =
             Structs.ModuleInstall({ moduleType: MODULE_TYPE_EXECUTOR, module: claimsModule, initData: "", purpose: 0 });
         installs[6] = Structs.ModuleInstall({
@@ -193,11 +196,10 @@ library IdentityHelper {
             initData: abi.encodePacked(IClaimIssuer.addClaimTo.selector),
             purpose: 0
         });
-        // ----- trusted-issuer add path served by the merged module via fallback -----
         installs[15] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: claimsModule,
-            initData: abi.encodePacked(ERC734Validator.addClaimByTrustedIssuer.selector),
+            initData: abi.encodePacked(IClaimIssuer.removeClaimFrom.selector),
             purpose: 0
         });
     }
@@ -341,10 +343,9 @@ library IdentityHelper {
         modules[15] = Structs.ModuleInstall({
             moduleType: MODULE_TYPE_FALLBACK,
             module: address(claimsModule),
-            initData: abi.encodePacked(ERC734Validator.addClaimByTrustedIssuer.selector),
+            initData: abi.encodePacked(IClaimIssuer.removeClaimFrom.selector),
             purpose: 0
         });
-
         BeaconProxy proxy =
             new BeaconProxy(address(b), abi.encodeCall(Identity.initialize, (identityType, keys, modules)));
         identity = Identity(payable(address(proxy)));

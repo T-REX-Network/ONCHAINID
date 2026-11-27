@@ -10,6 +10,7 @@ import { IIdentity } from "contracts/interface/IIdentity.sol";
 import { Errors } from "contracts/libraries/Errors.sol";
 import { KeyPurposes } from "contracts/libraries/KeyPurposes.sol";
 import { KeyTypes } from "contracts/libraries/KeyTypes.sol";
+import { ERC734Validator } from "contracts/modules/validators/ERC734Validator.sol";
 import { Structs } from "contracts/storage/Structs.sol";
 
 /// @notice Coverage for ERC-735 claim management on an Identity (add, remove, get, isClaimValid).
@@ -41,7 +42,8 @@ contract ClaimsTest is OnchainIDSetup {
             bobClaim.issuer,
             bobClaim.signature,
             bobClaim.data,
-            bobClaim.uri
+            bobClaim.uri,
+            bob
         );
         vm.prank(bob);
         IIdentity(address(bobIdentity))
@@ -69,7 +71,8 @@ contract ClaimsTest is OnchainIDSetup {
             updated.issuer,
             updated.signature,
             updated.data,
-            updated.uri
+            updated.uri,
+            alice
         );
         vm.prank(alice);
         IIdentity(address(aliceIdentity))
@@ -87,10 +90,109 @@ contract ClaimsTest is OnchainIDSetup {
             aliceClaim666.issuer,
             aliceClaim666.signature,
             aliceClaim666.data,
-            aliceClaim666.uri
+            aliceClaim666.uri,
+            alice
         );
         vm.prank(alice);
         IIdentity(address(aliceIdentity)).removeClaim(aliceClaim666.id);
+    }
+
+    // ============ Claim topics per identity ============
+
+    function test_getClaimTopics_ListsTheTopicOfEachHeldClaim() public {
+        _addExternalIssuerClaim(new ExternalIssuer(), claimTopic);
+
+        uint256[] memory topics = onchainidSetup.signatureValidator.getClaimTopics(address(aliceIdentity));
+
+        assertEq(topics.length, 2, "alice holds claims under topic 666 and the test topic");
+        assertEq(topics[0], Constants.CLAIM_TOPIC_666, "the fixture claim's topic comes first");
+        assertEq(topics[1], claimTopic, "the new claim's topic is appended");
+    }
+
+    function test_getClaimTopics_ListsATopicOnceWhenItsClaimIsReAdded() public {
+        ClaimSignerHelper.Claim memory updated = ClaimSignerHelper.buildClaim(
+            claimIssuerOwnerPk,
+            claimIssuerOwner,
+            address(aliceIdentity),
+            address(claimIssuer),
+            Constants.CLAIM_TOPIC_666,
+            hex"1337",
+            "https://example.com/v2"
+        );
+        vm.prank(alice);
+        IIdentity(address(aliceIdentity))
+            .addClaim(updated.topic, updated.scheme, updated.issuer, updated.signature, updated.data, updated.uri);
+
+        uint256[] memory topics = onchainidSetup.signatureValidator.getClaimTopics(address(aliceIdentity));
+
+        assertEq(topics.length, 1, "re-adding the same claim id keeps one topic entry");
+        assertEq(topics[0], Constants.CLAIM_TOPIC_666);
+    }
+
+    function test_getClaimTopics_KeepsATopicWhileAnotherClaimRemainsUnderIt() public {
+        _addExternalIssuerClaim(new ExternalIssuer(), Constants.CLAIM_TOPIC_666);
+
+        vm.prank(alice);
+        IIdentity(address(aliceIdentity)).removeClaim(aliceClaim666.id);
+
+        uint256[] memory topics = onchainidSetup.signatureValidator.getClaimTopics(address(aliceIdentity));
+        assertEq(topics.length, 1, "the external issuer's claim still sits under topic 666");
+        assertEq(topics[0], Constants.CLAIM_TOPIC_666);
+    }
+
+    function test_getClaimTopics_DropsATopicWhenItsLastClaimIsRemoved() public {
+        vm.prank(alice);
+        IIdentity(address(aliceIdentity)).removeClaim(aliceClaim666.id);
+
+        uint256[] memory topics = onchainidSetup.signatureValidator.getClaimTopics(address(aliceIdentity));
+        assertEq(topics.length, 0, "alice holds no claim any more");
+    }
+
+    function test_getClaimTopics_PagesTheSameTopicsAsTheFullSet() public {
+        _addExternalIssuerClaim(new ExternalIssuer(), claimTopic);
+        ERC734Validator registry = onchainidSetup.signatureValidator;
+        uint256[] memory everyTopic = registry.getClaimTopics(address(aliceIdentity));
+
+        uint256[] memory firstPage = registry.getClaimTopics(address(aliceIdentity), 0, 1);
+        uint256[] memory pastTheEnd = registry.getClaimTopics(address(aliceIdentity), 1, 1000);
+
+        assertEq(everyTopic.length, 2, "alice holds claims under topic 666 and the test topic");
+        assertEq(firstPage.length, 1, "the page holds one topic");
+        assertEq(firstPage[0], everyTopic[0], "the first page starts at the first topic");
+        assertEq(pastTheEnd.length, 1, "an end past the set returns the tail");
+        assertEq(pastTheEnd[0], everyTopic[1], "the tail is the last topic");
+    }
+
+    // ============ Claim ids of an account by topic ============
+
+    function test_getClaimIdsByTopic_PagesTheAccountsClaimIdsUnderATopic() public {
+        _addExternalIssuerClaim(new ExternalIssuer(), Constants.CLAIM_TOPIC_666);
+        bytes32[] memory everyClaimId = IIdentity(address(aliceIdentity)).getClaimIdsByTopic(Constants.CLAIM_TOPIC_666);
+
+        bytes32[] memory secondPage = onchainidSetup.signatureValidator
+            .getClaimIdsByTopic(address(aliceIdentity), Constants.CLAIM_TOPIC_666, 1, 1000);
+
+        assertEq(everyClaimId.length, 2, "the fixture claim and the external issuer's claim");
+        assertEq(secondPage.length, 1, "an end past the set returns the tail");
+        assertEq(secondPage[0], everyClaimId[1]);
+    }
+
+    function test_getClaimIdsByTopic_ReturnsNothingForATopicWithoutClaims() public view {
+        bytes32[] memory claimIds =
+            onchainidSetup.signatureValidator.getClaimIdsByTopic(address(aliceIdentity), claimTopic, 0, 1000);
+
+        assertEq(claimIds.length, 0);
+    }
+
+    function _addExternalIssuerClaim(ExternalIssuer issuer, uint256 topic) internal {
+        Structs.ClaimData memory claimData = Structs.ClaimData({
+            issuedAt: block.timestamp,
+            validUntil: 0,
+            metadataHash: ClaimSignerHelper.metadataHash(1, "uri"),
+            payload: hex"0042"
+        });
+        vm.prank(alice);
+        IIdentity(address(aliceIdentity)).addClaim(topic, 1, address(issuer), "sig", claimData, "uri");
     }
 
     uint256 internal claimTopic = uint256(keccak256(bytes("test")));

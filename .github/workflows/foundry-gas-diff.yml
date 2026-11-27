@@ -16,6 +16,9 @@ env:
 jobs:
   compare_gas_reports:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -26,9 +29,6 @@ jobs:
         uses: foundry-rs/foundry-toolchain@v1
         with:
           version: stable
-
-      - name: Configure access to private OpenZeppelin accounts repo
-        run: git config --global url."https://x-access-token:${{ secrets.OZ_ACCOUNTS_TOKEN }}@github.com/".insteadOf "https://github.com/"
 
       - name: Install dependencies
         run: forge soldeer install

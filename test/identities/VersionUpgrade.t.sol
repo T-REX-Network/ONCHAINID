@@ -11,15 +11,15 @@ import { Structs } from "contracts/storage/Structs.sol";
 contract VersionUpgradeTest is OnchainIDSetup {
 
     function test_returnInitialVersion() public view {
-        assertEq(aliceIdentity.version(), "3.0.0");
+        assertEq(aliceIdentity.version(), "3.1.0");
     }
 
     function test_maintainVersionConstant() public view {
-        assertEq(aliceIdentity.version(), "3.0.0");
+        assertEq(aliceIdentity.version(), "3.1.0");
     }
 
     function test_demonstrateUpgradePattern() public {
-        assertEq(aliceIdentity.version(), "3.0.0");
+        assertEq(aliceIdentity.version(), "3.1.0");
 
         uint256 claimTopic = uint256(keccak256(bytes("test")));
         Structs.ClaimData memory claimData = Structs.ClaimData({

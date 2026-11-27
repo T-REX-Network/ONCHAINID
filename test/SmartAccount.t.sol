@@ -2,6 +2,7 @@
 pragma solidity ^0.8.27;
 
 import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/ERC4337Utils.sol";
+import { ERC7579Utils } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
 import { IERC1271 } from "@openzeppelin/contracts/interfaces/IERC1271.sol";
 import { PackedUserOperation } from "@openzeppelin/contracts/interfaces/IERC4337.sol";
 import { IAccount } from "@openzeppelin/contracts/interfaces/IERC4337.sol";
@@ -73,10 +74,83 @@ contract SmartAccountTest is OnchainIDSetup {
     function test_execute_externalCall_byActionKey_autoApproves() public {
         Counter counter = new Counter();
 
+        vm.expectEmit(address(aliceIdentity));
+        emit SmartAccount.CallDispatched(
+            address(counter), 0, abi.encodeCall(Counter.increment, ()), address(onchainidSetup.keyApprovalModule)
+        );
         vm.prank(david);
         IKeyExecutor(address(aliceIdentity)).execute(address(counter), 0, abi.encodeCall(Counter.increment, ()));
 
         assertEq(counter.count(), 1, "auto-approved external call should run");
+    }
+
+    /// @notice A zero target runs against the account, so the event names the account.
+    function test_execute_zeroTarget_logsTheAccountAsTarget() public {
+        bytes memory addKeyCall = _addActionKeyCall(makeAddr("zeroTargetKey"));
+        bytes memory executionCalldata = abi.encodePacked(address(0), uint256(0), addKeyCall);
+
+        vm.expectEmit(address(aliceIdentity));
+        emit SmartAccount.CallDispatched(address(aliceIdentity), 0, addKeyCall, ENTRY_POINT);
+        vm.prank(ENTRY_POINT);
+        IERC7579Execution(address(aliceIdentity)).execute(bytes32(0), executionCalldata);
+    }
+
+    /// @notice Same for each call of a batch.
+    function test_execute_zeroTargetInBatch_logsTheAccountAsTarget() public {
+        bytes memory addKeyCall = _addActionKeyCall(makeAddr("zeroTargetKey"));
+        Execution[] memory batch = new Execution[](1);
+        batch[0] = Execution({ target: address(0), value: 0, callData: addKeyCall });
+        bytes32 batchMode = bytes32(bytes1(0x01)); // CALLTYPE_BATCH, EXECTYPE_DEFAULT
+
+        vm.expectEmit(address(aliceIdentity));
+        emit SmartAccount.CallDispatched(address(aliceIdentity), 0, addKeyCall, ENTRY_POINT);
+        vm.prank(ENTRY_POINT);
+        IERC7579Execution(address(aliceIdentity)).execute(batchMode, abi.encode(batch));
+    }
+
+    /// @notice In DEFAULT mode, one failing call reverts the whole batch with that call's error,
+    ///         so the calls before it are undone too.
+    function test_execute_batchInDefaultMode_revertsWithTheFailingCallsError() public {
+        Counter counter = new Counter();
+        Reverter reverter = new Reverter();
+        Execution[] memory batch = new Execution[](2);
+        batch[0] = Execution({ target: address(counter), value: 0, callData: abi.encodeCall(Counter.increment, ()) });
+        batch[1] = Execution({ target: address(reverter), value: 0, callData: abi.encodeCall(Reverter.fail, ()) });
+        bytes32 defaultBatchMode = bytes32(bytes1(0x01)); // CALLTYPE_BATCH, EXECTYPE_DEFAULT
+
+        vm.prank(ENTRY_POINT);
+        vm.expectRevert(Reverter.Failed.selector);
+        IERC7579Execution(address(aliceIdentity)).execute(defaultBatchMode, abi.encode(batch));
+
+        assertEq(counter.count(), 0, "the call before the failure is undone");
+    }
+
+    /// @notice In TRY mode, a failing call is only reported, and the rest of the batch still runs.
+    function test_execute_batchInTryMode_reportsTheFailureAndRunsTheRest() public {
+        Counter counter = new Counter();
+        Reverter reverter = new Reverter();
+        Execution[] memory batch = new Execution[](2);
+        batch[0] = Execution({ target: address(reverter), value: 0, callData: abi.encodeCall(Reverter.fail, ()) });
+        batch[1] = Execution({ target: address(counter), value: 0, callData: abi.encodeCall(Counter.increment, ()) });
+        bytes32 tryBatchMode = bytes32(bytes2(0x0101)); // CALLTYPE_BATCH, EXECTYPE_TRY
+
+        vm.expectEmit(address(aliceIdentity));
+        emit ERC7579Utils.ERC7579TryExecuteFail(0, abi.encodeWithSelector(Reverter.Failed.selector));
+        vm.prank(ENTRY_POINT);
+        IERC7579Execution(address(aliceIdentity)).execute(tryBatchMode, abi.encode(batch));
+
+        assertEq(counter.count(), 1, "the call after the failure still runs");
+    }
+
+    function _addActionKeyCall(address grantee) internal pure returns (bytes memory) {
+        return abi.encodeWithSignature(
+            "addKeyWithData(bytes32,uint256,uint256,bytes,bytes)",
+            keccak256(abi.encodePacked(grantee)),
+            KeyPurposes.ACTION,
+            KeyTypes.ECDSA,
+            abi.encodePacked(grantee),
+            ""
+        );
     }
 
     /// @notice A CLAIM_SIGNER key must not be able to call self-targeted `addKey` through
@@ -188,7 +262,7 @@ contract SmartAccountTest is OnchainIDSetup {
         aliceIdentity.removeKey(moduleKey, KeyPurposes.MANAGEMENT);
 
         vm.prank(alice);
-        vm.expectRevert(Errors.CannotRemoveLastManagementKey.selector);
+        vm.expectRevert(ERC734Validator.CannotRemoveLastManagementKey.selector);
         aliceIdentity.removeKey(aliceKey, KeyPurposes.MANAGEMENT);
     }
 
@@ -212,7 +286,7 @@ contract SmartAccountTest is OnchainIDSetup {
         );
 
         vm.prank(alice);
-        vm.expectRevert(Errors.CannotRemoveLastManagementKey.selector);
+        vm.expectRevert(ERC734Validator.CannotRemoveLastManagementKey.selector);
         aliceIdentity.removeKey(aliceKey, KeyPurposes.MANAGEMENT);
     }
 
@@ -365,6 +439,8 @@ contract SmartAccountTest is OnchainIDSetup {
         // and own its lifecycle for this test.
         MockStockECDSAValidator validator = new MockStockECDSAValidator();
         vm.startPrank(alice);
+        vm.expectEmit(address(aliceIdentity));
+        emit SmartAccount.ModuleInstallData(MODULE_TYPE_VALIDATOR, address(validator), abi.encodePacked(alice), alice);
         aliceIdentity.installModule(MODULE_TYPE_VALIDATOR, address(validator), abi.encodePacked(alice));
         // Validators don't need an ERC 734 purpose. We add one anyway so we can check
         // that uninstall cleans it up.
@@ -383,6 +459,8 @@ contract SmartAccountTest is OnchainIDSetup {
         );
 
         vm.prank(alice);
+        vm.expectEmit(address(aliceIdentity));
+        emit SmartAccount.ModuleUninstallData(MODULE_TYPE_VALIDATOR, address(validator), "", alice);
         aliceIdentity.uninstallModule(MODULE_TYPE_VALIDATOR, address(validator), "");
 
         assertFalse(
@@ -966,9 +1044,26 @@ contract SmartAccountTest is OnchainIDSetup {
 
         (PackedUserOperation memory userOp, bytes32 userOpHash) = _buildAndSignUserOp(address(counter), innerCall);
 
+        vm.expectEmit(address(onchainidSetup.signatureValidator));
+        emit ERC734Validator.KeyUsed(address(aliceIdentity), keccak256(abi.encodePacked(david)), userOpHash);
         vm.prank(ENTRY_POINT);
         uint256 result = IAccount(address(aliceIdentity)).validateUserOp(userOp, userOpHash, 0);
         assertEq(result, ERC4337Utils.SIG_VALIDATION_SUCCESS, "ACTION + external target must succeed");
+    }
+
+    /// @notice A direct call to the validator with a genuine signature still validates, but it
+    ///         is not the account using its key, so it must not log KeyUsed.
+    function test_validateUserOp_directCallerOtherThanTheAccount_emitsNoKeyUsed() public {
+        Counter counter = new Counter();
+        (PackedUserOperation memory userOp, bytes32 userOpHash) =
+            _buildAndSignUserOp(address(counter), abi.encodeCall(Counter.increment, ()));
+
+        vm.recordLogs();
+        vm.prank(makeAddr("stranger"));
+        uint256 result = onchainidSetup.signatureValidator.validateUserOp(userOp, userOpHash);
+
+        assertEq(result, ERC4337Utils.SIG_VALIDATION_SUCCESS);
+        assertEq(vm.getRecordedLogs().length, 0, "a direct call must not emit KeyUsed");
     }
 
     /// @notice The per-target rule fires: an ACTION-only key cannot self-target
@@ -1088,6 +1183,17 @@ contract Counter {
 
     function increment() external {
         count++;
+    }
+
+}
+
+/// @dev A target whose only function always reverts.
+contract Reverter {
+
+    error Failed();
+
+    function fail() external pure {
+        revert Failed();
     }
 
 }

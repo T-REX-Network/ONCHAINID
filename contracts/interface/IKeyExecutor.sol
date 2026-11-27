@@ -52,18 +52,31 @@ interface IKeyExecutor {
         address proposer
     );
 
-    /// @dev Emitted when an execution is approved (or rejected) via {approve}.
-    event Approved(address indexed account, uint256 indexed executionId, bool approved);
+    /// @dev Emitted when an execution is approved (or rejected) via {approve}. `approver` is the key holder that made the call (the ERC-2771 caller behind the identity).
+    event Approved(address indexed account, uint256 indexed executionId, bool approved, address approver);
 
     /// @dev Emitted when an uninstall voids every request queued below `firstValidId`.
     event QueueInvalidated(address indexed account, uint256 firstValidId);
 
-    /// @dev Emitted when an approved execution successfully dispatches through the account.
-    event Executed(address indexed account, uint256 indexed executionId, address indexed to, uint256 value, bytes data);
+    /// @dev Emitted when an approved execution successfully dispatches through the account. `executor` is the
+    ///      key holder whose call ran it: the proposer on an auto-run, the approver otherwise.
+    event Executed(
+        address indexed account,
+        uint256 indexed executionId,
+        address indexed to,
+        uint256 value,
+        bytes data,
+        address executor
+    );
 
-    /// @dev Emitted when an approved execution reverts inside the account.
+    /// @dev Emitted when an approved execution reverts inside the account. `executor` as in {Executed}.
     event ExecutionFailed(
-        address indexed account, uint256 indexed executionId, address indexed to, uint256 value, bytes data
+        address indexed account,
+        uint256 indexed executionId,
+        address indexed to,
+        uint256 value,
+        bytes data,
+        address executor
     );
 
     /**

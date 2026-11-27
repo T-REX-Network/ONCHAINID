@@ -52,9 +52,9 @@ import { Attestation, IEAS } from "../../vendor/eas/IEAS.sol";
  *         wallet's factory status is intentionally ignored: the attestation belongs
  *         to the identity, and requiring `Active` would deadlock recovery on a
  *         compromised wallet. Kills happen elsewhere: attester revokes on EAS, holder
- *         removes the local record via `removeClaim`. This adapter has no EIP-712 domain,
- *         so the registry has no digest to revoke on removal and skips that step. Re-adding
- *         is still blocked by EAS, which is re-read on every call.
+ *         removes the local record via `removeClaim`. This adapter never reads the
+ *         registry's revocations; re-adding is still blocked by EAS, which is re-read on
+ *         every call.
  *
  *         The `IClaimIssuer` `signature` field carries the EAS attestation UID as a
  *         bare 32-byte word (`abi.encodePacked(uid)`). Length-32 check rejects any
@@ -70,6 +70,10 @@ import { Attestation, IEAS } from "../../vendor/eas/IEAS.sol";
  *         Not supported: off-chain EAS attestations, non-EVM wallets, cross-chain
  *         reads. Any `IIdentity` / ERC-734 / ERC-735 method that has no meaning on a
  *         stateless reader reverts with `Errors.EASNotSupported`.
+ *
+ *         Admin events record `msg.sender` as the caller. When the AccessManager runs the
+ *         call (a role with an execution delay, or a call sent through its `execute`), that
+ *         is the AccessManager; the operator is in its `OperationScheduled` event or the tx.
  */
 contract EASClaimIssuer is IClaimIssuer, AccessManaged {
 
@@ -106,11 +110,11 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
     event AdapterInitialized(address indexed eas, address indexed factory);
 
     /// @dev Schema binding changed. `schema == 0` means the topic was unbound.
-    event SchemaForTopicSet(uint256 indexed topic, bytes32 indexed schema);
+    event SchemaForTopicSet(uint256 indexed topic, bytes32 indexed schema, address caller);
 
     /// @dev Attester allowlist changed for one topic. Monitor `allowed == true` events:
     ///      they widen the trust surface.
-    event AttesterSet(uint256 indexed topic, address indexed attester, bool allowed);
+    event AttesterSet(uint256 indexed topic, address indexed attester, bool allowed, address caller);
 
     /**
      * @param authority_ AccessManager instance backing `restricted` setters.
@@ -129,7 +133,7 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
     ///         (kill switch for a compromised schema, no redeploy needed).
     function setSchemaForTopic(uint256 topic, bytes32 schema) external restricted {
         _schemaOf[topic] = schema;
-        emit SchemaForTopicSet(topic, schema);
+        emit SchemaForTopicSet(topic, schema, msg.sender);
     }
 
     /// @notice Add or remove an attester from the accepted set for one topic. Adding
@@ -140,7 +144,7 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
     function setAttester(uint256 topic, address attester, bool allowed) external restricted {
         require(attester != address(0), Errors.ZeroAddress());
         _isAttesterAllowed[topic][attester] = allowed;
-        emit AttesterSet(topic, attester, allowed);
+        emit AttesterSet(topic, attester, allowed, msg.sender);
     }
 
     /// @notice EAS core contract this adapter reads from.
@@ -280,6 +284,11 @@ contract EASClaimIssuer is IClaimIssuer, AccessManaged {
         external
         pure
     {
+        revert Errors.EASNotSupported();
+    }
+
+    /// @inheritdoc IClaimIssuer
+    function removeClaimFrom(uint256, IIdentity) external pure {
         revert Errors.EASNotSupported();
     }
 
