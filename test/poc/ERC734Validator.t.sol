@@ -2,6 +2,7 @@
 pragma solidity ^0.8.27;
 
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
+import { MockEchoVerifier } from "../mocks/MockEchoVerifier.sol";
 import { ERC4337Utils } from "@openzeppelin/contracts/account/utils/ERC4337Utils.sol";
 import { ERC7579Utils } from "@openzeppelin/contracts/account/utils/draft-ERC7579Utils.sol";
 import { IERC1271 } from "@openzeppelin/contracts/interfaces/IERC1271.sol";
@@ -179,18 +180,46 @@ contract ERC734ValidatorTest is OnchainIDSetup {
         );
     }
 
-    /// @notice A registered ERC-7913 signer whose verifier has no code fails validation instead
-    ///         of reverting. The verifier is reached via raw staticcall: a codeless verifier
+    /// @notice Registration refuses a verifier without code: an EOA answers nothing, and a
+    ///         precompile answers whatever it computes.
+    function test_addKey_codelessVerifier_reverts() public {
+        address[2] memory verifiers = [makeAddr("eoa-verifier"), address(0x04)];
+        for (uint256 i = 0; i < verifiers.length; i++) {
+            bytes memory signerData = abi.encodePacked(verifiers[i], "some-key");
+            vm.prank(address(aliceIdentity));
+            vm.expectRevert(abi.encodeWithSelector(ERC734Validator.VerifierHasNoCode.selector, verifiers[i]));
+            validator.addKey(signerData, "", KeyPurposes.ACTION, KeyTypes.ECDSA, address(aliceIdentity));
+        }
+    }
+
+    /// @notice A verifier that echoes its input (as the identity precompile at 0x04 does) returns
+    ///         a first word equal to the magic value, but more than one word. Only an exact
+    ///         32-byte answer counts, so a garbage signature fails.
+    function test_validateUserOp_echoingVerifier_fails() public {
+        bytes memory signerData = abi.encodePacked(address(new MockEchoVerifier()), "some-key");
+        vm.prank(address(aliceIdentity));
+        validator.addKey(signerData, "", KeyPurposes.ACTION, KeyTypes.ECDSA, address(aliceIdentity));
+
+        (PackedUserOperation memory userOp, bytes32 userOpHash) = _userOpTo(address(0xBEEF), "");
+        userOp.signature = abi.encode(signerData, bytes("garbage"));
+
+        assertEq(_validate(userOp, userOpHash), ERC4337Utils.SIG_VALIDATION_FAILED, "an echo is not a signature check");
+    }
+
+    /// @notice A registered ERC-7913 signer whose verifier loses its code later fails validation
+    ///         instead of reverting. The verifier is reached via raw staticcall: a codeless verifier
     ///         returns no data and fails the length check, while a high-level call would revert
     ///         the whole `validateUserOp` (Solidity's no-code handling happens in the caller's
     ///         frame, outside any try/catch).
     function test_validateUserOp_codelessVerifier_failsInsteadOfReverting() public {
-        // Register a verifier-form signer (20-byte verifier address + key bytes) whose
-        // verifier is a plain EOA.
-        address eoaVerifier = makeAddr("codeless-verifier");
-        bytes memory signerData = abi.encodePacked(eoaVerifier, "some-key");
+        // Register a verifier-form signer (20-byte verifier address + key bytes) while the
+        // verifier has code, then take the code away.
+        address verifier = makeAddr("codeless-verifier");
+        vm.etch(verifier, hex"00");
+        bytes memory signerData = abi.encodePacked(verifier, "some-key");
         vm.prank(address(aliceIdentity));
         validator.addKey(signerData, "", KeyPurposes.ACTION, KeyTypes.ECDSA, address(aliceIdentity));
+        vm.etch(verifier, "");
 
         (PackedUserOperation memory userOp, bytes32 userOpHash) = _userOpTo(address(0xBEEF), "");
         userOp.signature = abi.encode(signerData, bytes("irrelevant"));
@@ -455,7 +484,9 @@ contract ERC734ValidatorTest is OnchainIDSetup {
 
     /// @notice signerData and clientData round-trip through getKeyData/getKey, scoped per account.
     function test_signerAndClientDataPreservedPerAccount() public {
-        bytes memory verifier = abi.encodePacked(makeAddr("p256verifier"));
+        address verifierAddress = makeAddr("p256verifier");
+        vm.etch(verifierAddress, hex"00"); // registration needs a verifier with code
+        bytes memory verifier = abi.encodePacked(verifierAddress);
         bytes memory pubkey = abi.encodePacked(keccak256("qx"), keccak256("qy"));
         bytes memory signerData = bytes.concat(verifier, pubkey);
         bytes memory clientData = abi.encodePacked(keccak256("credentialId"));

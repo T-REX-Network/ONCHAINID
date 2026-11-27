@@ -324,8 +324,9 @@ contract KeysTest is OnchainIDSetup {
     }
 
     function test_AddKey_AcceptsFieldsAtCap() public {
-        bytes memory signerData = new bytes(Structs.MAX_SIGNER_DATA_LENGTH);
-        signerData[0] = 0x01;
+        // `verifier || key`, with the verifier a deployed contract (any contract will do here).
+        bytes memory signerData =
+            bytes.concat(abi.encodePacked(address(aliceIdentity)), new bytes(Structs.MAX_SIGNER_DATA_LENGTH - 20));
         bytes memory clientData = new bytes(Structs.MAX_CLIENT_DATA_LENGTH);
         bytes32 keyHash = keccak256(signerData);
 
