@@ -120,6 +120,8 @@ contract ERC734Validator is ERC7579Validator, IERC735, IKeyRegistry, IERC165 {
     error KeyAlreadyRegistered(bytes32 keyHash);
     error KeyNotRegistered(bytes32 keyHash);
     error InvalidSignerLength();
+    /// @dev The verifier of an ERC-7913 signer has no code (an EOA or a precompile).
+    error VerifierHasNoCode(address verifier);
     error CannotRemoveLastManagementKey();
     /// @dev A registered key's `keyType` differs from the one supplied on re-purpose.
     error KeyTypeMismatch(bytes32 keyHash);
@@ -590,15 +592,18 @@ contract ERC734Validator is ERC7579Validator, IERC735, IKeyRegistry, IERC165 {
         // Raw staticcall on purpose. A high-level call would revert on a codeless verifier in
         // THIS frame (outside any try/catch), and guarding that with an explicit code check
         // would put an EXTCODESIZE in the 4337 validation path, which strict ERC-7562 bundler
-        // rules frown on. Here a codeless verifier just returns no data and fails the length
-        // check. Only registered signers reach this call: membership is checked first, so an
+        // rules frown on. Here an EOA verifier just returns no data and fails the length check.
+        // Only registered signers reach this call: membership is checked first, so an
         // arbitrary user op cannot even execute it with an unregistered verifier.
         (bool success, bytes memory result) =
             verifier.staticcall(abi.encodeCall(IERC7913SignatureVerifier.verify, (key, hash, signature)));
-        // The length check is required: nothing here ABI-decodes the returndata, and
-        // bytes-to-bytes32 pads on the RIGHT, so a verifier returning the 4 raw magic bytes
-        // would otherwise pass the compare. Verifiers must ABI-encode their bytes4 return.
-        return success && result.length >= 32 && bytes32(result) == bytes32(IERC7913SignatureVerifier.verify.selector);
+        // Accept only an ABI-encoded `bytes4` magic value: exactly one 32-byte word. Nothing here
+        // ABI-decodes the returndata, so the exact length is what rules out the wrong answers:
+        //   - the 4 raw magic bytes (bytes-to-bytes32 pads on the right, so they would match);
+        //   - a longer answer that starts with the magic value, such as the identity precompile
+        //     at 0x04, which echoes its input, and the input starts with the `verify` selector.
+        //     Registration also rejects verifiers without code, see {_addKey}.
+        return success && result.length == 32 && bytes32(result) == bytes32(IERC7913SignatureVerifier.verify.selector);
     }
 
     function _addKey(
@@ -613,6 +618,15 @@ contract ERC734Validator is ERC7579Validator, IERC735, IKeyRegistry, IERC165 {
         // Checked here so every caller (onInstall, addKey) is covered by a single guard.
         require(signerData.length >= 20 && signerData.length <= Structs.MAX_SIGNER_DATA_LENGTH, InvalidSignerLength());
         require(clientData.length <= Structs.MAX_CLIENT_DATA_LENGTH, Errors.ClientDataTooLong());
+
+        // A signer longer than 20 bytes is `verifier || key`, and {_verify} asks the verifier
+        // contract to check every signature. An address without code cannot be a verifier: an EOA
+        // answers nothing, and a precompile answers whatever it computes, which {_verify} must
+        // never have to trust. So the verifier must be a deployed contract.
+        if (signerData.length > 20) {
+            address verifier = address(bytes20(signerData));
+            require(verifier.code.length != 0, VerifierHasNoCode(verifier));
+        }
 
         // The module owns every ERC-734 purpose (1..6). Reject anything out of range.
         require(_isValidPurpose(purpose), InvalidPurpose(purpose));
