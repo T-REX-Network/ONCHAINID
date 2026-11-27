@@ -2,7 +2,7 @@
 
 ![GitHub](https://img.shields.io/github/license/T-REX-Network/ONCHAINID?color=green)
 ![GitHub release (latest by date)](https://img.shields.io/github/v/release/T-REX-Network/ONCHAINID)
-![GitHub Workflow Status (branch)](https://img.shields.io/github/actions/workflow/status/T-REX-Network/ONCHAINID/publish-release.yml)
+![GitHub Workflow Status (branch)](https://img.shields.io/github/actions/workflow/status/T-REX-Network/ONCHAINID/foundry.yml?branch=main)
 ![GitHub repo size](https://img.shields.io/github/repo-size/T-REX-Network/ONCHAINID)
 ![GitHub Release Date](https://img.shields.io/github/release-date/T-REX-Network/ONCHAINID)
 
@@ -76,6 +76,12 @@ The factory offers two entry points:
 - **`createIdentityFor`** — the caller deploys an identity for another account (a token, a vault, and so on). This requires the right role for that identity type.
 
 Each identity type must be registered by an admin before it can be used, and access is controlled with OpenZeppelin's `AccessManager`.
+
+### Upgrading identities
+
+All identities share one implementation through the factory's beacon, and `upgradeBeacon` swaps it for every identity at once. The key registry (`ERC734Validator`) is not upgradeable: an implementation must keep the registry the identities already hold their keys in, and that registry must have every function the implementation calls on it. The factory checks this before an upgrade. The implementation reports the `IKeyRegistry` interface id it was built with (`requiredRegistryInterface`), and the registry must answer it through ERC-165.
+
+**Deployments made before this check must not be upgraded to the current implementation.** Their registry has older `addKey` / `removeKey` signatures, so every key write would revert, and their factory does not have the check that would refuse the upgrade. Use a new deployment of the full stack instead.
 
 ## Recovery module integration notes
 
@@ -167,8 +173,7 @@ v3 originated as a fork of the ONCHAINID reference implementation by the [onchai
 
 ## Security and audits
 
-<!-- TODO: link the OpenZeppelin audit report for ONCHAINID v3 when published -->
-ONCHAINID v3 is being audited by OpenZeppelin. The audit report will be linked here once published.
+ONCHAINID v3 has been audited by OpenZeppelin. Read the [audit report](https://www.openzeppelin.com/news/onchainid-audit).
 
 Please report security vulnerabilities responsibly to security@trex.network rather than opening a public issue.
 

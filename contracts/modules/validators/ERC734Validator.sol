@@ -38,6 +38,7 @@ import { Bytes } from "@openzeppelin/contracts/utils/Bytes.sol";
 import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import { MessageHashUtils } from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import { SignatureChecker } from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
+import { IERC165 } from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import { EnumerableSet } from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 import { IIdentityFactory } from "../../factory/IIdentityFactory.sol";
@@ -45,6 +46,7 @@ import { IClaimIssuer } from "../../interface/IClaimIssuer.sol";
 import { IERC734 } from "../../interface/IERC734.sol";
 import { IERC735 } from "../../interface/IERC735.sol";
 import { IIdentity } from "../../interface/IIdentity.sol";
+import { IKeyRegistry } from "../../interface/IKeyRegistry.sol";
 import { Errors } from "../../libraries/Errors.sol";
 import { hashAddress } from "../../libraries/Hashing.sol";
 import { IdentityTypes } from "../../libraries/IdentityTypes.sol";
@@ -73,7 +75,7 @@ import { ERC7579Validator } from "./ERC7579Validator.sol";
 /// @dev userOp signature wire format: `abi.encode(bytes signer, bytes signature)`, where
 ///      `signer` is ERC-7913 (20 bytes = EOA/1271, longer = `verifier(20) || key`). Storage is
 ///      ERC-7201 namespaced.
-contract ERC734Validator is ERC7579Validator, IERC735 {
+contract ERC734Validator is ERC7579Validator, IERC735, IKeyRegistry, IERC165 {
 
     using EnumerableSet for EnumerableSet.UintSet;
     using EnumerableSet for EnumerableSet.Bytes32Set;
@@ -236,6 +238,12 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
     )
         public
         virtual { }
+
+    /// @notice ERC-165. Answers for {IKeyRegistry}, the functions an identity calls on this
+    ///         registry. The factory checks it before it puts an implementation behind the beacon.
+    function supportsInterface(bytes4 interfaceId) public pure returns (bool) {
+        return interfaceId == type(IKeyRegistry).interfaceId || interfaceId == type(IERC165).interfaceId;
+    }
 
     // --- registry (called by the account on itself) ----------------------
 
@@ -478,6 +486,12 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         // MANAGEMENT passes everything.
         if (_keyHasPurpose(account, keyHash, KeyPurposes.MANAGEMENT)) return true;
 
+        // Every other user op needs ACTION, whatever it contains. A user op is paid from the
+        // account's funds and uses up one of its nonces, so a key without signing authority
+        // (CLAIM_SIGNER, CLAIM_ADDER, ENCRYPTION, PROPOSER) must not be able to send one, not
+        // even one that does nothing.
+        if (!_keyHasPurpose(account, keyHash, KeyPurposes.ACTION)) return false;
+
         // Short calldata zero-pads and can't match the execute selector.
         if (bytes4(callData) != IERC7579Execution.execute.selector) return false;
 
@@ -488,15 +502,17 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
             // A single execution is at least 52 bytes (20 target + 32 value).
             if (executionCalldata.length < 52) return false;
             (address target,,) = ERC7579Utils.decodeSingle(executionCalldata);
-            return _targetAllowed(account, keyHash, target);
+            return _targetAllowed(account, target);
         }
 
         if (callType == ERC7579Utils.CALLTYPE_BATCH) {
             // Every call in the batch must pass. Decode into memory so a bad offset can't point
             // past the batch and make us read a different target than the account runs.
             Execution[] memory batch = abi.decode(executionCalldata, (Execution[]));
+            // An empty batch runs nothing, so it has no reason to be paid for.
+            if (batch.length == 0) return false;
             for (uint256 i = 0; i < batch.length; i++) {
-                if (!_targetAllowed(account, keyHash, batch[i].target)) return false;
+                if (!_targetAllowed(account, batch[i].target)) return false;
             }
             return true;
         }
@@ -504,17 +520,13 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         return false;
     }
 
-    /// @dev Purpose required for one (target, inner-call) pair. MANAGEMENT already short-circuited
-    ///      in {_scopeAllows}, so this only decides the sub-MANAGEMENT cases:
-    ///        target == this module             -> MANAGEMENT only (self-guard, see below)
-    ///        self + addClaim                    -> CLAIM_SIGNER or CLAIM_ADDER (read on the account)
-    ///        self + removeClaim                 -> CLAIM_SIGNER (read on the account)
-    ///        self, anything else                -> MANAGEMENT only
-    ///        external target                    -> ACTION
-    ///      Claim purposes are read from this module's per-account registry (the same storage that
-    ///      holds the keys), so the check works the same for any identity, including cross-identity
-    ///      claim issuers.
-    function _targetAllowed(address account, bytes32 keyHash, address target) private view returns (bool) {
+    /// @dev Whether an ACTION signer may call `target`. MANAGEMENT already short-circuited in
+    ///      {_scopeAllows}, and ACTION was already required there, so this only decides targets:
+    ///        this module (the key registry)  -> no, MANAGEMENT only
+    ///        the factory                     -> no, MANAGEMENT only
+    ///        the account itself              -> no, MANAGEMENT only
+    ///        any other target                -> yes
+    function _targetAllowed(address account, address target) private view returns (bool) {
         if (target == address(0)) target = account; // OZ aliases target 0 to self.
 
         // Self-guard: a call to this validator can rotate its own registry (addKey, etc.).
@@ -530,13 +542,12 @@ contract ERC734Validator is ERC7579Validator, IERC735 {
         // terminally revoke one of the identity's wallets. MANAGEMENT already passed, so reject.
         if (target == address(factory)) return false;
 
-        // An external target needs ACTION. A self-targeted call (addKey, addClaim, etc.) needs
-        // MANAGEMENT, which already passed in _scopeAllows, so a non-MANAGEMENT signer is rejected.
-        // Claims are not addable through a user op: the account calls itself, so the ERC-2771 caller
-        // seen by addClaim is the account, which holds no claim key. Claim keys add claims by
-        // calling the identity directly, not through execute().
-        if (target != account) return keyHasPurpose(account, keyHash, KeyPurposes.ACTION);
-        return false;
+        // An external target needs ACTION, which _scopeAllows already checked. A self-targeted
+        // call (addKey, addClaim, etc.) needs MANAGEMENT, which already passed in _scopeAllows, so
+        // a non-MANAGEMENT signer is rejected. Claims are not addable through a user op: the
+        // account calls itself, so the ERC-2771 caller seen by addClaim is the account, which
+        // holds no claim key. Claim keys add claims by calling the identity directly.
+        return target != account;
     }
 
     /// @dev Splits `execute(bytes32 mode, bytes executionCalldata)` calldata into its two args,

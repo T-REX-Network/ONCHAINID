@@ -4,6 +4,7 @@ pragma solidity ^0.8.27;
 import { ClaimSignerHelper } from "../helpers/ClaimSignerHelper.sol";
 import { IdentityHelper } from "../helpers/IdentityHelper.sol";
 import { OnchainIDSetup } from "../helpers/OnchainIDSetup.sol";
+import { IdentityNeedingNewerRegistry } from "../mocks/IdentityNeedingNewerRegistry.sol";
 import { MockERC1271Wallet } from "../mocks/MockERC1271Wallet.sol";
 import { MockERC7786Gateway } from "../mocks/MockERC7786Gateway.sol";
 import { MockERC7913PermissiveVerifier } from "../mocks/MockERC7913PermissiveVerifier.sol";
@@ -216,6 +217,43 @@ contract IdentityFactoryTest is OnchainIDSetup {
             )
         );
         onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.0.0");
+    }
+
+    /// @notice An implementation built against a registry interface the
+    ///         registry does not have would make every key write revert once behind the beacon.
+    ///         The factory refuses it, even though the registry address itself is unchanged.
+    function test_upgradeBeacon_revertWhenRegistryLacksRequiredInterface() public {
+        address registry = address(onchainidSetup.signatureValidator);
+        IdentityNeedingNewerRegistry newImpl =
+            new IdentityNeedingNewerRegistry(address(onchainidSetup.idFactory), registry);
+
+        bytes4 newerInterface = newImpl.NEWER_REGISTRY_INTERFACE();
+
+        vm.prank(deployer);
+        vm.expectRevert(abi.encodeWithSelector(Errors.RegistryInterfaceNotSupported.selector, registry, newerInterface));
+        onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.0.0");
+    }
+
+    /// @notice The real-world shape: a registry from before this check, with no
+    ///         `supportsInterface` at all, named by the implementation a new factory starts from.
+    function test_initializeBeacon_revertWhenRegistryHasNoERC165() public {
+        AccessManager am = new AccessManager(deployer);
+        IdentityFactory freshFactory = new IdentityFactory(address(am));
+        address registryWithoutERC165 = address(new RegistryWithoutERC165());
+        Identity freshImpl = new Identity(registryWithoutERC165, address(freshFactory));
+        bytes4 required = freshImpl.requiredRegistryInterface();
+
+        vm.prank(deployer);
+        vm.expectRevert(
+            abi.encodeWithSelector(Errors.RegistryInterfaceNotSupported.selector, registryWithoutERC165, required)
+        );
+        freshFactory.initializeBeacon(address(freshImpl));
+    }
+
+    /// @notice The current registry answers the interface the current implementation needs.
+    function test_registry_supportsTheInterfaceTheImplementationNeeds() public view {
+        bytes4 required = getIdentityImplementation().requiredRegistryInterface();
+        assertTrue(onchainidSetup.signatureValidator.supportsInterface(required));
     }
 
     /// @notice The candidate has to name this factory, otherwise the account's factory-gated
@@ -2323,11 +2361,10 @@ contract IdentityFactoryTest is OnchainIDSetup {
         );
     }
 
-    /// @notice A front-runner who replays a pending self-deploy verbatim lands on a
-    ///         different address, because the auto-linked account is part of the salt.
-    ///         Without that the attacker would take the victim's address, carrying the
-    ///         victim's MANAGEMENT key but with the attacker's own wallet auto-linked,
-    ///         and the binding is sticky.
+    /// @notice A front-runner who replays a pending self-deploy is not the wallet those
+    ///         keys belong to, so the replay is rejected: the attacker would not be the
+    ///         sole manager of the identity its wallet gets bound to. The victim's own
+    ///         transaction still goes through and binds the victim's wallet.
     function test_createIdentity_frontRunnerCannotTakeVictimAddress() public {
         address victim = makeAddr("frontRunVictim");
         address attacker = makeAddr("frontRunAttacker");
@@ -2336,13 +2373,12 @@ contract IdentityFactoryTest is OnchainIDSetup {
         Structs.KeyParam[] memory keys = _makeSingleMgmtKeys(victim);
 
         vm.prank(attacker);
-        address attackerIdentity = onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "frontRun", keys);
+        vm.expectRevert(abi.encodeWithSelector(Errors.AccountNotSoleManagementKey.selector, attacker));
+        onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "frontRun", keys);
 
-        // The victim's own transaction still goes through.
         vm.prank(victim);
         address victimIdentity = onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "frontRun", keys);
 
-        assertTrue(attackerIdentity != victimIdentity, "replay must not land on the victim's address");
         assertEq(
             onchainidSetup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, victim)),
             victimIdentity,
@@ -2350,9 +2386,73 @@ contract IdentityFactoryTest is OnchainIDSetup {
         );
         assertEq(
             onchainidSetup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, attacker)),
-            attackerIdentity,
-            "attacker's wallet stays on its own identity"
+            address(0),
+            "attacker's wallet stays unbound"
         );
+    }
+
+    /// @notice The self-deployer cannot hand MANAGEMENT to another wallet at deploy. Its own
+    ///         wallet is auto-linked and the binding is sticky, so an identity managed by
+    ///         someone else would leave that wallet stuck.
+    function test_createIdentity_revertsWhenCallerIsNotSoleManager() public {
+        address wallet = makeAddr("selfDeployWallet");
+        address other = makeAddr("otherManager");
+
+        // Only the other wallet holds MANAGEMENT.
+        vm.prank(wallet);
+        vm.expectRevert(abi.encodeWithSelector(Errors.AccountNotSoleManagementKey.selector, wallet));
+        onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "foreignManager", _makeSingleMgmtKeys(other));
+
+        // Both hold MANAGEMENT: still not sole.
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](2);
+        keys[0] = _makeECDSAKey(wallet, KeyPurposes.MANAGEMENT);
+        keys[1] = _makeECDSAKey(other, KeyPurposes.MANAGEMENT);
+        vm.prank(wallet);
+        vm.expectRevert(abi.encodeWithSelector(Errors.AccountNotSoleManagementKey.selector, wallet));
+        onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "coManager", keys);
+    }
+
+    /// @notice Non-MANAGEMENT keys for other signers are still fine at self-deploy: the
+    ///         caller stays the only manager and can remove them at any time.
+    function test_createIdentity_allowsForeignNonManagementKeys() public {
+        address wallet = makeAddr("selfDeployWallet");
+        address device = makeAddr("secondDevice");
+
+        Structs.KeyParam[] memory keys = new Structs.KeyParam[](2);
+        keys[0] = _makeECDSAKey(wallet, KeyPurposes.MANAGEMENT);
+        keys[1] = _makeECDSAKey(device, KeyPurposes.ACTION);
+        vm.prank(wallet);
+        address identityAddr = onchainidSetup.idFactory.createIdentity(IdentityTypes.INDIVIDUAL, "withDevice", keys);
+
+        IERC734 registry = IERC734(identityAddr);
+        assertTrue(registry.keyHasPurpose(keccak256(abi.encodePacked(wallet)), KeyPurposes.MANAGEMENT));
+        assertTrue(registry.keyHasPurpose(keccak256(abi.encodePacked(device)), KeyPurposes.ACTION));
+        assertFalse(registry.keyHasPurpose(keccak256(abi.encodePacked(device)), KeyPurposes.MANAGEMENT));
+    }
+
+    /// @notice A single-binding type skips the sole-manager check, as on createIdentityFor: its
+    ///         identity represents a contract, which is managed by someone other than itself.
+    function test_createIdentity_singleBindingTypeAllowsForeignManager() public {
+        address wallet = makeAddr("selfDeployWallet");
+        address manager = makeAddr("assetManager");
+
+        // Gated role, self-deployable, single binding. Production never makes a single-binding
+        // type self-deployable, so the case is set up here rather than taken from the helper.
+        vm.prank(deployer);
+        onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.ASSET, 1, true, true);
+
+        vm.prank(wallet);
+        address identityAddr = onchainidSetup.idFactory
+            .createIdentity(IdentityTypes.ASSET, "foreignAssetManager", _makeSingleMgmtKeys(manager));
+
+        assertEq(
+            onchainidSetup.idFactory.getIdentity(InteroperableAddress.formatEvmV1(block.chainid, wallet)),
+            identityAddr,
+            "wallet is bound to the identity"
+        );
+        IERC734 registry = IERC734(identityAddr);
+        assertTrue(registry.keyHasPurpose(keccak256(abi.encodePacked(manager)), KeyPurposes.MANAGEMENT));
+        assertFalse(registry.keyHasPurpose(keccak256(abi.encodePacked(wallet)), KeyPurposes.MANAGEMENT));
     }
 
     // ============ IdentityInitialized event ============
@@ -2380,3 +2480,6 @@ contract IdentityFactoryTest is OnchainIDSetup {
     }
 
 }
+
+/// @dev Stands in for a registry deployed before the interface check: it has no `supportsInterface`.
+contract RegistryWithoutERC165 { }
