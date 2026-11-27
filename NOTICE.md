@@ -9,8 +9,8 @@ ecosystem for compliant tokenized assets. It implements the ERC-734 (key
 holder) and ERC-735 (claim holder) standards on a modular ERC-7579 smart
 account with ERC-4337 account abstraction support.
 
-Website: https://www.trex.network
-Contact: legal@trex.network
+Website: https://www.t-rex.network
+Contact: legal@t-rex.network
 
 ## License
 
