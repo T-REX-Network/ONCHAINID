@@ -222,7 +222,7 @@ contract KeyApprovalModule is IERC7579Module, IKeyExecutor {
     }
 
     /// @dev Auto-approval policy. See contract NatSpec for the rule table. Module targets are
-    ///      not special-cased here: the account itself refuses to dispatch into its own modules
+    ///      not special-cased here: the account itself refuses to dispatch into any ERC-7579 module
     ///      (see {SmartAccount}), so such a request just fails there and emits `ExecutionFailed`.
     function _canAutoApprove(address account, bytes32 keyHash, address to) internal view returns (bool) {
         // OZ rewrites to 0 to the account before dispatch, so treat it as a self-call.
