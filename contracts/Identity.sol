@@ -85,7 +85,7 @@ contract Identity is Initializable, SmartAccount, ERC165 {
     /// @dev Release version. {accountId} and {version} both read this so they cannot drift
     ///      apart. The EIP-712 domain version in the constructor is separate on purpose: it is
     ///      baked into every stored claim signature and must not follow releases.
-    string private constant _VERSION = "3.0.0";
+    string private constant _VERSION = "3.1.0";
 
     /// @dev ERC-7201 storage slot for identity-level metadata.
     bytes32 internal constant _IDENTITY_METADATA_SLOT =
