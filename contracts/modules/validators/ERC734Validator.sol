@@ -856,8 +856,8 @@ contract ERC734Validator is ERC7579Validator, IERC735, IKeyRegistry, IERC165 {
     }
 
     /// @notice Mark a claim revoked. Issuer-side revocation entry point. Takes the claim's
-    ///         EIP-712 struct hash, `keccak256(abi.encode(CLAIM_TYPEHASH, topic, subject,
-    ///         dataHash))`, not the digest, so a revocation survives a change of the issuer's domain.
+    ///         EIP-712 struct hash ({getClaimStructHash}), not the digest, so a revocation
+    ///         survives a change of the issuer's domain.
     function revokeClaimByDigest(bytes32 claimStructHash) external {
         address account = msg.sender;
         address caller = _msgSender();
@@ -954,6 +954,17 @@ contract ERC734Validator is ERC7579Validator, IERC735, IKeyRegistry, IERC165 {
     ///         the EIP-712 hash of `Metadata(uint256 scheme,string uri)`.
     function getMetadataHash(uint256 _scheme, string memory _uri) public pure returns (bytes32) {
         return keccak256(abi.encode(_METADATA_TYPEHASH, _scheme, keccak256(bytes(_uri))));
+    }
+
+    /// @notice The EIP-712 struct hash of a claim on `_subject`: the value {revokeClaimByDigest}
+    ///         and {isDigestRevoked} take. Unlike {getClaimHash} it has no domain in it, so it is
+    ///         the same for every issuer.
+    function getClaimStructHash(address _subject, uint256 _topic, Structs.ClaimData memory _data)
+        public
+        pure
+        returns (bytes32)
+    {
+        return _getClaimStructHash(_subject, _topic, _data);
     }
 
     // --- claims internals ------------------------------------------------

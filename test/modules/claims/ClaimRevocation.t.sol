@@ -22,18 +22,49 @@ contract ClaimRevocationTest is OnchainIDSetup {
 
         vm.prank(claimIssuerOwner);
         assertTrue(IClaimIssuer(address(claimIssuer)).isDigestRevoked(claimStructHash), "issuer must see it revoked");
-        assertFalse(_aliceClaim666IsValid(), "the issuer must refuse the removed claim");
+        assertEq(uint256(_aliceClaim666Status()), uint256(IClaimIssuer.ClaimStatus.Revoked));
+    }
+
+    function test_removeClaim_RevertWhen_TheRemovedClaimIsAddedAgain() public {
+        vm.startPrank(alice);
+        IIdentity(address(aliceIdentity)).removeClaim(aliceClaim666.id);
+
+        vm.expectRevert(Errors.InvalidClaim.selector);
+        IIdentity(address(aliceIdentity))
+            .addClaim(
+                aliceClaim666.topic,
+                aliceClaim666.scheme,
+                aliceClaim666.issuer,
+                aliceClaim666.signature,
+                aliceClaim666.data,
+                aliceClaim666.uri
+            );
+        vm.stopPrank();
     }
 
     function test_revokeClaimByDigest_withTheStructHash_revokesTheClaim() public {
         bytes32 claimStructHash =
             ClaimSignerHelper.claimStructHash(address(aliceIdentity), aliceClaim666.topic, aliceClaim666.data);
-        assertTrue(_aliceClaim666IsValid());
+        assertEq(uint256(_aliceClaim666Status()), uint256(IClaimIssuer.ClaimStatus.Valid));
 
         vm.prank(claimIssuerOwner);
         IClaimIssuer(address(claimIssuer)).revokeClaimByDigest(claimStructHash);
 
-        assertFalse(_aliceClaim666IsValid());
+        assertEq(uint256(_aliceClaim666Status()), uint256(IClaimIssuer.ClaimStatus.Revoked));
+    }
+
+    function test_getClaimStructHash_isTheValueRevocationsAreKeyedOn() public {
+        bytes32 claimStructHash = onchainidSetup.signatureValidator
+            .getClaimStructHash(address(aliceIdentity), aliceClaim666.topic, aliceClaim666.data);
+        assertEq(
+            claimStructHash,
+            ClaimSignerHelper.claimStructHash(address(aliceIdentity), aliceClaim666.topic, aliceClaim666.data)
+        );
+
+        vm.prank(claimIssuerOwner);
+        IClaimIssuer(address(claimIssuer)).revokeClaimByDigest(claimStructHash);
+
+        assertEq(uint256(_aliceClaim666Status()), uint256(IClaimIssuer.ClaimStatus.Revoked));
     }
 
     function test_revokeClaimByDigest_RevertWhen_TheClaimIsAlreadyRevoked() public {
@@ -47,9 +78,12 @@ contract ClaimRevocationTest is OnchainIDSetup {
         vm.stopPrank();
     }
 
-    function _aliceClaim666IsValid() internal view returns (bool) {
-        return IClaimIssuer(address(claimIssuer))
-            .isClaimValid(
+    /// @dev The module reads the issuer from `msg.sender`, and identities have no fallback for
+    ///      `getClaimStatus`, so call the singleton as the issuer identity.
+    function _aliceClaim666Status() internal returns (IClaimIssuer.ClaimStatus) {
+        vm.prank(address(claimIssuer));
+        return onchainidSetup.signatureValidator
+            .getClaimStatus(
                 IIdentity(address(aliceIdentity)), aliceClaim666.topic, aliceClaim666.signature, aliceClaim666.data
             );
     }
