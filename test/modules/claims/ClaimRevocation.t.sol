@@ -78,6 +78,28 @@ contract ClaimRevocationTest is OnchainIDSetup {
         vm.stopPrank();
     }
 
+    /// @notice A claim alice issued about herself, with the same topic and data as a claim from
+    ///         another issuer, stays valid when that other claim is removed: the struct hash does
+    ///         not name the issuer, so removal must not mark alice's own set.
+    function test_removeClaim_leavesTheHoldersSelfIssuedClaimWithTheSameTopicAndDataValid() public {
+        bytes memory selfIssuedSignature = ClaimSignerHelper.signClaim(
+            carolPk, carol, address(aliceIdentity), address(aliceIdentity), aliceClaim666.topic, aliceClaim666.data
+        );
+        assertEq(uint256(_selfIssuedStatus(selfIssuedSignature)), uint256(IClaimIssuer.ClaimStatus.Valid));
+
+        vm.prank(alice);
+        IIdentity(address(aliceIdentity)).removeClaim(aliceClaim666.id);
+
+        assertEq(uint256(_selfIssuedStatus(selfIssuedSignature)), uint256(IClaimIssuer.ClaimStatus.Valid));
+    }
+
+    /// @dev Status of alice's self-issued copy of claim 666, read with alice's identity as issuer.
+    function _selfIssuedStatus(bytes memory signature) internal returns (IClaimIssuer.ClaimStatus) {
+        vm.prank(address(aliceIdentity));
+        return onchainidSetup.signatureValidator
+            .getClaimStatus(IIdentity(address(aliceIdentity)), aliceClaim666.topic, signature, aliceClaim666.data);
+    }
+
     /// @dev The module reads the issuer from `msg.sender`, and identities have no fallback for
     ///      `getClaimStatus`, so call the singleton as the issuer identity.
     function _aliceClaim666Status() internal returns (IClaimIssuer.ClaimStatus) {

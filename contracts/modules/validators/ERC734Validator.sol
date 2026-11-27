@@ -822,15 +822,16 @@ contract ERC734Validator is ERC7579Validator, IERC735, IKeyRegistry, IERC165 {
             _requireTrustedIssuer(c.issuer);
         }
 
-        // Revoke on both the holder's and the issuer's sets so _getClaimStatus (which reads the
-        // issuer's set) blocks re-adding the same bytes. The key is the struct hash, not the
-        // digest: the issuer's set already pins the issuer and the chain, so removal never calls
-        // the issuer, and no issuer can make its claim unremovable or expensive to remove.
+        // Revoke on the issuer's set, which is the one _getClaimStatus reads, so the same bytes
+        // cannot be re-added. The key is the struct hash, not the digest: the issuer's set
+        // already pins the issuer and the chain, so removal never calls the issuer, and no
+        // issuer can make its claim unremovable or expensive to remove. Nothing is written to
+        // the holder's set: the struct hash does not name the issuer, so a mark there would also
+        // revoke a claim the holder issued about itself with the same topic and data.
         // Marking an already marked claim is fine: an outside issuer can accept the same claim
         // again, and that one still has to be removable. The topic check above already rejects a
         // double removal.
         bytes32 claimStructHash = _getClaimStructHash(account, topic, c.data);
-        s.revokedClaims[claimStructHash] = true;
         _store().registries[c.issuer].revokedClaims[claimStructHash] = true;
 
         s.claimsByTopic[topic].remove(_claimId);
