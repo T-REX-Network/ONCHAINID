@@ -98,6 +98,15 @@ All identities share one implementation through the factory's beacon, and `upgra
 
 **Deployments made before this check must not be upgraded to the current implementation.** Their registry has older `addKey` / `removeKey` signatures, so every key write would revert, and their factory does not have the check that would refuse the upgrade. Use a new deployment of the full stack instead.
 
+## ERC-1271 signatures
+
+An identity answers ERC-1271 `isValidSignature` with plain ERC-1271: the signature is `validator (20 bytes) || abi.encode(signer, signature)`, and the key signs the app's hash as is. Only a key with ACTION (or MANAGEMENT) can sign; MODULE keys never can.
+
+- **A key shared with another account signs for both.** If a wallet is also a key on its identity, a signature it makes for one is valid for the other when the signed message does not name the owner (Permit2 signature transfers are the usual example).
+- **Identities are not meant to hold assets.** An identity holds keys and claims. Keep tokens and approvals in the wallets, not on the identity, and do not give an identity Permit2 approvals.
+- **An identity that co-owns a multisig is not covered by "no assets".** When an identity is an owner of a Safe or another multisig account, its signature is a vote. A key shared with another owner, such as the key's own wallet or a second identity, makes one signature count for both, so one person can reach the threshold alone. Keep each signing key on one owner only, and check the owner set before deploying the account and before adding a key.
+- **Why not ERC-7739.** ERC-7739 would bind each signature to the identity, but it does not compose: a key that is itself a smart wallet using ERC-7739 could not produce a readable signature for the identity. Plain ERC-1271 works with every app.
+
 ## Recovery module integration notes
 
 `RecoveryModule` adds social recovery to an identity. It is a thin wrapper around OpenZeppelin's `ERC7579SocialRecoveryExecutor`, pulled in from the `openzeppelin-accounts` repository via soldeer, pinned to the commit that closes OpenZeppelin's September 2026 audit of that module. All recovery logic lives upstream; the wrapper only turns the upstream `abstract` contract into a deployable one.
