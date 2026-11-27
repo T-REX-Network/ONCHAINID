@@ -23,7 +23,7 @@ contract ProxyPatternTest is Test {
         vm.prank(deployer);
         (Identity identityProxy,) = IdentityHelper.deployIdentityWithProxy(deployer);
 
-        assertEq(identityProxy.version(), "3.0.0");
+        assertEq(identityProxy.version(), "3.1.0");
 
         bytes32 deployerKey = ClaimSignerHelper.addressToKey(deployer);
         assertTrue(IERC734(address(identityProxy)).keyHasPurpose(deployerKey, KeyPurposes.MANAGEMENT));

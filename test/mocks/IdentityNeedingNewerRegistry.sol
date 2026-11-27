@@ -3,7 +3,7 @@ pragma solidity ^0.8.27;
 
 /// @notice Stand-in for an implementation built against a newer registry interface than the
 ///         deployed registry has. It passes every other beacon shape check: same factory, same
-///         registry, locked initializers, release version "3.0.0".
+///         registry, locked initializers, release version "3.1.0".
 contract IdentityNeedingNewerRegistry {
 
     bytes4 public constant NEWER_REGISTRY_INTERFACE = 0x12345678;
@@ -33,7 +33,7 @@ contract IdentityNeedingNewerRegistry {
     }
 
     function version() external pure returns (string memory) {
-        return "3.0.0";
+        return "3.1.0";
     }
 
 }

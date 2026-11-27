@@ -171,8 +171,8 @@ contract IdentityFactoryTest is OnchainIDSetup {
         Identity newImpl = new Identity(address(onchainidSetup.signatureValidator), address(onchainidSetup.idFactory));
         vm.prank(deployer);
         vm.expectEmit(address(onchainidSetup.idFactory));
-        emit IIdentityFactory.BeaconUpgraded(address(newImpl), "3.0.0", deployer);
-        onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.0.0");
+        emit IIdentityFactory.BeaconUpgraded(address(newImpl), "3.1.0", deployer);
+        onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.1.0");
         assertEq(
             UpgradeableBeacon(onchainidSetup.idFactory.beacon()).implementation(),
             address(newImpl),
@@ -184,19 +184,19 @@ contract IdentityFactoryTest is OnchainIDSetup {
         Identity newImpl = new Identity(address(onchainidSetup.signatureValidator), address(onchainidSetup.idFactory));
         vm.prank(alice);
         vm.expectRevert();
-        onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.0.0");
+        onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.1.0");
     }
 
     function test_upgradeBeacon_revertForZeroImplementation() public {
         vm.prank(deployer);
         vm.expectRevert(Errors.ZeroAddress.selector);
-        onchainidSetup.idFactory.upgradeBeacon(address(0), "3.0.0");
+        onchainidSetup.idFactory.upgradeBeacon(address(0), "3.1.0");
     }
 
     function test_upgradeBeacon_revertOnVersionMismatch() public {
         Identity newImpl = new Identity(address(onchainidSetup.signatureValidator), address(onchainidSetup.idFactory));
         vm.prank(deployer);
-        vm.expectRevert(abi.encodeWithSelector(Errors.ImplementationVersionMismatch.selector, "4.0.0", "3.0.0"));
+        vm.expectRevert(abi.encodeWithSelector(Errors.ImplementationVersionMismatch.selector, "4.0.0", "3.1.0"));
         onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "4.0.0");
     }
 
@@ -216,7 +216,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
                 address(otherRegistry)
             )
         );
-        onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.0.0");
+        onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.1.0");
     }
 
     /// @notice An implementation built against a registry interface the
@@ -231,7 +231,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
         vm.prank(deployer);
         vm.expectRevert(abi.encodeWithSelector(Errors.RegistryInterfaceNotSupported.selector, registry, newerInterface));
-        onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.0.0");
+        onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.1.0");
     }
 
     /// @notice The real-world shape: a registry from before this check, with no
@@ -264,14 +264,14 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
         vm.prank(deployer);
         vm.expectRevert(abi.encodeWithSelector(Errors.ImplementationFactoryMismatch.selector, address(newImpl)));
-        onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.0.0");
+        onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.1.0");
     }
 
     function test_upgradeBeacon_revertForCodelessImplementation() public {
         address notAContract = makeAddr("notAContract");
         vm.prank(deployer);
         vm.expectRevert(abi.encodeWithSelector(Errors.ImplementationNotAContract.selector, notAContract));
-        onchainidSetup.idFactory.upgradeBeacon(notAContract, "3.0.0");
+        onchainidSetup.idFactory.upgradeBeacon(notAContract, "3.1.0");
     }
 
     /// @notice An implementation whose initializers are still open can be initialized directly,
@@ -283,7 +283,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         vm.expectRevert(
             abi.encodeWithSelector(Errors.ImplementationInitializersNotDisabled.selector, address(unlockedImpl))
         );
-        onchainidSetup.idFactory.upgradeBeacon(address(unlockedImpl), "3.0.0");
+        onchainidSetup.idFactory.upgradeBeacon(address(unlockedImpl), "3.1.0");
     }
 
     /// @notice Existing identities keep resolving their keys across a continuous upgrade.
@@ -298,7 +298,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
 
         Identity newImpl = new Identity(address(onchainidSetup.signatureValidator), address(onchainidSetup.idFactory));
         vm.prank(deployer);
-        onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.0.0");
+        onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.1.0");
 
         assertTrue(IERC734(identityAddr).keyHasPurpose(ownerKey, KeyPurposes.MANAGEMENT), "key survives the upgrade");
     }
@@ -321,7 +321,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
         Identity newImpl = new Identity(address(onchainidSetup.signatureValidator), address(onchainidSetup.idFactory));
         vm.prank(deployer);
         vm.expectRevert();
-        onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.0.0");
+        onchainidSetup.idFactory.upgradeBeacon(address(newImpl), "3.1.0");
     }
 
     function test_initializeBeacon_revertWhenAlreadyInitialized() public {
