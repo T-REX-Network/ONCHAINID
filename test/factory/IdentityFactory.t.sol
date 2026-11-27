@@ -634,7 +634,7 @@ contract IdentityFactoryTest is OnchainIDSetup {
     /// @notice Regression guard: ASSET-typed self-deploy must revert. Closes the bug where
     ///         any EOA could mint an ASSET identity bound to themselves.
     function test_createIdentity_assetTypeRevertsForEoa() public {
-        // Apply the production policy for ASSET (matches DeployOnchainID defaults):
+        // Apply the production policy for ASSET (the production defaults):
         // gated role, no self-deploy, single binding.
         vm.prank(deployer);
         onchainidSetup.idFactory.setIdentityTypePolicy(IdentityTypes.ASSET, 1, false, true);
