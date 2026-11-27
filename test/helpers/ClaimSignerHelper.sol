@@ -44,6 +44,29 @@ library ClaimSignerHelper {
         return keccak256(abi.encode(METADATA_TYPEHASH, scheme, keccak256(bytes(uri))));
     }
 
+    bytes32 internal constant CLAIM_TYPEHASH = keccak256(
+        "Claim(uint256 topic,address subject,ClaimData data)"
+        "ClaimData(uint256 issuedAt,uint256 validUntil,Metadata metadata,bytes payload)"
+        "Metadata(uint256 scheme,string uri)"
+    );
+
+    bytes32 internal constant CLAIM_DATA_TYPEHASH = keccak256(
+        "ClaimData(uint256 issuedAt,uint256 validUntil,Metadata metadata,bytes payload)"
+        "Metadata(uint256 scheme,string uri)"
+    );
+
+    /// @notice The claim's EIP-712 struct hash, the key revocations are stored under.
+    function claimStructHash(address subject, uint256 topic, Structs.ClaimData memory data)
+        internal
+        pure
+        returns (bytes32)
+    {
+        bytes32 dataHash = keccak256(
+            abi.encode(CLAIM_DATA_TYPEHASH, data.issuedAt, data.validUntil, data.metadataHash, keccak256(data.payload))
+        );
+        return keccak256(abi.encode(CLAIM_TYPEHASH, topic, subject, dataHash));
+    }
+
     /// @notice Signs a claim using the issuer contract's EIP-712 domain.
     function signClaim(
         uint256 signerPk,

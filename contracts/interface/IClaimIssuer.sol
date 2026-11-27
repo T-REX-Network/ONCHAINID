@@ -40,11 +40,11 @@ interface IClaimIssuer is IIdentity {
     }
 
     /**
-     * @dev Emitted when a claim's digest is marked spent by the issuer (revoked).
-     *      The same digest may also be marked spent by `removeClaim` on the
+     * @dev Emitted when a claim is marked spent by the issuer (revoked).
+     *      The same claim may also be marked spent by `removeClaim` on the
      *      holder side; that path emits `ClaimRemoved` (see IERC735) instead.
      */
-    event ClaimRevoked(bytes32 indexed digest, address indexed issuer, address caller);
+    event ClaimRevoked(bytes32 indexed claimStructHash, address indexed issuer, address caller);
 
     /**
      * @dev Emitted when a claim is successfully added to an identity contract by this claim issuer.
@@ -59,20 +59,20 @@ interface IClaimIssuer is IIdentity {
     event ClaimRemovedFrom(address indexed identity, uint256 topic, address caller);
 
     /**
-     * @dev Mark a claim digest as spent. Canonical revocation entry point.
-     * @param digest the EIP-712 claim digest to mark spent.
+     * @dev Mark a claim as spent. Canonical revocation entry point.
+     * @param claimStructHash the claim's EIP-712 struct hash (not the digest) to mark spent.
      */
-    function revokeClaimByDigest(bytes32 digest) external;
+    function revokeClaimByDigest(bytes32 claimStructHash) external;
 
     /**
-     * @dev Returns true if the digest has been marked spent (revoked or removed).
-     * @param digest the EIP-712 claim digest to check.
+     * @dev Returns true if the claim has been marked spent (revoked or removed).
+     * @param claimStructHash the claim's EIP-712 struct hash (not the digest) to check.
      */
-    function isDigestRevoked(bytes32 digest) external view returns (bool);
+    function isDigestRevoked(bytes32 claimStructHash) external view returns (bool);
 
     /**
      * @dev Add a claim to a target identity contract. Validates that the signature is
-     *      from a CLAIM_SIGNER on this issuer, that the digest is not spent, and that
+     *      from a CLAIM_SIGNER on this issuer, that the claim is not spent, and that
      *      the time bounds in `_data` are honored before forwarding to the target.
      */
     function addClaimTo(

@@ -98,7 +98,7 @@ contract ERC734Validator is ERC7579Validator, IERC735, IKeyRegistry, IERC165 {
     ///      the membership index backing `keyHasPurpose` and the getters. `byPurpose` enumerates
     ///      keys per purpose, with one exception: MODULE keys are kept out of the MANAGEMENT set
     ///      (see {_addKey}), so that set holds signer keys only. Module keys still appear under
-    ///      every other purpose. `claims` / `claimsByTopic` / `revokedDigests` hold the claim
+    ///      every other purpose. `claims` / `claimsByTopic` / `revokedClaims` hold the claim
     ///      registry (see the claims section below). `claimTopics` lists every topic with at
     ///      least one claim; it is appended last so the fields before it keep their slots.
     struct AccountRegistry {
@@ -107,7 +107,7 @@ contract ERC734Validator is ERC7579Validator, IERC735, IKeyRegistry, IERC165 {
         EnumerableSet.Bytes32Set allKeys;
         mapping(bytes32 claimId => Structs.Claim) claims;
         mapping(uint256 topic => EnumerableSet.Bytes32Set) claimsByTopic;
-        mapping(bytes32 digest => bool) revokedDigests;
+        mapping(bytes32 claimStructHash => bool) revokedClaims;
         EnumerableSet.UintSet claimTopics;
     }
 
@@ -175,9 +175,9 @@ contract ERC734Validator is ERC7579Validator, IERC735, IKeyRegistry, IERC165 {
     ///      uri in their wallet instead of an opaque hash.
     bytes32 internal constant _METADATA_TYPEHASH = keccak256("Metadata(uint256 scheme,string uri)");
 
-    /// @notice Emitted when a claim digest is marked revoked by the issuer. Holder-side removals
+    /// @notice Emitted when a claim is marked revoked by the issuer. Holder-side removals
     ///         emit `ClaimRemoved` (from IERC735) instead.
-    event ClaimRevoked(bytes32 indexed digest, address indexed issuer, address caller);
+    event ClaimRevoked(bytes32 indexed claimStructHash, address indexed issuer, address caller);
 
     /// @notice Emitted when `addClaimTo` successfully writes a claim to another identity.
     event ClaimAddedTo(
@@ -797,7 +797,7 @@ contract ERC734Validator is ERC7579Validator, IERC735, IKeyRegistry, IERC165 {
     }
 
     /// @inheritdoc IERC735
-    /// @dev Marks the removed claim's digest revoked. Issuers backed by this module then refuse
+    /// @dev Marks the removed claim revoked. Issuers backed by this module then refuse
     ///      the same (issuer, topic, ClaimData) and must sign a fresh claim to re-attest.
     function removeClaim(bytes32 _claimId) public returns (bool success) {
         address account = msg.sender;
@@ -822,18 +822,17 @@ contract ERC734Validator is ERC7579Validator, IERC735, IKeyRegistry, IERC165 {
             _requireTrustedIssuer(c.issuer);
         }
 
-        // Revoke the digest on both the holder's and the issuer's sets so _getClaimStatus (which
-        // reads the issuer's set) blocks re-adding the same bytes. Marking an already marked
-        // digest is fine: an outside issuer can accept the same claim again, and that one still
-        // has to be removable. The topic check above already rejects a double removal. A zero
-        // digest means the issuer has no EIP-712 domain, so there is nothing to revoke here and
-        // removal still proceeds; those issuers keep their own revocation source, see
-        // EASClaimIssuer, which reads EAS live.
-        bytes32 digest = _getClaimDigest(c.issuer, account, topic, c.data);
-        if (digest != bytes32(0)) {
-            s.revokedDigests[digest] = true;
-            _store().registries[c.issuer].revokedDigests[digest] = true;
-        }
+        // Revoke on the issuer's set, which is the one _getClaimStatus reads, so the same bytes
+        // cannot be re-added. The key is the struct hash, not the digest: the issuer's set
+        // already pins the issuer and the chain, so removal never calls the issuer, and no
+        // issuer can make its claim unremovable or expensive to remove. Nothing is written to
+        // the holder's set: the struct hash does not name the issuer, so a mark there would also
+        // revoke a claim the holder issued about itself with the same topic and data.
+        // Marking an already marked claim is fine: an outside issuer can accept the same claim
+        // again, and that one still has to be removable. The topic check above already rejects a
+        // double removal.
+        bytes32 claimStructHash = _getClaimStructHash(account, topic, c.data);
+        _store().registries[c.issuer].revokedClaims[claimStructHash] = true;
 
         s.claimsByTopic[topic].remove(_claimId);
         if (s.claimsByTopic[topic].length() == 0) {
@@ -889,20 +888,23 @@ contract ERC734Validator is ERC7579Validator, IERC735, IKeyRegistry, IERC165 {
         return _store().registries[account].claimsByTopic[topic].values(start, end);
     }
 
-    /// @notice Mark a claim digest revoked. Issuer-side revocation entry point.
-    function revokeClaimByDigest(bytes32 digest) external {
+    /// @notice Mark a claim revoked. Issuer-side revocation entry point. Takes the claim's
+    ///         EIP-712 struct hash ({getClaimStructHash}), not the digest, so a revocation
+    ///         survives a change of the issuer's domain.
+    function revokeClaimByDigest(bytes32 claimStructHash) external {
         address account = msg.sender;
         address caller = _msgSender();
         _requireManagement(account, caller);
-        require(!_store().registries[account].revokedDigests[digest], Errors.ClaimAlreadyRevoked());
+        require(!_store().registries[account].revokedClaims[claimStructHash], Errors.ClaimAlreadyRevoked());
 
-        _store().registries[account].revokedDigests[digest] = true;
-        emit ClaimRevoked(digest, account, caller);
+        _store().registries[account].revokedClaims[claimStructHash] = true;
+        emit ClaimRevoked(claimStructHash, account, caller);
     }
 
-    /// @notice True if `digest` was marked revoked by the calling issuer (via revoke or removal).
-    function isDigestRevoked(bytes32 digest) public view returns (bool) {
-        return _store().registries[msg.sender].revokedDigests[digest];
+    /// @notice True if the claim with this struct hash was revoked by the calling issuer (via
+    ///         revoke or removal).
+    function isDigestRevoked(bytes32 claimStructHash) public view returns (bool) {
+        return _store().registries[msg.sender].revokedClaims[claimStructHash];
     }
 
     /// @notice Verify a claim against the calling identity (msg.sender is the issuer). Returns true
@@ -987,13 +989,23 @@ contract ERC734Validator is ERC7579Validator, IERC735, IKeyRegistry, IERC165 {
         return keccak256(abi.encode(_METADATA_TYPEHASH, _scheme, keccak256(bytes(_uri))));
     }
 
+    /// @notice The EIP-712 struct hash of a claim on `_subject`: the value {revokeClaimByDigest}
+    ///         and {isDigestRevoked} take. Unlike {getClaimHash} it has no domain in it, so it is
+    ///         the same for every issuer.
+    function getClaimStructHash(address _subject, uint256 _topic, Structs.ClaimData memory _data)
+        public
+        pure
+        returns (bytes32)
+    {
+        return _getClaimStructHash(_subject, _topic, _data);
+    }
+
     // --- claims internals ------------------------------------------------
 
-    /// @dev Build the EIP-712 claim digest using the issuer identity's domain (read via IERC5267),
-    ///      so signers sign against the issuer address, not this module. Issuers are not required
-    ///      to implement ERC-5267: `_addClaim` only asks the issuer to validate its own claim, so
-    ///      one without a domain (EASClaimIssuer) can be named as issuer. Returns zero for those
-    ///      instead of bubbling the failed call, which would make their claims unremovable.
+    /// @dev Build the EIP-712 claim digest on the issuer identity's domain (read via IERC5267),
+    ///      so signers sign against the issuer address, not this module. Only called with the
+    ///      issuer as `msg.sender`, so the issuer reads its own domain. Returns zero for an
+    ///      issuer with no domain; {_getClaimStatus} treats that as a bad signature.
     function _getClaimDigest(address account, address subject, uint256 topic, Structs.ClaimData memory data)
         internal
         view
@@ -1012,21 +1024,26 @@ contract ERC734Validator is ERC7579Validator, IERC735, IKeyRegistry, IERC165 {
             bytes32 domainSeparator = MessageHashUtils.toDomainSeparator(
                 fields, name, version, chainId, verifyingContract, salt
             );
-
-            bytes32 dataHash = keccak256(
-                abi.encode(
-                    _CLAIM_DATA_TYPEHASH, data.issuedAt, data.validUntil, data.metadataHash, keccak256(data.payload)
-                )
-            );
-            bytes32 structHash = keccak256(abi.encode(_CLAIM_TYPEHASH, topic, subject, dataHash));
-            return MessageHashUtils.toTypedDataHash(domainSeparator, structHash);
+            return MessageHashUtils.toTypedDataHash(domainSeparator, _getClaimStructHash(subject, topic, data));
         } catch {
             return bytes32(0);
         }
     }
 
+    /// @dev The EIP-712 struct hash of a claim. Revocations are keyed on it.
+    function _getClaimStructHash(address subject, uint256 topic, Structs.ClaimData memory data)
+        internal
+        pure
+        returns (bytes32)
+    {
+        bytes32 dataHash = keccak256(
+            abi.encode(_CLAIM_DATA_TYPEHASH, data.issuedAt, data.validUntil, data.metadataHash, keccak256(data.payload))
+        );
+        return keccak256(abi.encode(_CLAIM_TYPEHASH, topic, subject, dataHash));
+    }
+
     /// @dev Detailed claim validity. Checks are ordered cheapest first: time bounds, revoked
-    ///      digest, signature shape, CLAIM_SIGNER on the issuer, then cryptographic verification.
+    ///      claim, signature shape, CLAIM_SIGNER on the issuer, then cryptographic verification.
     function _getClaimStatus(
         address account,
         IIdentity _identity,
@@ -1038,8 +1055,8 @@ contract ERC734Validator is ERC7579Validator, IERC735, IKeyRegistry, IERC165 {
         if (block.timestamp < data.issuedAt) return IClaimIssuer.ClaimStatus.NotYetValid;
         if (data.validUntil != 0 && block.timestamp > data.validUntil) return IClaimIssuer.ClaimStatus.Expired;
 
-        bytes32 digest = _getClaimDigest(account, address(_identity), topic, data);
-        if (_store().registries[account].revokedDigests[digest]) return IClaimIssuer.ClaimStatus.Revoked;
+        bytes32 claimStructHash = _getClaimStructHash(address(_identity), topic, data);
+        if (_store().registries[account].revokedClaims[claimStructHash]) return IClaimIssuer.ClaimStatus.Revoked;
 
         // A `(bytes signer, bytes rawSig)` blob needs 2 offset words + 2 length words = 128 bytes
         // minimum before any data, so a shorter blob can't decode.
@@ -1049,6 +1066,8 @@ contract ERC734Validator is ERC7579Validator, IERC735, IKeyRegistry, IERC165 {
         if (!keyHasPurpose(account, keccak256(signer), KeyPurposes.CLAIM_SIGNER)) {
             return IClaimIssuer.ClaimStatus.NotIssued;
         }
+        bytes32 digest = _getClaimDigest(account, address(_identity), topic, data);
+        if (digest == bytes32(0)) return IClaimIssuer.ClaimStatus.BadSignature;
         if (!_verify(signer, digest, rawSig)) {
             return IClaimIssuer.ClaimStatus.BadSignature;
         }
