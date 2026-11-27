@@ -29,7 +29,7 @@ v3 is not storage-compatible or interface-compatible with 2.x. It is a new deplo
 
 ### Added
 
-- ERC-4337 account abstraction: identities validate `UserOperation`s through the installed validator module and can operate with bundlers and paymasters.
+- ERC-4337 account abstraction: identities validate `UserOperation`s through the installed validator module and can operate with bundlers and paymasters. Bundlers that enforce ERC-7562 need the identity to be staked with the EntryPoint, and passkey keys need the P-256 precompile at `0x100` on the chain (RIP-7212 on rollups, EIP-7951 on L1; see the README).
 - ERC-7913 signers: the userOp signature wire format is `abi.encode(signer, signature)`, where a 20-byte signer is an EOA or ERC-1271 contract and a longer signer is a `verifier || key` blob. Supported key types: ECDSA, RSA, WEBAUTHN (passkeys), MODULE, ACCESS_MANAGER. This enables multi-device signing, including claim signing from passkey devices.
 - Per-identity EIP-712 domains, so signatures cannot be replayed against another identity sharing the same module deployment.
 - `IKeyRegistry`: the functions an identity calls on its key registry. `ERC734Validator` answers its ERC-165 id, `Identity.requiredRegistryInterface()` reports the id an implementation was built with, and `IdentityFactory` refuses a beacon implementation whose registry does not support it (`RegistryInterfaceNotSupported`). Deployments made before this release must not be upgraded to it: deploy the full stack again.
